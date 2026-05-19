@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+yfinance
+pandas_ta
+pandas
+sqlalchemy
+anthropic
+python-dotenv
+httpx
+python-jose[cryptography]
+openai
+google-generativeai

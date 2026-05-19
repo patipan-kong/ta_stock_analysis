@@ -1,0 +1,97 @@
+{
+  "default": "claude-4.5-haiku",
+  "providers": {
+    "gemini": {
+      "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "envKey": "GEMINI_API_KEY"
+    },
+    "openai": {
+      "baseURL": "https://api.openai.com/v1",
+      "envKey": "OPENAI_API_KEY"
+    },
+    "groq": {
+      "baseURL": "https://api.groq.com/openai/v1",
+      "envKey": "GROQ_API_KEY"
+    },
+    "deepseek": {
+      "baseURL": "https://api.deepseek.com/v1",
+      "envKey": "DEEPSEEK_API_KEY"
+    },
+    "anthropic": {
+      "baseURL": "https://api.anthropic.com/v1",
+      "envKey": "ANTHROPIC_API_KEY"
+    },
+    "zhipu": {
+      "baseURL": "https://open.bigmodel.cn/api/paas/v4/",
+      "envKey": "ZHIPU_API_KEY"
+    }
+  },
+  "models": [
+    {
+      "id": "claude-sonnet-4-6",
+      "apiModel": "claude-sonnet-4-6",
+      "label": "Claude 4.6 sonnet",
+      "provider": "anthropic",      
+        "memo":"สมองหลัก: คุมฟีเจอร์ Optimizer เหมาะทำ Strategist",
+      "cost": {
+        "token_1m": {
+          "input": 3,
+          "output": 15,
+          "caching": 0.1
+        }
+      }      
+    },  
+    {
+      "id": "gemini-3.1-pro-preview",
+      "label": "Gemini 3.1 Pro Preview",
+      "provider": "gemini",
+      "memo":"คู่หูจัดการportfolio: Context ใหญ่จุใจ เหมาะทำ Challenger",
+      "cost": {
+        "token_1m": {
+          "input": 2,
+          "output": 12,
+          "caching": 0.2
+        }
+      }
+    },
+    {
+      "id": "gemini-3.1-flash-lite-preview",
+      "label": "Gemini 3 Flash Lite",
+      "provider": "gemini",
+      "memo":"สายประหยัด/อ่านงบ: Context ใหญ่จุใจ ราคาถูกสุดๆ เหมาะทำ Second Opinion",
+      "cost": {
+        "token_1m": {
+          "input": 0.25,
+          "output": 1.5,
+          "caching": 0.025
+        }
+      }
+    },      
+    {
+      "id": "gpt-4o-mini",
+      "label": "GPT-4o Mini",
+      "provider": "openai",
+      "memo":"ฝั่งรุก/สแกนเร็ว: เด่นเรื่องบีบ JSON Schema (Strict Mode) หน้าบ้านไม่พัง เหมาะทำ First Opinion",
+      "cost": {
+        "token_1m": {
+          "input": 0.15,
+          "output": 0.6,
+          "caching": 0.075
+        }
+      }
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "label": "DeepSeek-V4-Pro",
+      "provider": "deepseek",
+      "memo":"ฝั่งรับ/จับผิด: ตรรกะคณิตศาสตร์การเงินแน่น ราคาต่อความฉลาดคุ้มที่สุด เหมาะทำ Risk Auditor",
+      "cost": {
+        "token_1m": {
+          "input": 0.435,
+          "output": 0.87,
+          "caching": 0.0036
+        }
+      }
+    }
+  ]
+}

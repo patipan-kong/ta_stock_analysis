@@ -1,0 +1,60 @@
+.claude/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+frontend/.env.local
+
+# Python virtual environments
+.venv/
+venv/
+backend/.venv/
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Backend local database and runtime files
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Node / Next.js
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+out/
+frontend/out/
+
+# Frontend build/test caches
+.turbo/
+.pnpm-store/
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/

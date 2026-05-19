@@ -1,0 +1,56 @@
+prompt = f"""You are a portfolio optimization expert for Thai (SET) and US stock investments.
+
+PORTFOLIO: "{portfolio_name}"
+{json.dumps(_compact(portfolio_data), indent=2)}
+
+WATCHLIST CANDIDATES:
+{json.dumps(_compact(watchlist_data), indent=2)}
+
+SCORING SYSTEM:
+- combined_score = 0.4 × ta_score + 0.6 × fa_score  (higher is better, typical range −8 to +8)
+- Signal: BUY = strong positive, HOLD = neutral/wait, SELL = exit
+- Thai stocks end in .BK (SET exchange)
+
+OPTIMIZATION RULES:
+
+1. SWAP SUGGESTIONS (sell one portfolio stock → buy one watchlist stock):
+   - Only suggest if watchlist candidate combined_score >= portfolio stock combined_score + 2
+   - Prioritize same-sector comparisons (Banking, Energy, Retail, Healthcare, Tech, Utilities, etc.)
+   - Suggest max 4 swaps; never leave fewer than 3 stocks in portfolio after all swaps
+   - Skip swapping out stocks already at BUY unless the replacement is significantly better (+3)
+
+2. WATCHLIST RANKING (rank ALL watchlist candidates):
+   - Order by combined_score descending
+   - suggested_allocation_pct must sum to exactly 100% across all watchlist items
+   - Cap any single stock at 25%; give near-zero % to SELL signals
+   - Higher score → higher %, but keep portfolio balanced (no sector >40%)
+
+3. PORTFOLIO ASSESSMENT:
+   - Identify concentration risk (sector, single-stock)
+   - Comment on overall signal health (# BUY vs HOLD vs SELL)
+
+Respond ONLY with a valid JSON object — NO markdown, NO text outside JSON:
+{{
+  "portfolio_assessment": "1-2 sentence overall assessment of current quality and diversification",
+  "optimization_notes": "2-3 specific actionable recommendations",
+  "swap_suggestions": [
+    {{
+      "sell_symbol": "current portfolio symbol to sell",
+      "buy_symbol": "watchlist symbol to buy",
+      "reason": "1-2 sentence explanation of quality improvement",
+      "score_improvement": <float, watchlist_score - portfolio_score>,
+      "sector": "identified sector (Banking / Energy / Retail / Healthcare / Tech / etc.)"
+    }}
+  ],
+  "watchlist_ranking": [
+    {{
+      "symbol": "...",
+      "rank": <int 1-based>,
+      "signal": "BUY|HOLD|SELL",
+      "combined_score": <float>,
+      "sector": "identified sector",
+      "suggested_allocation_pct": <float, 0-25, sums to 100 across all>,
+      "reasoning": "one sentence rationale"
+    }}
+  ]
+}}"""

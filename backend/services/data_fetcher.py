@@ -1,0 +1,68 @@
+import yfinance as yf
+import pandas as pd
+from datetime import datetime, timezone
+from typing import Optional
+
+
+def resolve_symbol(symbol: str) -> str:
+    """Append .BK for Thai stocks if not already present and not a US ticker."""
+    symbol = symbol.upper()
+    if symbol.endswith(".BK"):
+        return symbol
+    # Heuristic: Thai SET symbols are 1-5 uppercase letters without digits (mostly)
+    # Frontend sends symbols without .BK; we rely on caller to pass the flag
+    return symbol
+
+
+def fetch_history(symbol: str, period: str = "6mo", interval: str = "1d") -> Optional[pd.DataFrame]:
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period=period, interval=interval)
+        if df.empty:
+            return None
+        return df
+    except Exception:
+        return None
+
+
+def fetch_info(symbol: str) -> dict:
+    try:
+        ticker = yf.Ticker(symbol)
+        return ticker.info or {}
+    except Exception:
+        return {}
+
+
+def fetch_price_info(symbol: str) -> dict:
+    try:
+        fi = yf.Ticker(symbol).fast_info
+        current_price: float | None = fi.last_price
+        prev_close: float | None = fi.previous_close
+        change_percent: float | None = None
+        if current_price is not None and prev_close and prev_close != 0:
+            change_percent = round((current_price - prev_close) / prev_close * 100, 2)
+        return {
+            "current_price": round(current_price, 4) if current_price is not None else None,
+            "change_percent": change_percent,
+            "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+    except Exception:
+        return {"current_price": None, "change_percent": None, "last_updated": None}
+
+
+def fetch_news(symbol: str) -> list[dict]:
+    try:
+        ticker = yf.Ticker(symbol)
+        news = ticker.news or []
+        result = []
+        for item in news[:10]:
+            content = item.get("content", {})
+            result.append({
+                "title": content.get("title", ""),
+                "publisher": content.get("provider", {}).get("displayName", "") if isinstance(content.get("provider"), dict) else "",
+                "link": content.get("canonicalUrl", {}).get("url", "") if isinstance(content.get("canonicalUrl"), dict) else "",
+                "published": content.get("pubDate", ""),
+            })
+        return result
+    except Exception:
+        return []
