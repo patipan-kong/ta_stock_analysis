@@ -966,6 +966,13 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
             combined = float(fa_score)
         else:
             combined = float(ta_score)
+        # Current price + analyst target (lightweight fast_info call)
+        price_info = await asyncio.to_thread(fetch_price_info, symbol)
+        current_price = price_info.get("current_price")
+        target_price  = fa.get("target_price") or price_info.get("target_price")
+        upside_pct: float | None = None
+        if target_price and current_price and current_price > 0:
+            upside_pct = round((target_price - current_price) / current_price * 100, 1)
         return {
             "symbol": symbol,
             "signal":   c.signal if c else "HOLD",
@@ -978,6 +985,9 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
             "revenue_growth": fa.get("revenue_growth"),
             "fa_summary": fa.get("fa_summary", ""),
             "ta_summary": ta.get("ta_summary", ""),
+            "current_price": current_price,
+            "target_price":  target_price,
+            "upside_pct":    upside_pct,
         }
 
     scores_list = await asyncio.gather(*[_get_scores(sym) for sym in all_symbols])
@@ -1024,6 +1034,13 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     result["analyzed_at"] = datetime.utcnow().isoformat() + "Z"
     result.setdefault("portfolio_count", portfolio_count)
     result.setdefault("max_reached", max_reached)
+
+    # Enrich watchlist_ranking with upside_pct from pre-fetched scores_map
+    upside_map = {sym: d.get("upside_pct") for sym, d in scores_map.items()}
+    for item in result.get("watchlist_ranking", []):
+        sym = item.get("symbol")
+        if sym and item.get("upside_pct") is None:
+            item["upside_pct"] = upside_map.get(sym)
 
     # Hard-enforce: watchlist-only stocks beyond available room get 0% allocation.
     # AI sometimes ignores the cap in the prompt, so we post-process deterministically.

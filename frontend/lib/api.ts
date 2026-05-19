@@ -364,7 +364,7 @@ export interface OptimizerLayers {
 export interface RiskFlag {
   symbol: string;
   issue: string;
-  severity: "low" | "medium" | "high";
+  severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 }
 
 export interface Layer1Result {
@@ -419,6 +419,7 @@ export interface WatchlistRanking {
   sector: string;
   suggested_allocation_pct: number;
   reasoning: string;
+  upside_pct?: number | null;
 }
 
 export interface OptimizerResult {

@@ -243,12 +243,16 @@ Agrees: {l2.get("agrees_with_layer1", True)}
 Disagreements: {json.dumps(l2.get("disagreements", []))}
 Alternatives: {json.dumps(l2.get("alternative_suggestions", []), indent=2)}
 
-Check: single stock >25%, sector >{max_sector_pct}%, weak sell signals kept, conflicting math.
+Check for (use exact severity thresholds):
+- CRITICAL : sector > {max_sector_pct}% OR single stock > 30% OR SELL signal kept in portfolio
+- HIGH     : single stock 25-30% OR weak fundamentals on large position
+- MEDIUM   : sector 60-80% of limit OR conflicting allocation math
+- LOW      : minor concentration risk, suboptimal but acceptable
 
 CRITICAL: Return JSON only. No markdown fences.
 
 {{
-  "risk_flags": [{{"symbol": "...", "issue": "...", "severity": "low|medium|high"}}],
+  "risk_flags": [{{"symbol": "...", "issue": "...", "severity": "LOW|MEDIUM|HIGH|CRITICAL"}}],
   "safer_choice": "layer1|layer2|neither",
   "final_risk_level": "low|medium|high",
   "auditor_notes": "1-2 sentences."

@@ -32,7 +32,30 @@ function useSecondsAgo(since: Date | null): number {
 }
 
 export default function PortfolioPage() {
-  const { activeId, loading: ctxLoading } = usePortfolio();
+  const { portfolios, activeId, setActiveId, createPortfolio, deletePortfolio, loading: ctxLoading } = usePortfolio();
+
+  // Portfolio management
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const activePortfolio = portfolios.find((p) => p.id === activeId);
+
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault();
+    const name = newName.trim();
+    if (!name) return;
+    const p = await createPortfolio(name);
+    setActiveId(p.id);
+    setNewName("");
+    setCreating(false);
+  }
+
+  async function handleDelete() {
+    if (activeId == null) return;
+    await deletePortfolio(activeId);
+    setConfirmDelete(false);
+  }
 
   const [items, setItems] = useState<PortfolioItem[]>([]);
   const [cashBalance, setCashBalance] = useState(0);
@@ -198,6 +221,69 @@ export default function PortfolioPage() {
 
   return (
     <div className="space-y-6">
+      {/* ── Portfolio selector row ── */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {creating ? (
+          <form onSubmit={handleCreate} className="flex items-center gap-1.5">
+            <input
+              autoFocus
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Portfolio name"
+              className="text-sm border rounded px-2.5 py-1.5 w-40"
+            />
+            <button type="submit" className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700">
+              Save
+            </button>
+            <button
+              type="button"
+              onClick={() => { setCreating(false); setNewName(""); }}
+              className="text-xs text-gray-400 hover:text-gray-600 px-1"
+            >
+              ✕
+            </button>
+          </form>
+        ) : confirmDelete ? (
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-gray-500">Delete &quot;{activePortfolio?.name}&quot;?</span>
+            <button onClick={handleDelete} className="text-xs bg-red-600 text-white px-2.5 py-1 rounded hover:bg-red-700">
+              Yes
+            </button>
+            <button onClick={() => setConfirmDelete(false)} className="text-xs text-gray-400 hover:text-gray-600">
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <>
+            {portfolios.length > 0 && (
+              <select
+                value={activeId ?? ""}
+                onChange={(e) => setActiveId(parseInt(e.target.value, 10))}
+                className="text-sm border rounded px-2.5 py-1.5 bg-white"
+              >
+                {portfolios.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            )}
+            <button
+              onClick={() => setCreating(true)}
+              className="text-sm border rounded px-2.5 py-1.5 hover:bg-gray-50 text-gray-600"
+            >
+              + New
+            </button>
+            {portfolios.length > 1 && (
+              <button
+                onClick={() => setConfirmDelete(true)}
+                className="text-sm border border-red-200 rounded px-2.5 py-1.5 hover:bg-red-50 text-red-400"
+              >
+                Delete
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h1 className="text-2xl font-bold">Portfolio</h1>
         <div className="flex items-center gap-3 flex-wrap">

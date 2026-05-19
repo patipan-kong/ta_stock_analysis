@@ -10,6 +10,7 @@ class FundamentalResult(TypedDict):
     roe: float | None
     debt_equity: float | None
     market_cap: float | None
+    target_price: float | None
     fa_score: int
     fa_summary: str
 
@@ -28,6 +29,7 @@ def analyze_fundamental(symbol: str) -> FundamentalResult | dict:
     roe: float | None = info.get("returnOnEquity")
     debt_equity: float | None = info.get("debtToEquity")
     market_cap: float | None = info.get("marketCap")
+    target_price: float | None = info.get("targetMeanPrice")
 
     # P/E scoring
     if pe_ratio is not None:
@@ -91,6 +93,7 @@ def analyze_fundamental(symbol: str) -> FundamentalResult | dict:
         roe=round(roe, 4) if roe is not None else None,
         debt_equity=round(debt_equity, 2) if debt_equity is not None else None,
         market_cap=market_cap,
+        target_price=round(target_price, 2) if target_price is not None else None,
         fa_score=score,
         fa_summary=", ".join(notes),
     )

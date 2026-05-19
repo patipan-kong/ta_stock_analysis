@@ -35,19 +35,25 @@ def fetch_info(symbol: str) -> dict:
 
 def fetch_price_info(symbol: str) -> dict:
     try:
-        fi = yf.Ticker(symbol).fast_info
+        ticker = yf.Ticker(symbol)
+        fi = ticker.fast_info
         current_price: float | None = fi.last_price
         prev_close: float | None = fi.previous_close
         change_percent: float | None = None
         if current_price is not None and prev_close and prev_close != 0:
             change_percent = round((current_price - prev_close) / prev_close * 100, 2)
+        try:
+            target_price: float | None = ticker.info.get("targetMeanPrice")
+        except Exception:
+            target_price = None
         return {
             "current_price": round(current_price, 4) if current_price is not None else None,
             "change_percent": change_percent,
             "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "target_price": round(target_price, 2) if target_price is not None else None,
         }
     except Exception:
-        return {"current_price": None, "change_percent": None, "last_updated": None}
+        return {"current_price": None, "change_percent": None, "last_updated": None, "target_price": None}
 
 
 def fetch_news(symbol: str) -> list[dict]:

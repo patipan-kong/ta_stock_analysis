@@ -44,9 +44,9 @@ function SwapCard({ s }: { s: SwapSuggestion }) {
   if (s.type === "SELL") {
     const sym = s.sell_symbol ?? "";
     return (
-      <div className="bg-red-50 border border-red-200 rounded-xl p-4 shadow-sm">
+      <div className="bg-red-50 border-2 border-red-300 rounded-xl p-4 shadow-sm">
         <div className="flex items-center gap-2 mb-3">
-          <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-semibold">SELL SIGNAL</span>
+          <span className="text-xs bg-red-600 text-white px-2 py-0.5 rounded-full font-semibold">🚨 SELL SIGNAL</span>
           <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{s.sector}</span>
         </div>
         <div className="flex items-center gap-2 mb-2">
@@ -61,11 +61,24 @@ function SwapCard({ s }: { s: SwapSuggestion }) {
 
   const sellSym = s.sell_symbol ?? "";
   const buySym  = s.buy_symbol  ?? "";
+  const deltaCls = s.score_improvement >= 0
+    ? "bg-green-100 text-green-700"
+    : "bg-red-100 text-red-700";
   return (
-    <div className="bg-white border rounded-xl p-4 shadow-sm">
-      <span className="inline-block text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full mb-3">
-        {s.sector}
-      </span>
+    <div className="bg-blue-50 border-2 border-blue-200 rounded-xl p-4 shadow-sm">
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <span className="inline-block text-xs bg-blue-600 text-white px-2 py-0.5 rounded-full font-semibold">
+          🔁 SWAP PLAN
+        </span>
+        <span className="inline-block text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
+          {s.sector}
+        </span>
+        {s.score_improvement !== 0 && (
+          <span className={`inline-block text-xs px-2 py-0.5 rounded-full font-semibold ${deltaCls}`}>
+            Δ {s.score_improvement >= 0 ? "+" : ""}{s.score_improvement.toFixed(1)}
+          </span>
+        )}
+      </div>
       <div className="flex items-center gap-3 mb-3">
         {sellSym && (
           <div className="flex-1 text-center">
@@ -97,9 +110,24 @@ function SwapCard({ s }: { s: SwapSuggestion }) {
 
 // ─── Ranking Row ──────────────────────────────────────────────────────────────
 
-function RankingRow({ item, budget }: { item: WatchlistRanking; budget: number }) {
+const RISK_BADGE: Record<string, string> = {
+  CRITICAL: "text-red-900 bg-red-100 border-red-400",
+  HIGH:     "text-red-700 bg-red-50  border-red-300",
+  MEDIUM:   "text-amber-700 bg-amber-50 border-amber-300",
+  LOW:      "text-gray-600 bg-gray-50 border-gray-200",
+};
+
+function RankingRow({
+  item, budget, riskMap,
+}: {
+  item: WatchlistRanking;
+  budget: number;
+  riskMap: Record<string, string>;
+}) {
   const display = item.symbol.replace(".BK", "");
   const thb = budget > 0 ? Math.round(budget * item.suggested_allocation_pct / 100) : null;
+  const upside = item.upside_pct;
+  const riskLevel = riskMap[item.symbol];
   return (
     <tr className="border-b hover:bg-gray-50">
       <td className="py-2 pl-4 pr-3 text-center text-sm font-bold text-gray-400">{item.rank}</td>
@@ -115,6 +143,20 @@ function RankingRow({ item, budget }: { item: WatchlistRanking; budget: number }
       <td className="py-2 pr-3 text-xs text-gray-500 hidden sm:table-cell">{item.sector}</td>
       <td className="py-2 pr-3 text-sm font-medium text-blue-700">{item.suggested_allocation_pct.toFixed(1)}%</td>
       {thb !== null && <td className="py-2 pr-3 text-sm text-gray-700">฿{thb.toLocaleString("th-TH")}</td>}
+      <td className="py-2 pr-3 text-sm font-medium">
+        {upside == null
+          ? <span className="text-gray-400 text-xs">N/A</span>
+          : <span className={upside >= 0 ? "text-green-600" : "text-red-500"}>
+              {upside >= 0 ? "+" : ""}{upside.toFixed(1)}%
+            </span>
+        }
+      </td>
+      <td className="py-2 pr-3">
+        {riskLevel
+          ? <span className={`text-xs font-semibold px-1.5 py-0.5 rounded border ${RISK_BADGE[riskLevel] ?? RISK_BADGE.LOW}`}>{riskLevel}</span>
+          : <span className="text-gray-300 text-xs">—</span>
+        }
+      </td>
       <td className="py-2 text-xs text-gray-400 hidden lg:table-cell">{item.reasoning}</td>
     </tr>
   );
@@ -122,23 +164,50 @@ function RankingRow({ item, budget }: { item: WatchlistRanking; budget: number }
 
 // ─── Layer sections ───────────────────────────────────────────────────────────
 
+function l1Direction(priority?: string): string {
+  if (priority === "growth")    return "Aggressive Growth";
+  if (priority === "balanced")  return "Balanced Allocation";
+  if (priority === "defensive") return "Defensive Positioning";
+  return "Strategic Allocation";
+}
+
+function l2Direction(agrees?: boolean): string {
+  if (agrees === true)  return "Confirms Strategist";
+  if (agrees === false) return "Conservative Rotation";
+  return "Independent Review";
+}
+
+function l3Direction(riskLevel?: string, saferChoice?: string): string {
+  if (saferChoice === "neither")     return "Caution — Review Manually";
+  if (riskLevel   === "high")        return "Defensive";
+  if (riskLevel   === "low")         return "Low Risk Confirmed";
+  return "Moderate Risk Profile";
+}
+
 const RISK_CLS: Record<string, string> = {
-  high:   "text-red-700 bg-red-50 border-red-200",
-  medium: "text-amber-700 bg-amber-50 border-amber-200",
-  low:    "text-gray-600 bg-gray-50 border-gray-200",
+  CRITICAL: "text-red-900   bg-red-100   border-red-500",
+  HIGH:     "text-red-700   bg-red-50    border-red-300",
+  MEDIUM:   "text-amber-700 bg-amber-50  border-amber-300",
+  LOW:      "text-gray-600  bg-gray-50   border-gray-200",
 };
 
 const RISK_DOT: Record<string, string> = {
-  high: "bg-red-500", medium: "bg-amber-400", low: "bg-gray-400",
+  CRITICAL: "bg-red-600", HIGH: "bg-red-400", MEDIUM: "bg-amber-400", LOW: "bg-gray-400",
+};
+
+const SEVERITY_ORDER: Record<string, number> = {
+  CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3,
 };
 
 function RiskFlagPill({ flag }: { flag: RiskFlag }) {
-  const cls = RISK_CLS[flag.severity] ?? RISK_CLS.low;
-  const dot = RISK_DOT[flag.severity] ?? RISK_DOT.low;
+  const key = flag.severity?.toUpperCase() as keyof typeof RISK_CLS;
+  const cls = RISK_CLS[key] ?? RISK_CLS.LOW;
+  const dot = RISK_DOT[key] ?? RISK_DOT.LOW;
   return (
     <div className={`flex items-start gap-2 border rounded-lg px-3 py-2 text-xs ${cls}`}>
       <span className={`mt-0.5 shrink-0 w-2 h-2 rounded-full ${dot}`} />
       <div>
+        <span className="font-bold mr-1.5">[{key}]</span>
         <span className="font-semibold mr-1">{flag.symbol}</span>
         {flag.issue}
       </div>
@@ -158,12 +227,11 @@ function Layer1Section({
   return (
     <section className="bg-white border rounded-xl p-5 shadow-sm space-y-3">
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-xs font-bold bg-orange-100 text-orange-700 px-2 py-0.5 rounded">L1</span>
-        <h3 className="font-semibold text-gray-800">{layer.name ?? "Strategist"}</h3>
+        <div>
+          <h3 className="font-semibold text-gray-800">🟠 {layer.name ?? "Strategist"}</h3>
+          <p className="text-xs text-orange-600 mt-0.5">{l1Direction(layer.priority)}</p>
+        </div>
         <AIBadge provider={layer.provider} model={layer.model} label="" />
-        {layer.priority && (
-          <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded ml-auto">{layer.priority}</span>
-        )}
       </div>
       {layer.error ? (
         <p className="text-xs text-red-500">{layer.error}</p>
@@ -202,41 +270,102 @@ function Layer2Section({
 }) {
   if (!layer) return null;
   const agrees = layer.agrees_with_layer1;
+  const [activeTab, setActiveTab] = useState<"disagreements" | "alternatives">(
+    agrees ? "alternatives" : "disagreements"
+  );
+  useEffect(() => {
+    setActiveTab(agrees ? "alternatives" : "disagreements");
+  }, [agrees]);
+  const disagreements = layer.disagreements ?? [];
   const challengerSuggestions = (layer.alternative_suggestions ?? []).slice(0, 5);
   return (
     <section className={`border rounded-xl p-5 shadow-sm space-y-3 ${agrees ? "bg-green-50 border-green-200" : "bg-amber-50 border-amber-200"}`}>
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-xs font-bold bg-blue-100 text-blue-700 px-2 py-0.5 rounded">L2</span>
-        <h3 className="font-semibold text-gray-800">{layer.name ?? "Challenger"}</h3>
+        <div>
+          <h3 className="font-semibold text-gray-800">🔵 {layer.name ?? "Challenger"}</h3>
+          <p className="text-xs text-blue-600 mt-0.5">{l2Direction(layer.agrees_with_layer1)}</p>
+        </div>
         <AIBadge provider={layer.provider} model={layer.model} label="" />
         <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ml-auto ${agrees ? "bg-green-100 border-green-300 text-green-700" : "bg-amber-100 border-amber-300 text-amber-700"}`}>
           {agrees ? "✓ Agrees" : "⚠ Disagrees"}
         </span>
       </div>
+      {!agrees && !layer.error && disagreements.length > 0 && (
+        <div className="bg-yellow-50 border border-yellow-300 rounded-lg px-4 py-3 space-y-1.5">
+          <p className="text-xs font-bold text-yellow-800 flex items-center gap-1.5">
+            <span>⚠</span> Challenger disagrees with Strategist
+          </p>
+          <ul className="space-y-1">
+            {disagreements.map((d, i) => (
+              <li key={i} className="flex items-start gap-1.5 text-xs text-yellow-800">
+                <span className="mt-0.5 shrink-0">•</span>
+                <span>{d}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {layer.error ? (
         <p className="text-xs text-red-500">{layer.error}</p>
       ) : (
         <>
-          {!agrees && layer.disagreements && layer.disagreements.length > 0 && (
-            <ul className="text-xs text-amber-700 space-y-0.5 list-disc list-inside">
-              {layer.disagreements.map((d, i) => <li key={i}>{d}</li>)}
-            </ul>
-          )}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <p className="text-xs font-medium text-gray-500">Challenger Alternative Suggestions</p>
-              <p className="text-xs text-gray-400">{challengerSuggestions.length} cards</p>
-            </div>
-            {challengerSuggestions.length === 0 ? (
-              <div className="bg-white/70 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
-                Challenger has no alternative swap suggestions.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {challengerSuggestions.map((s, i) => <SwapCard key={i} s={s} />)}
-              </div>
-            )}
+          <div className="flex items-center gap-2 border-b border-amber-200 pb-2">
+            <button
+              type="button"
+              onClick={() => setActiveTab("disagreements")}
+              className={`px-3 py-1 rounded-full text-xs font-semibold transition-colors ${
+                activeTab === "disagreements"
+                  ? "bg-amber-200 text-amber-900"
+                  : "bg-white/70 text-amber-700 hover:bg-amber-100"
+              }`}
+            >
+              Disagreements ({disagreements.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("alternatives")}
+              className={`px-3 py-1 rounded-full text-xs font-semibold transition-colors ${
+                activeTab === "alternatives"
+                  ? "bg-blue-200 text-blue-900"
+                  : "bg-white/70 text-blue-700 hover:bg-blue-100"
+              }`}
+            >
+              Alternatives ({challengerSuggestions.length})
+            </button>
           </div>
+
+          {activeTab === "disagreements" && (
+            <div>
+              {disagreements.length === 0 ? (
+                <div className="bg-white/70 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+                  No disagreement notes from Challenger.
+                </div>
+              ) : (
+                <ul className="text-xs text-amber-700 space-y-1 list-disc list-inside">
+                  {disagreements.map((d, i) => <li key={i}>{d}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {activeTab === "alternatives" && (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-medium text-gray-500">Challenger Alternative Suggestions</p>
+                <p className="text-xs text-gray-400">{challengerSuggestions.length} cards</p>
+              </div>
+              {challengerSuggestions.length === 0 ? (
+                <div className="bg-white/70 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+                  Challenger has no alternative swap suggestions.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {challengerSuggestions.map((s, i) => <SwapCard key={i} s={s} />)}
+                </div>
+              )}
+            </div>
+          )}
+
           {agrees && <p className="text-sm text-green-700">Challenger confirms the Strategist&apos;s proposal.</p>}
         </>
       )}
@@ -246,14 +375,18 @@ function Layer2Section({
 
 function Layer3Section({ layer }: { layer: Layer3Result | null | undefined }) {
   if (!layer) return null;
-  const flags = layer.risk_flags ?? [];
+  const flags = [...(layer.risk_flags ?? [])].sort(
+    (a, b) => (SEVERITY_ORDER[a.severity?.toUpperCase()] ?? 99) - (SEVERITY_ORDER[b.severity?.toUpperCase()] ?? 99)
+  );
   const risk = layer.final_risk_level ?? "medium";
   const riskColor = risk === "high" ? "text-red-600" : risk === "low" ? "text-green-600" : "text-amber-600";
   return (
     <section className="bg-white border rounded-xl p-5 shadow-sm space-y-3">
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-xs font-bold bg-purple-100 text-purple-700 px-2 py-0.5 rounded">L3</span>
-        <h3 className="font-semibold text-gray-800">{layer.name ?? "Risk Auditor"}</h3>
+        <div>
+          <h3 className="font-semibold text-gray-800">🟣 {layer.name ?? "Risk Auditor"}</h3>
+          <p className="text-xs text-purple-600 mt-0.5">{l3Direction(layer.final_risk_level, layer.safer_choice)}</p>
+        </div>
         <AIBadge provider={layer.provider} model={layer.model} label="" />
         <span className={`text-xs font-semibold ml-auto ${riskColor}`}>
           Risk: {risk.toUpperCase()}
@@ -359,6 +492,21 @@ function ResultPanel({ result, budget, loading }: { result: OptimizerResult | nu
         )}
       </div>
 
+      <section className="bg-white border rounded-xl p-3 shadow-sm">
+        <div className="flex items-center gap-2 flex-wrap text-xs">
+          <span className="text-gray-500 font-medium">Card Legend:</span>
+          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-red-50 text-red-700 border border-red-200">
+            🚨 SELL SIGNAL
+          </span>
+          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+            🔁 SWAP PLAN
+          </span>
+          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-green-50 text-green-700 border border-green-200">
+            Δ positive = expected improvement
+          </span>
+        </div>
+      </section>
+
       {/* Single-model header (shown when no layer data) */}
       {!result.layer1_result && (
         <section className="bg-white border rounded-xl p-5 shadow-sm">
@@ -381,33 +529,49 @@ function ResultPanel({ result, budget, loading }: { result: OptimizerResult | nu
       {result.layer3_result && <Layer3Section layer={result.layer3_result} />}
       {result.consensus && <ConsensusSection consensus={result.consensus} />}
 
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold">Watchlist Ranking</h3>
-          {budget > 0 && <span className="text-xs text-gray-500">Budget: ฿{budget.toLocaleString("th-TH")}</span>}
-        </div>
-        <div className="bg-white border rounded-xl overflow-x-auto shadow-sm">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-xs text-gray-500">
-                <th className="py-2 pl-4 pr-3">#</th>
-                <th className="py-2 pr-3">Symbol</th>
-                <th className="py-2 pr-3">Signal</th>
-                <th className="py-2 pr-3">Score</th>
-                <th className="py-2 pr-3 hidden sm:table-cell">Sector</th>
-                <th className="py-2 pr-3">Alloc%</th>
-                {budget > 0 && <th className="py-2 pr-3">THB</th>}
-                <th className="py-2 hidden lg:table-cell">Reasoning</th>
-              </tr>
-            </thead>
-            <tbody>
-              {result.watchlist_ranking.map((item) => (
-                <RankingRow key={item.symbol} item={item} budget={budget} />
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      {(() => {
+        // Build per-symbol risk map from Layer 3 risk_flags (highest severity wins)
+        const severityOrder: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+        const riskMap: Record<string, string> = {};
+        for (const flag of result.layer3_result?.risk_flags ?? []) {
+          const key = flag.severity?.toUpperCase();
+          const cur = riskMap[flag.symbol];
+          if (!cur || (severityOrder[key] ?? 99) < (severityOrder[cur] ?? 99)) {
+            riskMap[flag.symbol] = key;
+          }
+        }
+        return (
+          <section>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold">Watchlist Ranking</h3>
+              {budget > 0 && <span className="text-xs text-gray-500">Budget: ฿{budget.toLocaleString("th-TH")}</span>}
+            </div>
+            <div className="bg-white border rounded-xl overflow-x-auto shadow-sm">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-xs text-gray-500">
+                    <th className="py-2 pl-4 pr-3">#</th>
+                    <th className="py-2 pr-3">Symbol</th>
+                    <th className="py-2 pr-3">Signal</th>
+                    <th className="py-2 pr-3">Score</th>
+                    <th className="py-2 pr-3 hidden sm:table-cell">Sector</th>
+                    <th className="py-2 pr-3">Alloc%</th>
+                    {budget > 0 && <th className="py-2 pr-3">THB</th>}
+                    <th className="py-2 pr-3">Upside</th>
+                    <th className="py-2 pr-3">Risk</th>
+                    <th className="py-2 hidden lg:table-cell">Reasoning</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.watchlist_ranking.map((item) => (
+                    <RankingRow key={item.symbol} item={item} budget={budget} riskMap={riskMap} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        );
+      })()}
     </div>
   );
 }
