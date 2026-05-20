@@ -220,14 +220,14 @@ Respond ONLY with a valid JSON object. No markdown. No text before or after.
 }}"""
 
     try:
-        text = call_ai(
+        ai_result = call_ai(
             prompt,
             provider,
             model,
             max_tokens=4096,
             usage_operation="analyze",
         )
-        parsed = safe_parse_json(text)
+        parsed = safe_parse_json(ai_result["text"])
         raw_signal = parsed.get("signal", "HOLD")
         signal = raw_signal if raw_signal in _VALID_SIGNALS else "HOLD"
         capped_conf = _cap_confidence(parsed.get("confidence", "low"), max_conf)
@@ -239,6 +239,7 @@ Respond ONLY with a valid JSON object. No markdown. No text before or after.
             "risks": parsed.get("risks", ""),
             "ai_provider": provider,
             "ai_model": model,
+            "latency_ms": ai_result["latency_ms"],
         }
     except Exception as e:
         return {"error": f"AI error: {str(e)}"}

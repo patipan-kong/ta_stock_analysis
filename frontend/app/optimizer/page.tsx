@@ -10,7 +10,7 @@ import SignalBadge from "@/components/SignalBadge";
 import AIBadge from "@/components/AIBadge";
 import type {
   OptimizerResult, OptimizerHistoryItem, SwapSuggestion, WatchlistRanking,
-  Layer2Result, Layer3Result, OptimizerConsensus, RiskFlag,
+  Layer2Result, Layer3Result, OptimizerConsensus, RiskFlag, SectorWarning,
 } from "@/lib/api";
 
 const TZ = "Asia/Bangkok";
@@ -412,6 +412,85 @@ function Layer3Section({ layer }: { layer: Layer3Result | null | undefined }) {
   );
 }
 
+// ─── Sector Impact ────────────────────────────────────────────────────────────
+
+function SectorImpactSection({ warnings }: { warnings: SectorWarning[] }) {
+  const visible = warnings.filter((w) => w.current_pct > 0 || w.projected_pct > 0);
+  if (visible.length === 0) return null;
+
+  return (
+    <section className="bg-white border rounded-xl p-5 shadow-sm space-y-4">
+      <div>
+        <h3 className="font-semibold text-gray-800">Sector Impact</h3>
+        <p className="text-xs text-gray-500 mt-0.5">
+          Before/after applying proposed swaps. Bars show % of sector limit used.
+        </p>
+      </div>
+      <div className="space-y-4">
+        {visible.map((w) => {
+          const statusCls =
+            w.status === "EXCEEDS"
+              ? "text-red-600 bg-red-50 border-red-300"
+              : w.status === "WARNING"
+              ? "text-amber-600 bg-amber-50 border-amber-300"
+              : "text-green-700 bg-green-50 border-green-200";
+          const barAfterColor =
+            w.status === "EXCEEDS" ? "bg-red-500" : w.status === "WARNING" ? "bg-amber-400" : "bg-green-500";
+          const beforeFill = w.limit_pct > 0 ? Math.min(100, (w.current_pct / w.limit_pct) * 100) : 0;
+          const afterFill  = w.limit_pct > 0 ? Math.min(100, (w.projected_pct / w.limit_pct) * 100) : 0;
+          const changed = w.current_pct !== w.projected_pct;
+
+          return (
+            <div key={w.sector} className="flex items-start gap-3">
+              <div className="w-24 shrink-0 pt-0.5">
+                <span className="text-sm font-medium text-gray-700">{w.sector}</span>
+              </div>
+              <div className="flex-1 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-400 w-10 text-right shrink-0">
+                    {w.current_pct.toFixed(1)}%
+                  </span>
+                  <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+                    <div className="h-2 bg-gray-300 rounded-full" style={{ width: `${beforeFill}%` }} />
+                  </div>
+                  <span className="text-xs text-gray-400 w-6 shrink-0">now</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`text-xs font-medium w-10 text-right shrink-0 ${changed ? "text-gray-800" : "text-gray-400"}`}>
+                    {w.projected_pct.toFixed(1)}%
+                  </span>
+                  <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden relative">
+                    <div className={`h-2 rounded-full ${barAfterColor}`} style={{ width: `${afterFill}%` }} />
+                    <div className="absolute inset-y-0 border-l-2 border-dashed border-amber-400 opacity-60" style={{ left: "80%" }} />
+                  </div>
+                  <span className="text-xs text-gray-400 w-6 shrink-0">est</span>
+                </div>
+              </div>
+              <div className="shrink-0 flex flex-col items-end gap-1 pt-0.5">
+                <span className={`text-xs font-semibold px-1.5 py-0.5 rounded border ${statusCls}`}>
+                  {w.status}
+                </span>
+                <span className="text-xs text-gray-400">lim {w.limit_pct}%</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-xs text-gray-400 flex items-center gap-4">
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-4 h-1.5 bg-gray-300 rounded" /> Now
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-4 h-1.5 bg-green-500 rounded" /> After swaps
+        </span>
+        <span className="flex items-center gap-1.5 text-amber-500">
+          <span className="inline-block w-0 h-3 border-l-2 border-dashed border-amber-400" /> 80% threshold
+        </span>
+      </p>
+    </section>
+  );
+}
+
 const CONF_COLOR: Record<string, string> = {
   high: "text-green-600", medium: "text-amber-600", low: "text-red-500",
 };
@@ -528,6 +607,9 @@ function ResultPanel({ result, budget, loading }: { result: OptimizerResult | nu
       {result.layer2_result && <Layer2Section layer={result.layer2_result} />}
       {result.layer3_result && <Layer3Section layer={result.layer3_result} />}
       {result.consensus && <ConsensusSection consensus={result.consensus} />}
+      {result.sector_warnings && result.sector_warnings.length > 0 && (
+        <SectorImpactSection warnings={result.sector_warnings} />
+      )}
 
       {(() => {
         // Build per-symbol risk map from Layer 3 risk_flags (highest severity wins)

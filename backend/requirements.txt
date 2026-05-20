@@ -4,6 +4,8 @@ yfinance
 pandas_ta
 pandas
 sqlalchemy
+alembic
+psycopg2-binary
 anthropic
 python-dotenv
 httpx

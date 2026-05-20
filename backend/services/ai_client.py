@@ -2,10 +2,14 @@
 Unified AI client — single call_ai() works across all providers.
 - anthropic: uses anthropic SDK
 - all others (openai, deepseek, zhipu, groq, gemini): OpenAI-compatible SDK with custom base_url
+
+call_ai() returns a dict: {"text": str, "latency_ms": int, "input_tokens": int,
+                            "output_tokens": int, "provider": str, "model": str}
 """
 
 import os
 import json
+import time
 from functools import lru_cache
 from dotenv import load_dotenv
 from models.database import SessionLocal, UserUsage
@@ -45,6 +49,7 @@ def _record_usage(
     total_cost_usd: float,
     operation: str,
     layer: str | None,
+    latency_ms: int = 0,
 ) -> None:
     db = SessionLocal()
     try:
@@ -59,6 +64,7 @@ def _record_usage(
             input_cost_usd=float(input_cost_usd),
             output_cost_usd=float(output_cost_usd),
             total_cost_usd=float(total_cost_usd),
+            latency_ms=int(latency_ms),
         ))
         db.commit()
     except Exception:
@@ -74,9 +80,11 @@ def call_ai(
     max_tokens: int = 4096,
     usage_operation: str = "other",
     usage_layer: str | None = None,
-) -> str:
+) -> dict:
     """
-    Send a prompt to any supported AI provider and return the plain text response.
+    Send a prompt to any supported AI provider.
+    Returns dict: {"text": str, "latency_ms": int, "input_tokens": int,
+                   "output_tokens": int, "provider": str, "model": str}
     JSON parsing (safe_parse_json) should be done by the caller, not here.
     """
     config = _load_config()
@@ -88,31 +96,55 @@ def call_ai(
     if provider == "anthropic":
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
+        start = time.perf_counter()
         message = client.messages.create(
             model=model,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
+        latency_ms = round((time.perf_counter() - start) * 1000)
         usage = getattr(message, "usage", None)
         in_tokens = int(getattr(usage, "input_tokens", 0) or 0)
         out_tokens = int(getattr(usage, "output_tokens", 0) or 0)
         in_cost, out_cost, total_cost = _compute_cost_usd(in_tokens, out_tokens, in_per_1m, out_per_1m)
-        _record_usage(provider, model, in_tokens, out_tokens, in_cost, out_cost, total_cost, usage_operation, usage_layer)
-        return message.content[0].text
+        _record_usage(provider, model, in_tokens, out_tokens, in_cost, out_cost, total_cost, usage_operation, usage_layer, latency_ms)
+        return {
+            "text": message.content[0].text,
+            "latency_ms": latency_ms,
+            "input_tokens": in_tokens,
+            "output_tokens": out_tokens,
+            "provider": provider,
+            "model": model,
+        }
 
     # All other providers: OpenAI-compatible interface
+    # gpt-5, o1, o3, o4 and future reasoning models use max_completion_tokens instead of max_tokens
+    _REASONING_PATTERNS = ("gpt-5", "o1", "o3", "o4")
+    _uses_completion_tokens = (
+        provider in ("openai", "deepseek", "zhipu")
+        and any(pat in model for pat in _REASONING_PATTERNS)
+    )
+
     from openai import OpenAI
     client = OpenAI(api_key=api_key, base_url=base_url or None)
-    response = client.chat.completions.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    create_kwargs: dict = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if _uses_completion_tokens:
+        create_kwargs["max_completion_tokens"] = max_tokens
+    else:
+        create_kwargs["max_tokens"] = max_tokens
+
+    start = time.perf_counter()
+    response = client.chat.completions.create(**create_kwargs)
+    latency_ms = round((time.perf_counter() - start) * 1000)
+
     usage = getattr(response, "usage", None)
     in_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
     out_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
     in_cost, out_cost, total_cost = _compute_cost_usd(in_tokens, out_tokens, in_per_1m, out_per_1m)
-    _record_usage(provider, model, in_tokens, out_tokens, in_cost, out_cost, total_cost, usage_operation, usage_layer)
+    _record_usage(provider, model, in_tokens, out_tokens, in_cost, out_cost, total_cost, usage_operation, usage_layer, latency_ms)
 
     msg = response.choices[0].message
     content = msg.content or ""
@@ -123,7 +155,13 @@ def call_ai(
     # combine both so safe_parse_json can find the JSON object wherever it is.
     if not content:
         extra = getattr(msg, "model_extra", {}) or {}
-        reasoning = extra.get("reasoning_content") or ""
-        content = reasoning
+        content = extra.get("reasoning_content") or ""
 
-    return content
+    return {
+        "text": content,
+        "latency_ms": latency_ms,
+        "input_tokens": in_tokens,
+        "output_tokens": out_tokens,
+        "provider": provider,
+        "model": model,
+    }

@@ -1,9 +1,10 @@
-from services.data_fetcher import fetch_info
+from services.data_fetcher import fetch_info, normalize_dr_symbol
 from typing import TypedDict
 
 
 class FundamentalResult(TypedDict):
     symbol: str
+    sector: str | None
     pe_ratio: float | None
     eps: float | None
     revenue_growth: float | None
@@ -11,18 +12,23 @@ class FundamentalResult(TypedDict):
     debt_equity: float | None
     market_cap: float | None
     target_price: float | None
+    analyst_count: int | None
+    upside_pct: float | None
+    upside_source: str | None
     fa_score: int
     fa_summary: str
 
 
 def analyze_fundamental(symbol: str) -> FundamentalResult | dict:
-    info = fetch_info(symbol)
+    yf_symbol = normalize_dr_symbol(symbol)  # DR: AAPL01.BK → AAPL; others unchanged
+    info = fetch_info(yf_symbol)
     if not info:
         return {"error": "data unavailable"}
 
     score = 0
     notes = []
 
+    sector: str | None = info.get("sector") or None
     pe_ratio: float | None = info.get("trailingPE") or info.get("forwardPE")
     eps: float | None = info.get("trailingEps")
     revenue_growth: float | None = info.get("revenueGrowth")
@@ -30,6 +36,14 @@ def analyze_fundamental(symbol: str) -> FundamentalResult | dict:
     debt_equity: float | None = info.get("debtToEquity")
     market_cap: float | None = info.get("marketCap")
     target_price: float | None = info.get("targetMeanPrice")
+    analyst_count: int | None = info.get("numberOfAnalystOpinions")
+    current_price_info: float | None = info.get("currentPrice") or info.get("regularMarketPrice")
+    upside_pct: float | None = (
+        round((target_price - current_price_info) / current_price_info * 100, 1)
+        if target_price and current_price_info and current_price_info > 0
+        else None
+    )
+    upside_source: str | None = "analyst_consensus" if target_price else None
 
     # P/E scoring
     if pe_ratio is not None:
@@ -87,6 +101,7 @@ def analyze_fundamental(symbol: str) -> FundamentalResult | dict:
 
     return FundamentalResult(
         symbol=symbol,
+        sector=sector,
         pe_ratio=round(pe_ratio, 2) if pe_ratio is not None else None,
         eps=round(eps, 4) if eps is not None else None,
         revenue_growth=round(revenue_growth, 4) if revenue_growth is not None else None,
@@ -94,6 +109,9 @@ def analyze_fundamental(symbol: str) -> FundamentalResult | dict:
         debt_equity=round(debt_equity, 2) if debt_equity is not None else None,
         market_cap=market_cap,
         target_price=round(target_price, 2) if target_price is not None else None,
+        analyst_count=analyst_count,
+        upside_pct=upside_pct,
+        upside_source=upside_source,
         fa_score=score,
         fa_summary=", ".join(notes),
     )

@@ -16,7 +16,7 @@ from agents.news import analyze_news
 from agents.summary import analyze_summary
 from agents.optimizer import run_optimizer, run_layered_optimizer, _DEFAULT_LAYERS
 from agents.chart_data import fetch_chart_data
-from services.data_fetcher import fetch_price_info
+from services.data_fetcher import fetch_price_info, fetch_info, normalize_dr_symbol
 from services.scorer import compute_scores
 from services.ai_client import call_ai
 from services.json_utils import safe_parse_json
@@ -185,6 +185,8 @@ def _save_analysis_history(
     fundamental: dict | None = None,
     sources_used: dict | None = None,
     scores: dict | None = None,
+    latency_ms: int | None = None,
+    total_latency_ms: int | None = None,
 ) -> AnalysisHistory | None:
     """Always inserts a new history record — never updates."""
     if not summary or "error" in summary:
@@ -203,6 +205,8 @@ def _save_analysis_history(
         ai_model=summary.get("ai_model"),
         sources_used=_json.dumps(sources_used) if sources_used else None,
         scores=_json.dumps(scores) if scores else None,
+        latency_ms=latency_ms,
+        total_latency_ms=total_latency_ms,
         analyzed_at=now,
     )
     db.add(entry)
@@ -237,29 +241,139 @@ def _history_row(r: AnalysisHistory) -> dict:
     }
 
 
-def _enrich_holdings(items: list[PortfolioItem], prices: list[dict], cached: dict) -> list[dict]:
+THAI_SECTOR_MAP: dict[str, str] = {
+    # Financial
+    "KBANK.BK": "Financial", "SCB.BK": "Financial", "BBL.BK": "Financial",
+    "KTB.BK": "Financial", "BAY.BK": "Financial", "TISCO.BK": "Financial",
+    "KKP.BK": "Financial", "TCAP.BK": "Financial", "SAWAD.BK": "Financial",
+    "TIDLOR.BK": "Financial", "AEONTS.BK": "Financial", "MBK.BK": "Financial",
+    "ASK.BK": "Financial", "JMT.BK": "Financial", "MUTHOOT.BK": "Financial",
+    # Energy
+    "PTT.BK": "Energy", "PTTEP.BK": "Energy", "PTTGC.BK": "Energy",
+    "TOP.BK": "Energy", "IRPC.BK": "Energy", "BCP.BK": "Energy",
+    "SPRC.BK": "Energy", "ESSO.BK": "Energy",
+    # Utilities
+    "BGRIM.BK": "Utilities", "EA.BK": "Utilities", "GPSC.BK": "Utilities",
+    "RATCH.BK": "Utilities", "EGCO.BK": "Utilities", "GULF.BK": "Utilities",
+    "BANPU.BK": "Utilities", "SPCG.BK": "Utilities",
+    # Technology
+    "ADVANC.BK": "Technology", "TRUE.BK": "Technology", "INTUCH.BK": "Technology",
+    "JASIF.BK": "Technology", "DIF.BK": "Technology", "INTOUCH.BK": "Technology",
+    # Industrial/Transport
+    "AOT.BK": "Industrial", "AAV.BK": "Industrial", "BEM.BK": "Industrial",
+    "BTS.BK": "Industrial", "THAI.BK": "Industrial", "STEC.BK": "Industrial",
+    "ITD.BK": "Industrial", "CK.BK": "Industrial", "WHAUP.BK": "Industrial",
+    # Consumer
+    "CPALL.BK": "Consumer", "BJC.BK": "Consumer", "HMPRO.BK": "Consumer",
+    "MAKRO.BK": "Consumer", "CRC.BK": "Consumer", "MINT.BK": "Consumer",
+    "ERW.BK": "Consumer", "CENTEL.BK": "Consumer", "OSP.BK": "Consumer",
+    "BEAUTY.BK": "Consumer", "OISHI.BK": "Consumer",
+    # Healthcare
+    "BDMS.BK": "Healthcare", "BH.BK": "Healthcare", "BCH.BK": "Healthcare",
+    "PR9.BK": "Healthcare", "VIBHA.BK": "Healthcare", "CHG.BK": "Healthcare",
+    "SVH.BK": "Healthcare", "EKH.BK": "Healthcare",
+    # Real Estate
+    "LH.BK": "Real Estate", "AP.BK": "Real Estate", "SPALI.BK": "Real Estate",
+    "CPN.BK": "Real Estate", "SIRI.BK": "Real Estate", "SC.BK": "Real Estate",
+    "ORI.BK": "Real Estate", "QH.BK": "Real Estate", "LALIN.BK": "Real Estate",
+}
+
+
+def _get_sector(symbol: str, fa_cache: dict | None) -> str:
+    """Resolve sector with three-way branching:
+    1. DR stocks (e.g. AAPL01.BK) — FA cache has base-company data fetched via normalize_dr_symbol
+    2. Regular Thai stocks (.BK)   — THAI_SECTOR_MAP first, FA cache as fallback
+    3. US stocks                   — FA cache (yfinance sector field)
+    """
+    def _from_cache() -> str | None:
+        if fa_cache:
+            s = fa_cache.get("sector")
+            if s and s not in ("N/A", "Other", ""):
+                return s
+        return None
+
+    base = normalize_dr_symbol(symbol)
+    if base != symbol:
+        # DR stock: fundamental data comes from base US ticker, so FA cache already has US sector
+        return _from_cache() or "Other"
+
+    if symbol.endswith(".BK"):
+        # Regular Thai stock: static map is more reliable than yfinance .BK sector data
+        mapped = THAI_SECTOR_MAP.get(symbol)
+        if mapped:
+            return mapped
+        return _from_cache() or "Other"
+
+    # US stock: use FA cache (yfinance sector)
+    return _from_cache() or "Other"
+
+
+async def _fetch_sector(symbol: str) -> str:
+    """Resolve sector at add-time. THAI_SECTOR_MAP is free; yfinance is used for DR/US."""
+    sector = _get_sector(symbol, None)   # free for THAI_SECTOR_MAP entries
+    if sector != "Other":
+        return sector
+    try:
+        normalized = normalize_dr_symbol(symbol)
+        info = await asyncio.to_thread(fetch_info, normalized)
+        return _get_sector(symbol, info)
+    except Exception:
+        return "Other"
+
+
+def _risk_level(ta_score: int | None, fa_score: int | None) -> str | None:
+    if ta_score is None and fa_score is None:
+        return None
+    weighted = round(0.4 * (ta_score or 0) + 0.6 * (fa_score or 0), 1)
+    if weighted >= 3:   return "Low"
+    if weighted >= 0:   return "Medium"
+    if weighted >= -2:  return "High"
+    return "Critical"
+
+
+def _enrich_holdings(
+    items: list[PortfolioItem],
+    prices: list[dict],
+    cached: dict,
+    fa_map: dict | None = None,
+) -> list[dict]:
+    """sector is read directly from the DB column on each PortfolioItem."""
     def _c(sym: str, attr: str, default=None):
         return getattr(cached[sym], attr, default) if sym in cached else default
 
-    return [
-        {
+    result = []
+    for item, price in zip(items, prices):
+        sym = item.symbol
+        ta_score = _c(sym, "ta_score")
+        fa_score = _c(sym, "fa_score")
+        current_price = price.get("current_price")
+        target_price = (fa_map or {}).get(sym)
+        upside_pct: float | None = (
+            round((target_price - current_price) / current_price * 100, 1)
+            if target_price and current_price and current_price > 0
+            else None
+        )
+        result.append({
             "id": item.id,
             "portfolio_id": item.portfolio_id,
-            "symbol": item.symbol,
+            "symbol": sym,
             "shares": item.shares,
             "avg_cost": item.avg_cost,
             **price,
-            "latest_signal":    _c(item.symbol, "signal"),
-            "signal_confidence": _c(item.symbol, "confidence"),
-            "analyzed_at": (_c(item.symbol, "analyzed_at").isoformat() + "Z") if _c(item.symbol, "analyzed_at") else None,
-            "reasoning":  _c(item.symbol, "reasoning"),
-            "risks":      _c(item.symbol, "risks"),
-            "ta_score":   _c(item.symbol, "ta_score"),
-            "fa_score":   _c(item.symbol, "fa_score"),
+            "latest_signal":    _c(sym, "signal"),
+            "signal_confidence": _c(sym, "confidence"),
+            "analyzed_at": (_c(sym, "analyzed_at").isoformat() + "Z") if _c(sym, "analyzed_at") else None,
+            "reasoning":  _c(sym, "reasoning"),
+            "risks":      _c(sym, "risks"),
+            "ta_score":   ta_score,
+            "fa_score":   fa_score,
             "allow_swap": item.allow_swap,
-        }
-        for item, price in zip(items, prices)
-    ]
+            "target_price": target_price,
+            "upside_pct":   upside_pct,
+            "risk_level":   _risk_level(ta_score, fa_score),
+            "sector":       item.sector or "Other",
+        })
+    return result
 
 
 # ─── Portfolios ───────────────────────────────────────────────────────────────
@@ -317,7 +431,14 @@ async def list_holdings(portfolio_id: int, db: Session = Depends(get_db)) -> lis
         c.symbol: c
         for c in db.query(AnalysisCache).filter(AnalysisCache.symbol.in_(symbols)).all()
     }
-    return _enrich_holdings(items, prices, cached)
+    # Read FA AgentCache only for target_price; sector comes from DB column
+    fa_map: dict = {}
+    for row in db.query(AgentCache).filter(AgentCache.symbol.in_(symbols), AgentCache.agent == "fundamental").all():
+        try:
+            fa_map[row.symbol] = _json.loads(row.result_json).get("target_price")
+        except Exception:
+            pass
+    return _enrich_holdings(items, prices, cached, fa_map)
 
 
 @app.get("/portfolios/{portfolio_id}/prices")
@@ -328,6 +449,52 @@ async def get_portfolio_prices(portfolio_id: int, db: Session = Depends(get_db))
         return []
     prices = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, item.symbol) for item in items])
     return [{"symbol": item.symbol, **price} for item, price in zip(items, prices)]
+
+
+@app.get("/portfolios/{portfolio_id}/sector-breakdown")
+async def get_sector_breakdown(portfolio_id: int, db: Session = Depends(get_db)) -> dict:
+    """Return sector allocation for the portfolio with limit status for each sector."""
+    items = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == portfolio_id).all()
+    if not items:
+        return {"sectors": [], "total_value": 0}
+
+    # Prices (best-effort; fallback to avg_cost)
+    prices_list = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, i.symbol) for i in items])
+    price_map = {item.symbol: p for item, p in zip(items, prices_list)}
+
+    # Read sector directly from DB column — same source as the portfolio table
+    sector_map: dict[str, str] = {item.symbol: item.sector or "Other" for item in items}
+
+    sector_limits = _get_sector_limits(db)
+    default_limit: int = int(sector_limits.get("default") or _get_portfolio_settings(db).get("max_sector_pct", 40))
+
+    agg: dict[str, dict] = {}
+    for item in items:
+        sym = item.symbol
+        p = price_map.get(sym, {})
+        price = p.get("current_price") or item.avg_cost
+        mv = item.shares * price
+        sector = sector_map.get(sym, "Other")
+        if sector not in agg:
+            agg[sector] = {"value": 0.0, "stocks": []}
+        agg[sector]["value"] += mv
+        agg[sector]["stocks"].append(sym)
+
+    total_value = sum(d["value"] for d in agg.values())
+    result = []
+    for sector, data in sorted(agg.items(), key=lambda x: -x[1]["value"]):
+        weight = round(data["value"] / total_value * 100, 1) if total_value > 0 else 0.0
+        limit = int(sector_limits.get(sector) or default_limit)
+        status = "EXCEEDS" if weight > limit else "WARNING" if weight > limit * 0.8 else "OK"
+        result.append({
+            "sector": sector,
+            "value": round(data["value"], 2),
+            "weight_pct": weight,
+            "stocks": data["stocks"],
+            "limit_pct": limit,
+            "status": status,
+        })
+    return {"sectors": result, "total_value": round(total_value, 2)}
 
 
 @app.post("/portfolios/{portfolio_id}/holdings", status_code=201)
@@ -343,7 +510,12 @@ async def add_holding(portfolio_id: int, body: HoldingCreate, db: Session = Depe
     db.add(item)
     db.commit()
     db.refresh(item)
-    price = await asyncio.to_thread(fetch_price_info, symbol)
+    sector, price = await asyncio.gather(
+        _fetch_sector(symbol),
+        asyncio.to_thread(fetch_price_info, symbol),
+    )
+    item.sector = sector
+    db.commit()
     return {
         "id": item.id,
         "portfolio_id": item.portfolio_id,
@@ -351,6 +523,7 @@ async def add_holding(portfolio_id: int, body: HoldingCreate, db: Session = Depe
         "shares": item.shares,
         "avg_cost": item.avg_cost,
         **price,
+        "sector": item.sector,
         "latest_signal": None,
         "signal_confidence": None,
         "analyzed_at": None,
@@ -396,20 +569,33 @@ class WatchlistCreate(BaseModel):
     symbol: str
 
 
-def _watchlist_row(item: Watchlist, cached: dict) -> dict:
+def _watchlist_row(item: Watchlist, cached: dict, target_price: float | None = None, price_info: dict | None = None) -> dict:
     def _c(attr, default=None):
         return getattr(cached[item.symbol], attr, default) if item.symbol in cached else default
 
+    p = price_info or {}
+    current_price = p.get("current_price")
+    ta_score = _c("ta_score")
+    fa_score = _c("fa_score")
+    upside_pct: float | None = (
+        round((target_price - current_price) / current_price * 100, 1)
+        if target_price and current_price and current_price > 0
+        else None
+    )
     return {
         "id": item.id,
         "symbol": item.symbol,
-        "latest_signal":    _c("signal"),
+        "latest_signal":     _c("signal"),
         "signal_confidence": _c("confidence"),
         "analyzed_at": (_c("analyzed_at").isoformat() + "Z") if _c("analyzed_at") else None,
         "reasoning":  _c("reasoning"),
         "risks":      _c("risks"),
-        "ta_score":   _c("ta_score"),
-        "fa_score":   _c("fa_score"),
+        "ta_score":   ta_score,
+        "fa_score":   fa_score,
+        "target_price": target_price,
+        "upside_pct":   upside_pct,
+        "risk_level":   _risk_level(ta_score, fa_score),
+        "sector":       item.sector or "Other",
     }
 
 
@@ -423,7 +609,20 @@ async def list_watchlist(db: Session = Depends(get_db)) -> list[dict]:
         c.symbol: c
         for c in db.query(AnalysisCache).filter(AnalysisCache.symbol.in_(symbols)).all()
     }
-    return [_watchlist_row(item, cached) for item in items]
+    # Read FA AgentCache only for target_price; sector comes from DB column
+    fa_map: dict[str, float | None] = {}
+    for row in db.query(AgentCache).filter(AgentCache.symbol.in_(symbols), AgentCache.agent == "fundamental").all():
+        try:
+            fa_map[row.symbol] = _json.loads(row.result_json).get("target_price")
+        except Exception:
+            pass
+    # Current prices via fast_info (lightweight)
+    prices_list = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, i.symbol) for i in items])
+    price_map = {items[j].symbol: p for j, p in enumerate(prices_list)}
+    return [
+        _watchlist_row(item, cached, fa_map.get(item.symbol), price_map.get(item.symbol))
+        for item in items
+    ]
 
 
 @app.post("/watchlist", status_code=201)
@@ -436,6 +635,8 @@ async def add_watchlist(body: WatchlistCreate, db: Session = Depends(get_db)) ->
     db.add(item)
     db.commit()
     db.refresh(item)
+    item.sector = await _fetch_sector(symbol)
+    db.commit()
     cached = {
         c.symbol: c
         for c in db.query(AnalysisCache).filter(AnalysisCache.symbol == symbol).all()
@@ -518,6 +719,14 @@ async def _fetch_agents(
             elif name == "fundamental": fund = result
             elif name == "news":      news_r = result
 
+    # Patch FA cache when sector is missing (cache hit from before sector field was added).
+    # THAI_SECTOR_MAP lookup is free; DR stocks get "Other" here and need a full re-analysis.
+    if fund and "error" not in fund and not fund.get("sector"):
+        resolved_sector = _get_sector(symbol, None)
+        if resolved_sector != "Other":
+            fund["sector"] = resolved_sector
+            _set_agent_cache(db, symbol, "fundamental", fund)
+
     return tech, fund, news_r
 
 
@@ -530,12 +739,15 @@ async def _run_full_analysis_async(
 ) -> dict:
     if sources is None:
         sources = dict(_DEFAULT_SOURCES)
+    import time as _time
+    t0 = _time.perf_counter()
     tech, fund, news_r = await _fetch_agents(db, symbol, sources)
     su = {"ta": bool(sources.get("use_ta", True)), "fa": bool(sources.get("use_fa", True)), "news": bool(sources.get("use_news", True))}
     # Compute deterministic scores before AI call so they can anchor the prompt
     scores = compute_scores(tech, fund, news_r)
     summary = await asyncio.to_thread(analyze_summary, symbol, tech, fund, news_r, provider, model, scores)
-    return {"symbol": symbol, "technical": tech, "fundamental": fund, "news": news_r, "summary": summary, "sources_used": su, "scores": scores}
+    total_latency_ms = round((_time.perf_counter() - t0) * 1000)
+    return {"symbol": symbol, "technical": tech, "fundamental": fund, "news": news_r, "summary": summary, "sources_used": su, "scores": scores, "total_latency_ms": total_latency_ms}
 
 
 @app.get("/stocks/{symbol}")
@@ -584,10 +796,15 @@ async def analyze_symbol(symbol: str, db: Session = Depends(get_db)) -> dict:
     fa_ai   = fund  if src.get("use_fa",   True) else None
     news_ai = news_r if src.get("use_news", True) else None
     su = {"ta": bool(src.get("use_ta", True)), "fa": bool(src.get("use_fa", True)), "news": bool(src.get("use_news", True))}
+    import time as _time
+    t0 = _time.perf_counter()
     sc = compute_scores(tech, fund, news_r)
     summary = await asyncio.to_thread(analyze_summary, resolved, ta_ai, fa_ai, news_ai, s["analyze_provider"], s["analyze_model"], sc)
+    total_latency_ms = round((_time.perf_counter() - t0) * 1000)
     _save_analysis_cache(db, resolved, summary, tech, fund, su)
-    _save_analysis_history(db, resolved, summary, tech, fund, su, sc)
+    _save_analysis_history(db, resolved, summary, tech, fund, su, sc,
+                           latency_ms=summary.get("latency_ms") if isinstance(summary, dict) else None,
+                           total_latency_ms=total_latency_ms)
     if isinstance(summary, dict) and "error" not in summary:
         summary = {**summary, "analyzed_at": datetime.utcnow().isoformat() + "Z", "from_cache": False}
     return {"symbol": resolved, "technical": tech, "fundamental": fund, "news": news_r, "summary": summary, "sources_used": su, "scores": sc}
@@ -636,10 +853,13 @@ async def analyze_portfolio_holdings(portfolio_id: int, db: Session = Depends(ge
             result = await _run_full_analysis_async(db, item.symbol, s["analyze_provider"], s["analyze_model"], src)
             su = result.get("sources_used")
             sc = result.get("scores")
-            _save_analysis_cache(db, item.symbol, result.get("summary", {}), result.get("technical"), result.get("fundamental"), su)
-            _save_analysis_history(db, item.symbol, result.get("summary", {}), result.get("technical"), result.get("fundamental"), su, sc)
-            if isinstance(result.get("summary"), dict) and "error" not in result["summary"]:
-                result["summary"] = {**result["summary"], "analyzed_at": datetime.utcnow().isoformat() + "Z", "from_cache": False}
+            _sm = result.get("summary", {})
+            _save_analysis_cache(db, item.symbol, _sm, result.get("technical"), result.get("fundamental"), su)
+            _save_analysis_history(db, item.symbol, _sm, result.get("technical"), result.get("fundamental"), su, sc,
+                                   latency_ms=_sm.get("latency_ms") if isinstance(_sm, dict) else None,
+                                   total_latency_ms=result.get("total_latency_ms"))
+            if isinstance(_sm, dict) and "error" not in _sm:
+                result["summary"] = {**_sm, "analyzed_at": datetime.utcnow().isoformat() + "Z", "from_cache": False}
             results.append(result)
             await asyncio.sleep(0.5)
         else:
@@ -662,10 +882,13 @@ async def analyze_watchlist_all(db: Session = Depends(get_db)) -> list[dict]:
             result = await _run_full_analysis_async(db, item.symbol, s["analyze_provider"], s["analyze_model"], src)
             su = result.get("sources_used")
             sc = result.get("scores")
-            _save_analysis_cache(db, item.symbol, result.get("summary", {}), result.get("technical"), result.get("fundamental"), su)
-            _save_analysis_history(db, item.symbol, result.get("summary", {}), result.get("technical"), result.get("fundamental"), su, sc)
-            if isinstance(result.get("summary"), dict) and "error" not in result["summary"]:
-                result["summary"] = {**result["summary"], "analyzed_at": datetime.utcnow().isoformat() + "Z", "from_cache": False}
+            _sm = result.get("summary", {})
+            _save_analysis_cache(db, item.symbol, _sm, result.get("technical"), result.get("fundamental"), su)
+            _save_analysis_history(db, item.symbol, _sm, result.get("technical"), result.get("fundamental"), su, sc,
+                                   latency_ms=_sm.get("latency_ms") if isinstance(_sm, dict) else None,
+                                   total_latency_ms=result.get("total_latency_ms"))
+            if isinstance(_sm, dict) and "error" not in _sm:
+                result["summary"] = {**_sm, "analyzed_at": datetime.utcnow().isoformat() + "Z", "from_cache": False}
             results.append(result)
             await asyncio.sleep(0.5)
         else:
@@ -689,10 +912,13 @@ async def _analyze_symbol_and_save(db: Session, sym: str, s: dict, src: dict) ->
     result = await _run_full_analysis_async(db, sym, s["analyze_provider"], s["analyze_model"], src)
     su = result.get("sources_used")
     sc = result.get("scores")
-    _save_analysis_cache(db, sym, result.get("summary", {}), result.get("technical"), result.get("fundamental"), su)
-    _save_analysis_history(db, sym, result.get("summary", {}), result.get("technical"), result.get("fundamental"), su, sc)
-    if isinstance(result.get("summary"), dict) and "error" not in result["summary"]:
-        result["summary"] = {**result["summary"], "analyzed_at": datetime.utcnow().isoformat() + "Z", "from_cache": False}
+    _sm = result.get("summary", {})
+    _save_analysis_cache(db, sym, _sm, result.get("technical"), result.get("fundamental"), su)
+    _save_analysis_history(db, sym, _sm, result.get("technical"), result.get("fundamental"), su, sc,
+                           latency_ms=_sm.get("latency_ms") if isinstance(_sm, dict) else None,
+                           total_latency_ms=result.get("total_latency_ms"))
+    if isinstance(_sm, dict) and "error" not in _sm:
+        result["summary"] = {**_sm, "analyzed_at": datetime.utcnow().isoformat() + "Z", "from_cache": False}
     return result
 
 
@@ -859,7 +1085,7 @@ Return JSON only. No markdown fences.
 }}"""
 
     try:
-        text = await asyncio.to_thread(
+        ai_result = await asyncio.to_thread(
             call_ai,
             prompt,
             s["analyze_provider"],
@@ -868,7 +1094,7 @@ Return JSON only. No markdown fences.
             "analyze",
             None,
         )
-        parsed = safe_parse_json(text)
+        parsed = safe_parse_json(ai_result["text"])
         return {"symbol": resolved, **parsed}
     except Exception as exc:
         return {"symbol": resolved, "error": str(exc)}
@@ -890,7 +1116,9 @@ async def analyze_second_opinion(
     summary = result.get("summary", {})
     su = result.get("sources_used")
     sc = result.get("scores")
-    entry = _save_analysis_history(db, resolved, summary, result.get("technical"), result.get("fundamental"), su, sc)
+    entry = _save_analysis_history(db, resolved, summary, result.get("technical"), result.get("fundamental"), su, sc,
+                                   latency_ms=summary.get("latency_ms") if isinstance(summary, dict) else None,
+                                   total_latency_ms=result.get("total_latency_ms"))
     if isinstance(summary, dict) and "error" not in summary:
         result["summary"] = {
             **summary,
@@ -988,6 +1216,7 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
             "current_price": current_price,
             "target_price":  target_price,
             "upside_pct":    upside_pct,
+            "sector":        fa.get("sector") or "Other",
         }
 
     scores_list = await asyncio.gather(*[_get_scores(sym) for sym in all_symbols])
@@ -1071,6 +1300,10 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         result_json=_json.dumps(result),
         ai_provider=result.get("ai_provider"),
         ai_model=result.get("ai_model"),
+        layer1_latency_ms=result.get("layer1_latency_ms"),
+        layer2_latency_ms=result.get("layer2_latency_ms"),
+        layer3_latency_ms=result.get("layer3_latency_ms"),
+        total_latency_ms=result.get("total_latency_ms"),
     )
     db.add(entry)
     db.commit()
@@ -1244,6 +1477,205 @@ class AISettingsBody(BaseModel):
     optimize_model: str | None = None
 
 
+@app.post("/admin/backfill-sectors")
+async def backfill_sectors(db: Session = Depends(get_db)) -> dict:
+    """Backfill sector column for existing watchlist and portfolio items that are missing it.
+    Fetches yfinance info for DR/US stocks; THAI_SECTOR_MAP is used instantly at no cost.
+    A 0.3 s pause is added between live yfinance calls to respect rate limits.
+    """
+    import asyncio as _asyncio
+
+    wl_items  = db.query(Watchlist).filter(
+        (Watchlist.sector == None) | (Watchlist.sector == "Other")  # noqa: E711
+    ).all()
+    pi_items  = db.query(PortfolioItem).filter(
+        (PortfolioItem.sector == None) | (PortfolioItem.sector == "Other")  # noqa: E711
+    ).all()
+
+    wl_updated = 0
+    pi_updated = 0
+    failed: list[str] = []
+    last_was_live = False  # track whether the previous symbol needed a yfinance call
+
+    async def _resolve(symbol: str) -> str:
+        nonlocal last_was_live
+        # Free resolution — no yfinance
+        sector = _get_sector(symbol, None)
+        if sector != "Other":
+            last_was_live = False
+            return sector
+        # Live yfinance call — throttle to avoid rate limits
+        if last_was_live:
+            await _asyncio.sleep(0.3)
+        try:
+            normalized = normalize_dr_symbol(symbol)
+            info = await _asyncio.to_thread(fetch_info, normalized)
+            sector = _get_sector(symbol, info)
+            last_was_live = True
+        except Exception:
+            sector = "Other"
+            last_was_live = False
+        return sector
+
+    for item in wl_items:
+        try:
+            item.sector = await _resolve(item.symbol)
+            wl_updated += 1
+        except Exception:
+            failed.append(item.symbol)
+
+    for item in pi_items:
+        try:
+            item.sector = await _resolve(item.symbol)
+            pi_updated += 1
+        except Exception:
+            failed.append(item.symbol)
+
+    if wl_updated or pi_updated:
+        db.commit()
+
+    return {
+        "watchlist_updated": wl_updated,
+        "portfolio_updated": pi_updated,
+        "failed": failed,
+    }
+
+
+@app.post("/admin/fix-sectors")
+async def fix_sectors(db: Session = Depends(get_db)) -> dict:
+    """One-time migration: patch FA agent cache entries with the correct sector field
+    so that _get_sector() can use it for DR and US stocks without a live yfinance call.
+
+    For Thai SET stocks in THAI_SECTOR_MAP the sector is always resolved from the map —
+    no cache patch needed, but we still report the resolved sector in the response.
+    For DR stocks (AAPL01.BK) we resolve via normalize_dr_symbol and update the cached JSON.
+    """
+    portfolio_syms = {i.symbol for i in db.query(PortfolioItem).all()}
+    watchlist_syms = {i.symbol for i in db.query(Watchlist).all()}
+    all_symbols = sorted(portfolio_syms | watchlist_syms)
+
+    # Load all existing FA cache entries in one query
+    fa_rows: dict[str, AgentCache] = {
+        row.symbol: row
+        for row in db.query(AgentCache).filter(
+            AgentCache.symbol.in_(all_symbols), AgentCache.agent == "fundamental"
+        ).all()
+    }
+
+    results = []
+    updated = 0
+
+    for sym in all_symbols:
+        # Cheap resolution first (THAI_SECTOR_MAP + DR normalization — no yfinance call)
+        fa_data: dict | None = None
+        row = fa_rows.get(sym)
+        if row:
+            try:
+                fa_data = _json.loads(row.result_json)
+            except Exception:
+                fa_data = None
+
+        sector = _get_sector(sym, fa_data)
+
+        # Patch FA cache JSON if sector is resolved but not stored there yet
+        if row and fa_data is not None:
+            stored = fa_data.get("sector")
+            if sector != "Other" and stored != sector:
+                fa_data["sector"] = sector
+                row.result_json = _json.dumps(fa_data)
+                updated += 1
+
+        results.append({"symbol": sym, "sector": sector, "source": "FA_cache" if fa_data else "map_or_default"})
+
+    if updated:
+        db.commit()
+
+    return {"updated": updated, "total": len(all_symbols), "results": results}
+
+
+@app.get("/stats/latency")
+async def get_latency_stats(db: Session = Depends(get_db)) -> dict:
+    """Aggregated AI call latency grouped by provider+model (analysis) and provider+model+layer (optimizer)."""
+    rows = db.query(UserUsage).all()
+
+    def _p95(vals: list[int]) -> int:
+        if not vals:
+            return 0
+        sv = sorted(vals)
+        return sv[min(int(len(sv) * 0.95), len(sv) - 1)]
+
+    analysis_groups: dict[tuple, list] = {}
+    analysis_last: dict[tuple, str] = {}
+    opt_groups: dict[tuple, list] = {}
+
+    for row in rows:
+        if row.latency_ms is None:
+            continue
+        key2 = (row.provider, row.model)
+        if row.operation == "analyze":
+            analysis_groups.setdefault(key2, []).append(row.latency_ms)
+            if row.created_at:
+                analysis_last[key2] = row.created_at.isoformat() + "Z"
+        elif row.operation == "optimize":
+            key3 = (row.provider, row.model, row.layer or "")
+            opt_groups.setdefault(key3, []).append(row.latency_ms)
+
+    analysis_stats = [
+        {
+            "provider": k[0], "model": k[1],
+            "avg_latency_ms": round(sum(v) / len(v)),
+            "min_latency_ms": min(v),
+            "max_latency_ms": max(v),
+            "p95_latency_ms": _p95(v),
+            "call_count": len(v),
+            "last_used": analysis_last.get(k),
+        }
+        for k, v in sorted(analysis_groups.items(), key=lambda x: -len(x[1]))
+    ]
+
+    opt_stats = [
+        {
+            "provider": k[0], "model": k[1], "layer": k[2],
+            "avg_latency_ms": round(sum(v) / len(v)),
+            "call_count": len(v),
+        }
+        for k, v in sorted(opt_groups.items(), key=lambda x: x[0][2])
+    ]
+
+    return {"analysis": analysis_stats, "optimizer": opt_stats}
+
+
+@app.get("/stats/cost-estimate")
+async def get_cost_estimate(db: Session = Depends(get_db)) -> dict:
+    """Token usage and cost estimate grouped by provider+model from UserUsage records."""
+    rows = db.query(UserUsage).all()
+    by_model: dict[str, dict] = {}
+    for row in rows:
+        key = f"{row.provider}/{row.model}"
+        if key not in by_model:
+            by_model[key] = {
+                "model": row.model,
+                "provider": row.provider,
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+                "estimated_cost_usd": 0.0,
+                "call_count": 0,
+            }
+        by_model[key]["total_input_tokens"] += row.input_tokens
+        by_model[key]["total_output_tokens"] += row.output_tokens
+        by_model[key]["estimated_cost_usd"] += row.total_cost_usd
+        by_model[key]["call_count"] += 1
+
+    result_list = sorted(by_model.values(), key=lambda x: -x["estimated_cost_usd"])
+    for item in result_list:
+        item["estimated_cost_usd"] = round(item["estimated_cost_usd"], 6)
+
+    return {
+        "by_model": result_list,
+        "total_estimated_usd": round(sum(r["estimated_cost_usd"] for r in result_list), 6),
+    }
+
+
 @app.get("/settings/ai-models")
 async def get_ai_settings_endpoint(db: Session = Depends(get_db)) -> dict:
     return _get_ai_settings(db)
@@ -1324,7 +1756,7 @@ async def get_model_cost_report(
         .filter(UserUsage.operation == "analyze")
         .filter(UserUsage.created_at >= start, UserUsage.created_at < end)
         .group_by(func.date(UserUsage.created_at), UserUsage.provider, UserUsage.model)
-        .order_by(func.date(UserUsage.created_at).asc(), UserUsage.total_cost_usd.desc())
+        .order_by(func.date(UserUsage.created_at).asc(), func.sum(UserUsage.total_cost_usd).desc())
         .all()
     )
 
@@ -1358,7 +1790,7 @@ async def get_model_cost_report(
         .filter(UserUsage.operation == "optimize")
         .filter(UserUsage.created_at >= start, UserUsage.created_at < end)
         .group_by(func.date(UserUsage.created_at), UserUsage.provider, UserUsage.model, UserUsage.layer)
-        .order_by(func.date(UserUsage.created_at).asc(), UserUsage.total_cost_usd.desc())
+        .order_by(func.date(UserUsage.created_at).asc(), func.sum(UserUsage.total_cost_usd).desc())
         .all()
     )
 

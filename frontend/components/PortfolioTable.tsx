@@ -12,7 +12,53 @@ import {
   type Column,
 } from "@tanstack/react-table";
 import SignalBadge from "./SignalBadge";
-import type { PortfolioItem } from "@/lib/api";
+import type { PortfolioItem, RiskLevel } from "@/lib/api";
+import { sectorColor } from "@/lib/sectors";
+
+function SectorBadge({ sector }: { sector?: string | null }) {
+  if (!sector) return <span className="text-gray-300 text-xs">—</span>;
+  const color = sectorColor(sector);
+  return (
+    <span
+      className="inline-block text-xs font-semibold px-1.5 py-0.5 rounded whitespace-nowrap"
+      style={{ color, backgroundColor: `${color}20`, border: `1px solid ${color}60` }}
+    >
+      {sector}
+    </span>
+  );
+}
+
+const RISK_COLOR: Record<RiskLevel, string> = {
+  Low:      "#3B6D11",
+  Medium:   "#BA7517",
+  High:     "#A32D2D",
+  Critical: "#501313",
+};
+
+function UpsideCell({ upside, signal }: { upside: number | null; signal: PortfolioItem["latest_signal"] }) {
+  if (upside == null) return <span className="text-gray-400 text-xs">N/A</span>;
+  const warn = upside < 0 && (signal === "HOLD" || signal === "REDUCE");
+  const color = upside > 0 ? "text-green-600" : "text-red-500";
+  return (
+    <span className={`font-medium text-sm ${color}`}>
+      {warn && <span title="Negative upside on held position" className="mr-0.5">⚠</span>}
+      {upside > 0 ? "+" : ""}{upside.toFixed(1)}%
+    </span>
+  );
+}
+
+function RiskBadge({ level }: { level: RiskLevel | null }) {
+  if (!level) return <span className="text-gray-300 text-xs">—</span>;
+  const color = RISK_COLOR[level];
+  return (
+    <span
+      className="inline-block text-xs font-bold px-1.5 py-0.5 rounded border"
+      style={{ color, borderColor: color, backgroundColor: `${color}18` }}
+    >
+      {level}
+    </span>
+  );
+}
 
 const TZ = "Asia/Bangkok";
 
@@ -142,6 +188,11 @@ export default function PortfolioTable({
           );
         },
       }),
+      columnHelper.accessor("sector", {
+        header: "Sector",
+        enableSorting: false,
+        cell: ({ getValue }) => <SectorBadge sector={getValue()} />,
+      }),
       columnHelper.accessor("shares", { header: "Shares", sortingFn: "basic" }),
       columnHelper.accessor("avg_cost", {
         header: "Avg Cost", sortingFn: "basic",
@@ -207,6 +258,16 @@ export default function PortfolioTable({
           const v = getValue();
           return v ? <SignalBadge signal={v} /> : <span className="text-gray-400">—</span>;
         },
+      }),
+      columnHelper.accessor("upside_pct", {
+        header: "Upside", sortingFn: "basic",
+        cell: ({ getValue, row }) => (
+          <UpsideCell upside={getValue()} signal={row.original.latest_signal} />
+        ),
+      }),
+      columnHelper.accessor("risk_level", {
+        header: "Risk", sortingFn: "alphanumeric",
+        cell: ({ getValue }) => <RiskBadge level={getValue()} />,
       }),
       columnHelper.accessor("analyzed_at", {
         header: "Analyzed", sortingFn: "datetime",
@@ -307,10 +368,13 @@ export default function PortfolioTable({
           return (
             <div key={sym} className="bg-white border rounded-xl p-4 shadow-sm space-y-2">
               <div className="flex items-center justify-between">
-                <Link href={`/stock/${encodeURIComponent(sym)}`} className="text-base font-bold text-blue-600 hover:underline">
-                  {sym.replace(".BK", "")}
-                  {sym.endsWith(".BK") && <span className="ml-1 text-xs text-gray-400">.BK</span>}
-                </Link>
+                <div className="flex items-center gap-2">
+                  <Link href={`/stock/${encodeURIComponent(sym)}`} className="text-base font-bold text-blue-600 hover:underline">
+                    {sym.replace(".BK", "")}
+                    {sym.endsWith(".BK") && <span className="ml-1 text-xs text-gray-400">.BK</span>}
+                  </Link>
+                  <SectorBadge sector={item.sector} />
+                </div>
                 {item.latest_signal
                   ? <SignalBadge signal={item.latest_signal} />
                   : <span className="text-xs text-gray-400">No signal</span>}
@@ -330,6 +394,14 @@ export default function PortfolioTable({
                 <div className="flex flex-col">
                   <span className="text-xs text-gray-400">%P/L</span>
                   <PLPctCell value={plPct} />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-xs text-gray-400">Upside</span>
+                  <UpsideCell upside={item.upside_pct} signal={item.latest_signal} />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-xs text-gray-400">Risk</span>
+                  <RiskBadge level={item.risk_level} />
                 </div>
               </div>
               <div className="flex items-center gap-4 text-xs text-gray-500">

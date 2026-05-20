@@ -28,9 +28,23 @@
   },
   "models": [
     {
+      "id": "claude-haiku-4-5-20251001",
+      "apiModel": "claude-haiku-4-5-20251001",
+      "label": "Claude 4.5 Haiku",
+      "provider": "anthropic",      
+        "memo":"สายประหยัด: ทำงานทั่วไป/อ่านงบ: เหมาะทำ Analyst : Second Opinion",
+      "cost": {
+        "token_1m": {
+          "input": 1,
+          "output": 5,
+          "caching": 0.1
+        }
+      }
+    },
+    {
       "id": "claude-sonnet-4-6",
       "apiModel": "claude-sonnet-4-6",
-      "label": "Claude 4.6 sonnet",
+      "label": "Claude 4.6 Sonnet",
       "provider": "anthropic",      
         "memo":"สมองหลัก: คุมฟีเจอร์ Optimizer เหมาะทำ Strategist",
       "cost": {
@@ -42,23 +56,10 @@
       }      
     },  
     {
-      "id": "gemini-3.1-pro-preview",
-      "label": "Gemini 3.1 Pro Preview",
+      "id": "gemini-3.1-flash-lite",
+      "label": "Gemini 3.1 Flash Lite",
       "provider": "gemini",
-      "memo":"คู่หูจัดการportfolio: Context ใหญ่จุใจ เหมาะทำ Challenger",
-      "cost": {
-        "token_1m": {
-          "input": 2,
-          "output": 12,
-          "caching": 0.2
-        }
-      }
-    },
-    {
-      "id": "gemini-3.1-flash-lite-preview",
-      "label": "Gemini 3 Flash Lite",
-      "provider": "gemini",
-      "memo":"สายประหยัด/อ่านงบ: Context ใหญ่จุใจ ราคาถูกสุดๆ เหมาะทำ Second Opinion",
+      "memo":"สายประหยัด/อ่านงบ: Context ใหญ่จุใจ ราคาถูกสุดๆ เหมาะทำ Analyst : Second Opinion",
       "cost": {
         "token_1m": {
           "input": 0.25,
@@ -66,7 +67,20 @@
           "caching": 0.025
         }
       }
-    },      
+    },  
+    {
+      "id": "gemini-3.5-flash",
+      "label": "Gemini 3.5 Flash",
+      "provider": "gemini",
+      "memo":"คู่หูจัดการportfolio: Context ใหญ่จุใจ เหมาะทำ Challenger",
+      "cost": {
+        "token_1m": {
+          "input": 1.5,
+          "output": 9,
+          "caching": 0.2
+        }
+      }
+    },        
     {
       "id": "gpt-4o-mini",
       "label": "GPT-4o Mini",
@@ -81,6 +95,33 @@
       }
     },
     {
+      "id": "gpt-5.2",
+      "label": "GPT-5.2",
+      "apiModel": "gpt-5.2",
+      "provider": "openai",
+      "memo":"คู่หูจัดการportfolio: เหมาะทำ production challenger , daily optimization",
+      "cost": {
+        "token_1m": {
+          "input": 1.75,
+          "output": 14,
+          "caching": 0.175
+        }
+      }
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "label": "DeepSeek-V4-Flash",
+      "provider": "deepseek",
+      "memo":"สายประหยัด: เหมาะทำ Analyst : Second Opinion",
+      "cost": {
+        "token_1m": {
+          "input": 0.14,
+          "output": 0.28,
+          "caching": 0.0028
+        }
+      }
+    },
+    {
       "id": "deepseek-v4-pro",
       "label": "DeepSeek-V4-Pro",
       "provider": "deepseek",
@@ -89,7 +130,7 @@
         "token_1m": {
           "input": 0.435,
           "output": 0.87,
-          "caching": 0.0036
+          "caching": 0.003625
         }
       }
     }

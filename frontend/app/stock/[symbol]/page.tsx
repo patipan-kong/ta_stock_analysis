@@ -593,6 +593,33 @@ export default function StockDetailPage() {
             {fund.fa_summary && (
               <p className="col-span-2 text-xs text-gray-500 mt-1">{fund.fa_summary}</p>
             )}
+
+            {/* ── Analyst target ── */}
+            <div className="col-span-2 border-t pt-3 mt-2 space-y-1">
+              {fund.target_price != null ? (
+                <>
+                  <Row label="Analyst Target" value={fund.target_price.toFixed(2)} />
+                  {fund.upside_pct != null && (
+                    <div className="flex gap-2 text-sm">
+                      <dt className="font-medium text-gray-500 w-32 shrink-0">Expected Upside</dt>
+                      <dd className={`font-semibold ${fund.upside_pct >= 0 ? "text-green-600" : "text-red-500"}`}>
+                        {fund.upside_pct >= 0 ? "+" : ""}{fund.upside_pct.toFixed(1)}%
+                      </dd>
+                    </div>
+                  )}
+                  <Row
+                    label="Source"
+                    value={
+                      fund.analyst_count != null
+                        ? `Analyst consensus (${fund.analyst_count} analyst${fund.analyst_count !== 1 ? "s" : ""})`
+                        : "Analyst consensus"
+                    }
+                  />
+                </>
+              ) : (
+                <p className="text-xs text-gray-400">No analyst coverage available.</p>
+              )}
+            </div>
           </div>
         )}
       </section>

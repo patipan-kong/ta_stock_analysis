@@ -1,4 +1,4 @@
-from services.data_fetcher import fetch_news
+from services.data_fetcher import fetch_news, normalize_dr_symbol
 from typing import TypedDict
 
 
@@ -16,7 +16,8 @@ class NewsResult(TypedDict):
 
 
 def analyze_news(symbol: str) -> NewsResult | dict:
-    news = fetch_news(symbol)
+    yf_symbol = normalize_dr_symbol(symbol)  # DR: AAPL01.BK → AAPL; others unchanged
+    news = fetch_news(yf_symbol)
     return NewsResult(
         symbol=symbol,
         news=news,

@@ -1,7 +1,23 @@
+import re
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timezone
 from typing import Optional
+
+# DR (Depository Receipt) symbols traded on the Thai SET: letters + 2 digits + .BK
+# e.g. AAPL01.BK, AMD08.BK, MSFT12.BK → base US ticker: AAPL, AMD, MSFT
+_DR_RE = re.compile(r'^([A-Z]+)\d{2}\.BK$')
+
+
+def normalize_dr_symbol(symbol: str) -> str:
+    """Strip the DR digit-suffix so yfinance can find the underlying US company.
+
+    AAPL01.BK → 'AAPL'   (DR → base ticker)
+    PTT.BK    → 'PTT.BK' (unchanged — regular Thai stock)
+    AAPL      → 'AAPL'   (unchanged — already a US ticker)
+    """
+    m = _DR_RE.match(symbol)
+    return m.group(1) if m else symbol
 
 
 def resolve_symbol(symbol: str) -> str:
@@ -26,6 +42,8 @@ def fetch_history(symbol: str, period: str = "6mo", interval: str = "1d") -> Opt
 
 
 def fetch_info(symbol: str) -> dict:
+    """Fetch yfinance .info for a symbol.
+    Callers are responsible for normalising DR symbols via normalize_dr_symbol() first."""
     try:
         ticker = yf.Ticker(symbol)
         return ticker.info or {}
@@ -35,28 +53,23 @@ def fetch_info(symbol: str) -> dict:
 
 def fetch_price_info(symbol: str) -> dict:
     try:
-        ticker = yf.Ticker(symbol)
-        fi = ticker.fast_info
+        fi = yf.Ticker(symbol).fast_info
         current_price: float | None = fi.last_price
         prev_close: float | None = fi.previous_close
         change_percent: float | None = None
         if current_price is not None and prev_close and prev_close != 0:
             change_percent = round((current_price - prev_close) / prev_close * 100, 2)
-        try:
-            target_price: float | None = ticker.info.get("targetMeanPrice")
-        except Exception:
-            target_price = None
         return {
             "current_price": round(current_price, 4) if current_price is not None else None,
             "change_percent": change_percent,
             "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "target_price": round(target_price, 2) if target_price is not None else None,
         }
     except Exception:
-        return {"current_price": None, "change_percent": None, "last_updated": None, "target_price": None}
+        return {"current_price": None, "change_percent": None, "last_updated": None}
 
 
 def fetch_news(symbol: str) -> list[dict]:
+    """Callers are responsible for normalising DR symbols via normalize_dr_symbol() first."""
     try:
         ticker = yf.Ticker(symbol)
         news = ticker.news or []

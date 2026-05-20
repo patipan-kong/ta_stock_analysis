@@ -31,6 +31,7 @@ def _compact_p(items: list[dict]) -> list[dict]:
     return [
         {
             "symbol": i["symbol"],
+            "sector": i.get("sector") or "Other",
             "signal": i.get("signal", "HOLD"),
             "combined_score": i.get("combined_score", 0),
             "ta_score": i.get("ta_score", 0),
@@ -58,6 +59,86 @@ def _compact_w(items: list[dict]) -> list[dict]:
         }
         for i in items
     ]
+
+
+# ─── Sector weight helpers ────────────────────────────────────────────────────
+
+def calculate_current_sector_weights(portfolio_items: list[dict]) -> dict:
+    """Actual sector weights by market value (shares × current_price)."""
+    sector_values: dict[str, float] = {}
+    for item in portfolio_items:
+        sector = item.get("sector") or "Other"
+        price = item.get("current_price") or item.get("avg_cost") or 0
+        mv = (item.get("shares") or 0) * price
+        sector_values[sector] = sector_values.get(sector, 0.0) + mv
+    total = sum(sector_values.values())
+    if total == 0:
+        return {}
+    return {
+        s: {"value": round(v, 2), "weight_pct": round(v / total * 100, 1)}
+        for s, v in sorted(sector_values.items(), key=lambda x: -x[1])
+    }
+
+
+def calculate_projected_sector_weights(portfolio_items: list[dict], swaps: list[dict]) -> dict:
+    """Simulate portfolio after applying swap suggestions and recompute sector weights."""
+    holdings: dict[str, dict] = {}
+    for item in portfolio_items:
+        sector = item.get("sector") or "Other"
+        price = item.get("current_price") or item.get("avg_cost") or 0
+        mv = (item.get("shares") or 0) * price
+        holdings[item["symbol"]] = {"sector": sector, "value": mv}
+
+    for swap in swaps:
+        sell_sym = swap.get("sell_symbol")
+        buy_sym = swap.get("buy_symbol")
+        sector = swap.get("sector") or "Other"
+        sell_val = holdings.pop(sell_sym, {"value": 0})["value"] if sell_sym else 0
+        if buy_sym and sell_val > 0:
+            holdings[buy_sym] = {"sector": sector, "value": sell_val}
+
+    sector_values: dict[str, float] = {}
+    for h in holdings.values():
+        sector_values[h["sector"]] = sector_values.get(h["sector"], 0.0) + h["value"]
+    total = sum(sector_values.values())
+    if total == 0:
+        return {}
+    return {
+        s: {"value": round(v, 2), "weight_pct": round(v / total * 100, 1)}
+        for s, v in sorted(sector_values.items(), key=lambda x: -x[1])
+    }
+
+
+def _compute_sector_warnings(
+    current: dict,
+    projected: dict,
+    sector_limits: dict | None,
+    max_sector_pct: int,
+) -> list[dict]:
+    """Return per-sector status vs allocation limits for current and projected weights."""
+    all_sectors = set(current) | set(projected)
+    result = []
+    for sector in sorted(all_sectors):
+        cur_pct = current.get(sector, {}).get("weight_pct", 0.0)
+        proj_pct = projected.get(sector, {}).get("weight_pct", 0.0)
+        if cur_pct == 0 and proj_pct == 0:
+            continue
+        limits = sector_limits or {}
+        limit = limits.get(sector) or limits.get("default") or max_sector_pct
+        if proj_pct > limit:
+            status = "EXCEEDS"
+        elif proj_pct > limit * 0.8:
+            status = "WARNING"
+        else:
+            status = "OK"
+        result.append({
+            "sector": sector,
+            "current_pct": cur_pct,
+            "projected_pct": proj_pct,
+            "limit_pct": int(limit),
+            "status": status,
+        })
+    return result
 
 
 # ─── Post-processing ──────────────────────────────────────────────────────────
@@ -147,16 +228,26 @@ def _layer1_prompt(
     max_stocks: int = 12,
     max_sector_pct: int = 40,
     sector_limits: dict | None = None,
+    current_sector_weights: dict | None = None,
 ) -> str:
     role_line = f"Your focus: {role}\n\n" if role else ""
     if sector_limits:
         sector_block = (
             f"SECTOR ALLOCATION LIMITS (from user settings):\n{json.dumps(sector_limits, indent=2)}\n"
-            "Do not recommend allocation exceeding these sector limits. "
+            "sector_limits apply to CURRENT portfolio holdings. "
+            "Flag only if current weight already exceeds limit. "
+            "Show projected weight after each swap suggestion. "
             "\"default\" applies to sectors not listed above."
         )
     else:
-        sector_block = f"Max sector allocation: {max_sector_pct}% per sector."
+        sector_block = f"Max sector allocation: {max_sector_pct}% per sector. sector_limits apply to CURRENT holdings only."
+
+    sector_weights_block = ""
+    if current_sector_weights:
+        sector_weights_block = (
+            f"\nCURRENT PORTFOLIO SECTOR WEIGHTS (by market value):\n"
+            f"{json.dumps(current_sector_weights, indent=2)}\n"
+        )
     return f"""Portfolio optimization expert for Thai (SET) and US stocks.
 {role_line}PORTFOLIO: "{portfolio_name}"
 {json.dumps(pc, indent=2)}
@@ -165,7 +256,7 @@ WATCHLIST:
 {json.dumps(wc, indent=2)}
 
 SCORING: combined_score = 0.4×ta_score + 0.6×fa_score (range ~−8 to +8). Thai stocks end in .BK.
-
+{sector_weights_block}
 CONSTRAINT GROUPS:
 - Portfolio size: {portfolio_count}/{max_stocks}. Room for {room} more. {"AT LIMIT — no net additions allowed." if max_reached else ""}
 - SELL/REDUCE-signal stocks (ALWAYS include as type=SELL, regardless of allow_swap): {sell_forced or "none"}
@@ -283,7 +374,7 @@ def run_optimizer(
         sell_forced, swap_eligible, locked, role="",
         max_stocks=max_stocks, max_sector_pct=max_sector_pct,
     )
-    text = call_ai(
+    ai_result = call_ai(
         prompt,
         provider,
         model,
@@ -291,7 +382,7 @@ def run_optimizer(
         usage_operation="optimize",
         usage_layer="layer1",
     )
-    result = safe_parse_json(text)
+    result = safe_parse_json(ai_result["text"])
     result["swap_suggestions"] = _postprocess_swaps(
         result.get("swap_suggestions", []), sell_forced, locked
     )
@@ -323,50 +414,66 @@ def run_layered_optimizer(
     room = max(0, max_stocks - portfolio_count)
     pc, wc = _compact_p(portfolio_data), _compact_w(watchlist_data)
 
+    current_sector_weights = calculate_current_sector_weights(portfolio_data)
+
     # Layer 1 — Strategist
     try:
-        l1_text = call_ai(
+        l1_raw = call_ai(
             _layer1_prompt(pc, wc, portfolio_name, portfolio_count, max_reached, room,
                            sell_forced, swap_eligible, locked, l1_cfg.get("role", ""),
                            max_stocks=max_stocks, max_sector_pct=max_sector_pct,
-                           sector_limits=sector_limits),
+                           sector_limits=sector_limits,
+                           current_sector_weights=current_sector_weights),
             l1_cfg["provider"], l1_cfg["model"], max_tokens=8192,
             usage_operation="optimize",
             usage_layer="layer1",
         )
-        l1_result = safe_parse_json(l1_text)
+        l1_latency_ms = l1_raw["latency_ms"]
+        l1_result = safe_parse_json(l1_raw["text"])
     except Exception as e:
         l1_result = {"error": str(e), "swap_suggestions": [], "watchlist_ranking": []}
+        l1_latency_ms = 0
 
     # Layer 2 — Challenger
     try:
-        l2_text = call_ai(
+        l2_raw = call_ai(
             _layer2_prompt(pc, wc, l1_result, l2_cfg.get("role", "")),
             l2_cfg["provider"], l2_cfg["model"], max_tokens=8192,
             usage_operation="optimize",
             usage_layer="layer2",
         )
-        l2_result = safe_parse_json(l2_text)
+        l2_latency_ms = l2_raw["latency_ms"]
+        l2_result = safe_parse_json(l2_raw["text"])
     except Exception as e:
         l2_result = {"error": str(e), "agrees_with_layer1": True, "disagreements": [], "alternative_suggestions": []}
+        l2_latency_ms = 0
 
     # Layer 3 — Risk Auditor
     try:
-        l3_text = call_ai(
+        l3_raw = call_ai(
             _layer3_prompt(l1_result, l2_result, l3_cfg.get("role", ""), max_sector_pct=max_sector_pct),
             l3_cfg["provider"], l3_cfg["model"], max_tokens=8192,
             usage_operation="optimize",
             usage_layer="layer3",
         )
-        l3_result = safe_parse_json(l3_text)
+        l3_latency_ms = l3_raw["latency_ms"]
+        l3_result = safe_parse_json(l3_raw["text"])
     except Exception as e:
         l3_result = {"error": str(e), "risk_flags": [], "safer_choice": "layer1",
                      "final_risk_level": "medium", "auditor_notes": ""}
+        l3_latency_ms = 0
 
     consensus = _consensus_engine(l2_result, l3_result)
     swap_suggestions = _postprocess_swaps(
         l1_result.get("swap_suggestions", []), sell_forced, locked
     )
+
+    projected_sector_weights = calculate_projected_sector_weights(portfolio_data, swap_suggestions)
+    sector_warnings = _compute_sector_warnings(
+        current_sector_weights, projected_sector_weights, sector_limits, max_sector_pct
+    )
+
+    total_latency_ms = l1_latency_ms + l2_latency_ms + l3_latency_ms
 
     return {
         "portfolio_name": portfolio_name,
@@ -378,6 +485,13 @@ def run_layered_optimizer(
         "max_reached": max_reached,
         "ai_provider": l1_cfg["provider"],
         "ai_model": l1_cfg["model"],
+        "current_sector_weights": current_sector_weights,
+        "projected_sector_weights": projected_sector_weights,
+        "sector_warnings": sector_warnings,
+        "layer1_latency_ms": l1_latency_ms,
+        "layer2_latency_ms": l2_latency_ms,
+        "layer3_latency_ms": l3_latency_ms,
+        "total_latency_ms": total_latency_ms,
         "layer1_result": {**l1_result, "provider": l1_cfg["provider"], "model": l1_cfg["model"], "name": l1_cfg.get("name", "Strategist")},
         "layer2_result": {**l2_result, "provider": l2_cfg["provider"], "model": l2_cfg["model"], "name": l2_cfg.get("name", "Challenger")},
         "layer3_result": {**l3_result, "provider": l3_cfg["provider"], "model": l3_cfg["model"], "name": l3_cfg.get("name", "Risk Auditor")},

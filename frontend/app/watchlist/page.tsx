@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
 import SignalBadge from "@/components/SignalBadge";
 import AnalyzeAllButton from "@/components/AnalyzeAllButton";
 import { getWatchlist, addToWatchlist, removeFromWatchlist } from "@/lib/api";
-import type { WatchlistItem, AnalyzeAllResult } from "@/lib/api";
+import type { WatchlistItem, AnalyzeAllResult, RiskLevel } from "@/lib/api";
+import { sectorColor } from "@/lib/sectors";
 
 const TZ = "Asia/Bangkok";
 
@@ -23,7 +24,6 @@ function freshnessColor(analyzedAt: string | null): string {
   if (ageMins <= 180) return "bg-yellow-400";
   return "bg-red-400";
 }
-
 function freshnessTitle(analyzedAt: string | null): string {
   if (!analyzedAt) return "Never analyzed";
   const ageMins = (Date.now() - new Date(analyzedAt).getTime()) / 60000;
@@ -32,15 +32,112 @@ function freshnessTitle(analyzedAt: string | null): string {
   return "Stale (> 3h)";
 }
 
+const SIGNAL_PRIORITY: Record<string, number> = {
+  BUY: 0, ACCUMULATE: 1, WATCH: 2, HOLD: 3, REDUCE: 4, SELL: 5,
+};
+const RISK_PRIORITY: Record<RiskLevel, number> = {
+  Low: 0, Medium: 1, High: 2, Critical: 3,
+};
+const RISK_COLOR: Record<RiskLevel, string> = {
+  Low: "#3B6D11", Medium: "#BA7517", High: "#A32D2D", Critical: "#501313",
+};
+
+function SectorBadge({ sector }: { sector?: string | null }) {
+  if (!sector || sector === "Other") return <span className="text-gray-400 text-xs">{sector ?? "—"}</span>;
+  const color = sectorColor(sector);
+  return (
+    <span
+      className="inline-block text-xs font-semibold px-1.5 py-0.5 rounded whitespace-nowrap"
+      style={{ color, backgroundColor: `${color}20`, border: `1px solid ${color}60` }}
+    >
+      {sector}
+    </span>
+  );
+}
+
+type SortKey = "symbol" | "signal" | "upside_pct" | "risk_level" | "analyzed_at";
+type SortDir = "asc" | "desc";
+
+const DEFAULT_SORT: SortKey = "signal";
+const DEFAULT_DIR: SortDir = "asc";
+
+function compare(a: WatchlistItem, b: WatchlistItem, key: SortKey, dir: SortDir): number {
+  let v = 0;
+  switch (key) {
+    case "symbol":
+      v = a.symbol.localeCompare(b.symbol);
+      break;
+    case "signal": {
+      const pa = SIGNAL_PRIORITY[a.latest_signal ?? ""] ?? 99;
+      const pb = SIGNAL_PRIORITY[b.latest_signal ?? ""] ?? 99;
+      // tie-break by upside DESC
+      v = pa !== pb ? pa - pb : (b.upside_pct ?? -Infinity) - (a.upside_pct ?? -Infinity);
+      break;
+    }
+    case "upside_pct":
+      v = (a.upside_pct ?? -Infinity) - (b.upside_pct ?? -Infinity);
+      break;
+    case "risk_level": {
+      const ra = RISK_PRIORITY[a.risk_level as RiskLevel] ?? -1;
+      const rb = RISK_PRIORITY[b.risk_level as RiskLevel] ?? -1;
+      v = ra - rb;
+      break;
+    }
+    case "analyzed_at":
+      v = (a.analyzed_at ?? "").localeCompare(b.analyzed_at ?? "");
+      break;
+  }
+  // signal uses its own tie-break direction; other keys flip on dir
+  if (key === "signal") return v;
+  return dir === "asc" ? v : -v;
+}
+
+function SortIcon({ col, sortKey, sortDir }: { col: SortKey; sortKey: SortKey; sortDir: SortDir }) {
+  if (col !== sortKey) return <span className="ml-0.5 text-gray-300">↕</span>;
+  return <span className="ml-0.5">{sortDir === "asc" ? "↑" : "↓"}</span>;
+}
+
+function UpsideCell({ value }: { value: number | null }) {
+  if (value == null) return <span className="text-gray-400 text-xs">N/A</span>;
+  const color = value > 0 ? "text-green-600" : "text-red-500";
+  return <span className={`text-sm font-medium ${color}`}>{value > 0 ? "+" : ""}{value.toFixed(1)}%</span>;
+}
+
+function RiskBadge({ level }: { level: RiskLevel | null }) {
+  if (!level) return <span className="text-gray-300 text-xs">—</span>;
+  const color = RISK_COLOR[level];
+  return (
+    <span
+      className="inline-block text-xs font-bold px-1.5 py-0.5 rounded border"
+      style={{ color, borderColor: color, backgroundColor: `${color}18` }}
+    >
+      {level}
+    </span>
+  );
+}
+
 export default function WatchlistPage() {
   const [items, setItems] = useState<WatchlistItem[]>([]);
   const [symbol, setSymbol] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>(DEFAULT_SORT);
+  const [sortDir, setSortDir] = useState<SortDir>(DEFAULT_DIR);
+  const [sectorFilter, setSectorFilter] = useState("");
 
   useEffect(() => {
     getWatchlist().then(setItems).finally(() => setLoading(false));
   }, []);
+
+  function handleSort(col: SortKey) {
+    if (col === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(col);
+      // Natural default direction per column
+      setSortDir(col === "analyzed_at" ? "desc" : "asc");
+    }
+  }
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
@@ -68,6 +165,32 @@ export default function WatchlistPage() {
     if (!i.analyzed_at) return true;
     return (Date.now() - new Date(i.analyzed_at).getTime()) / 60000 > 60;
   }).length;
+
+  const sectorCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const item of items) {
+      const s = item.sector ?? "Other";
+      counts[s] = (counts[s] ?? 0) + 1;
+    }
+    return counts;
+  }, [items]);
+
+  const sorted = useMemo(() => {
+    const base = sectorFilter ? items.filter((i) => (i.sector ?? "Other") === sectorFilter) : items;
+    return [...base].sort((a, b) => compare(a, b, sortKey, sortDir));
+  }, [items, sectorFilter, sortKey, sortDir]);
+
+  function Th({ col, label, className }: { col: SortKey; label: string; className?: string }) {
+    const active = col === sortKey;
+    return (
+      <th
+        className={`py-2 pr-3 font-medium cursor-pointer select-none whitespace-nowrap hover:text-gray-800 transition-colors ${active ? "text-gray-700" : "text-gray-400"} ${className ?? ""}`}
+        onClick={() => handleSort(col)}
+      >
+        {label}<SortIcon col={col} sortKey={sortKey} sortDir={sortDir} />
+      </th>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -102,42 +225,87 @@ export default function WatchlistPage() {
 
       {loading ? (
         <p className="text-sm text-gray-400">Loading…</p>
-      ) : items.length === 0 ? (
+      ) : sorted.length === 0 && !sectorFilter ? (
         <p className="text-sm text-gray-500">Watchlist is empty.</p>
       ) : (
-        <ul className="divide-y">
-          {items.map((item) => {
-            const display = item.symbol.replace(".BK", "");
-            return (
-              <li key={item.symbol} className="py-3 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 min-w-0">
-                  <Link href={`/stock/${encodeURIComponent(item.symbol)}`}>
-                    <span
-                      className={`inline-block w-2 h-2 rounded-full shrink-0 ${freshnessColor(item.analyzed_at)} hover:scale-125 transition-transform`}
-                      title={freshnessTitle(item.analyzed_at)}
-                    />
-                  </Link>
-                  <Link href={`/stock/${encodeURIComponent(item.symbol)}`} className="text-blue-600 hover:underline font-medium">
-                    {display}
-                    {item.symbol.endsWith(".BK") && <span className="ml-1 text-xs text-gray-400">.BK</span>}
-                  </Link>
-                  {item.latest_signal
-                    ? <SignalBadge signal={item.latest_signal} />
-                    : <span className="text-xs text-gray-400">—</span>}
-                </div>
-                <div className="flex items-center gap-3 shrink-0">
-                  <span className="text-xs text-gray-400 hidden sm:block">{formatDate(item.analyzed_at)}</span>
-                  <button
-                    onClick={() => handleRemove(item.symbol)}
-                    className="text-red-500 hover:text-red-700 text-xs"
-                  >
-                    Remove
-                  </button>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+        <>
+        {Object.keys(sectorCounts).length > 1 && (
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-500 shrink-0">Sector</label>
+            <select
+              value={sectorFilter}
+              onChange={(e) => setSectorFilter(e.target.value)}
+              className="text-sm border rounded px-2.5 py-1.5 bg-white"
+            >
+              <option value="">All Sectors ({items.length})</option>
+              {Object.entries(sectorCounts)
+                .sort((a, b) => b[1] - a[1])
+                .map(([sector, count]) => (
+                  <option key={sector} value={sector}>{sector} ({count})</option>
+                ))}
+            </select>
+            {sectorFilter && (
+              <button onClick={() => setSectorFilter("")} className="text-xs text-gray-400 hover:text-gray-600">✕ Clear</button>
+            )}
+          </div>
+        )}
+        {sorted.length === 0 ? (
+          <p className="text-sm text-gray-500">No stocks in &quot;{sectorFilter}&quot; sector.</p>
+        ) : (
+        <div className="bg-white border rounded-xl overflow-x-auto shadow-sm">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-xs">
+                <Th col="symbol"      label="Symbol"   className="pl-4" />
+                <th className="py-2 pr-3 font-medium text-gray-400 whitespace-nowrap">Sector</th>
+                <Th col="signal"      label="Signal" />
+                <Th col="upside_pct"  label="Upside" />
+                <Th col="risk_level"  label="Risk" />
+                <Th col="analyzed_at" label="Analyzed"  className="hidden sm:table-cell" />
+                <th className="py-2 pr-4" />
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((item) => {
+                const display = item.symbol.replace(".BK", "");
+                return (
+                  <tr key={item.symbol} className="border-b hover:bg-gray-50">
+                    <td className="py-2.5 pl-4 pr-3 whitespace-nowrap">
+                      <div className="flex items-center gap-1.5">
+                        <Link href={`/stock/${encodeURIComponent(item.symbol)}`}>
+                          <span
+                            className={`inline-block w-2 h-2 rounded-full shrink-0 ${freshnessColor(item.analyzed_at)} hover:scale-125 transition-transform`}
+                            title={freshnessTitle(item.analyzed_at)}
+                          />
+                        </Link>
+                        <Link href={`/stock/${encodeURIComponent(item.symbol)}`} className="text-blue-600 hover:underline font-medium">
+                          {display}
+                          {item.symbol.endsWith(".BK") && <span className="ml-1 text-xs text-gray-400">.BK</span>}
+                        </Link>
+                      </div>
+                    </td>
+                    <td className="py-2.5 pr-3"><SectorBadge sector={item.sector} /></td>
+                    <td className="py-2.5 pr-3">
+                      {item.latest_signal
+                        ? <SignalBadge signal={item.latest_signal} />
+                        : <span className="text-xs text-gray-400">—</span>}
+                    </td>
+                    <td className="py-2.5 pr-3"><UpsideCell value={item.upside_pct} /></td>
+                    <td className="py-2.5 pr-3"><RiskBadge level={item.risk_level} /></td>
+                    <td className="py-2.5 pr-3 text-xs text-gray-400 hidden sm:table-cell">{formatDate(item.analyzed_at)}</td>
+                    <td className="py-2.5 pr-4 text-right">
+                      <button onClick={() => handleRemove(item.symbol)} className="text-red-500 hover:text-red-700 text-xs">
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        )}
+        </>
       )}
     </div>
   );

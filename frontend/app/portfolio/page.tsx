@@ -6,11 +6,16 @@ import PortfolioTable from "@/components/PortfolioTable";
 import PortfolioSummary from "@/components/PortfolioSummary";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import AnalyzeAllButton from "@/components/AnalyzeAllButton";
-import { getHoldings, addHolding, removeHolding, analyzeSymbol, updateSwapPermission, getPortfolioPrices } from "@/lib/api";
-import type { PortfolioItem, FullAnalysis, AnalyzeAllResult } from "@/lib/api";
+import { getHoldings, addHolding, removeHolding, analyzeSymbol, updateSwapPermission, getPortfolioPrices, getSectorBreakdown } from "@/lib/api";
+import type { PortfolioItem, AnalyzeAllResult, SectorBreakdown } from "@/lib/api";
 
 const PortfolioPieChart = dynamic(
   () => import("@/components/PortfolioPieChart"),
+  { ssr: false, loading: () => <div className="h-[280px] animate-pulse bg-gray-100 rounded-xl" /> }
+);
+
+const SectorPieChart = dynamic(
+  () => import("@/components/SectorPieChart"),
   { ssr: false, loading: () => <div className="h-[280px] animate-pulse bg-gray-100 rounded-xl" /> }
 );
 
@@ -68,6 +73,7 @@ export default function PortfolioPage() {
   const [error, setError] = useState("");
 
   // Price refresh
+  const [sectorBreakdown, setSectorBreakdown] = useState<SectorBreakdown | null>(null);
   const [refreshingPrices, setRefreshingPrices] = useState(false);
   const [priceRefreshAt, setPriceRefreshAt] = useState<Date | null>(null);
   const secondsAgo = useSecondsAgo(priceRefreshAt);
@@ -102,6 +108,7 @@ export default function PortfolioPage() {
     activeIdRef.current = activeId;
     setLoading(true);
     setItems([]);
+    setSectorBreakdown(null);
     setPriceRefreshAt(null);
     const stored = parseFloat(localStorage.getItem(cashKey(activeId)) ?? "0") || 0;
     setCashBalance(stored);
@@ -110,7 +117,10 @@ export default function PortfolioPage() {
       .then((data) => {
         setItems(data);
         setPriceRefreshAt(new Date());
+        return getSectorBreakdown(activeId);
       })
+      .then(setSectorBreakdown)
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, [activeId]);
 
@@ -360,42 +370,50 @@ export default function PortfolioPage() {
       ) : (
         <>
           {hasData && (
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 items-start">
-              <div className="lg:col-span-2 bg-white border rounded-xl p-4 shadow-sm">
-                <h2 className="text-sm font-semibold text-gray-600 mb-2">Portfolio Allocation</h2>
-                <PortfolioPieChart items={items} cashBalance={cashBalance} />
+            <>
+              {/* Charts row — side-by-side on md+, stacked on mobile */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-white border rounded-xl p-4 shadow-sm">
+                  <h2 className="text-sm font-semibold text-gray-600 mb-2">Portfolio Allocation</h2>
+                  <PortfolioPieChart items={items} cashBalance={cashBalance} />
+                </div>
+                <div className="bg-white border rounded-xl p-4 shadow-sm">
+                  <h2 className="text-sm font-semibold text-gray-600 mb-2">Sector Allocation</h2>
+                  {sectorBreakdown
+                    ? <SectorPieChart breakdown={sectorBreakdown} />
+                    : <div className="h-[220px] animate-pulse bg-gray-100 rounded-xl" />}
+                </div>
               </div>
 
-              <div className="lg:col-span-3 space-y-4">
-                <div className="bg-white border rounded-xl p-4 shadow-sm flex items-center gap-4">
-                  <div className="flex-1">
-                    <p className="text-xs text-gray-400 mb-0.5">Cash Balance</p>
-                    {editingCash ? (
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="number" min="0" step="any"
-                          value={cashInput}
-                          onChange={(e) => setCashInput(e.target.value)}
-                          onKeyDown={(e) => e.key === "Enter" && saveCash()}
-                          autoFocus
-                          className="border rounded px-2 py-1 text-sm w-36"
-                        />
-                        <button onClick={saveCash} className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">Save</button>
-                        <button onClick={() => { setCashInput(cashBalance.toString()); setEditingCash(false); }} className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
-                      </div>
-                    ) : (
-                      <p className="text-xl font-bold text-gray-800">
-                        {cashBalance.toLocaleString("th-TH", { minimumFractionDigits: 2 })}
-                      </p>
-                    )}
-                  </div>
-                  {!editingCash && (
-                    <button onClick={() => setEditingCash(true)} className="text-xs text-blue-500 hover:text-blue-700 border border-blue-200 rounded px-3 py-1">Edit</button>
+              {/* Cash + Summary row */}
+              <div className="bg-white border rounded-xl p-4 shadow-sm flex items-center gap-4">
+                <div className="flex-1">
+                  <p className="text-xs text-gray-400 mb-0.5">Cash Balance</p>
+                  {editingCash ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number" min="0" step="any"
+                        value={cashInput}
+                        onChange={(e) => setCashInput(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && saveCash()}
+                        autoFocus
+                        className="border rounded px-2 py-1 text-sm w-36"
+                      />
+                      <button onClick={saveCash} className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">Save</button>
+                      <button onClick={() => { setCashInput(cashBalance.toString()); setEditingCash(false); }} className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+                    </div>
+                  ) : (
+                    <p className="text-xl font-bold text-gray-800">
+                      {cashBalance.toLocaleString("th-TH", { minimumFractionDigits: 2 })}
+                    </p>
                   )}
                 </div>
-                <PortfolioSummary items={items} cashBalance={cashBalance} />
+                {!editingCash && (
+                  <button onClick={() => setEditingCash(true)} className="text-xs text-blue-500 hover:text-blue-700 border border-blue-200 rounded px-3 py-1">Edit</button>
+                )}
               </div>
-            </div>
+              <PortfolioSummary items={items} cashBalance={cashBalance} />
+            </>
           )}
 
           <PortfolioTable

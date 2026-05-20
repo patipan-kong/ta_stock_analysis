@@ -3,8 +3,8 @@ import "./globals.css";
 import AppShell from "@/components/AppShell";
 
 export const metadata: Metadata = {
-  title: "Stock Analysis",
-  description: "US & Thai stock analysis with BUY/HOLD/SELL signals",
+  title: "Portfolio Intelligence Platform",
+  description: "US & Thai stock analysis with AI-powered signals and portfolio optimization",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

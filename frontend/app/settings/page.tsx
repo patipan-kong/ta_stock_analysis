@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { getAIModels, getAISettings, updateAISettings, getAnalysisSources, updateAnalysisSource, getOptimizerLayers, updateOptimizerLayer, getPortfolioSettings, updatePortfolioSettings, getSectorLimits, updateSectorLimits } from "@/lib/api";
-import type { AIModelsConfig, AISettings, AIModelEntry, AnalysisSources, OptimizerLayers, PortfolioSettings, SectorLimits } from "@/lib/api";
+import { getAIModels, getAISettings, updateAISettings, getAnalysisSources, updateAnalysisSource, getOptimizerLayers, updateOptimizerLayer, getPortfolioSettings, updatePortfolioSettings, getSectorLimits, updateSectorLimits, backfillSectors } from "@/lib/api";
+import type { AIModelsConfig, AISettings, AIModelEntry, AnalysisSources, OptimizerLayers, PortfolioSettings, SectorLimits, BackfillSectorsResult } from "@/lib/api";
 
 const PROVIDER_BADGE: Record<string, { label: string; cls: string }> = {
   anthropic: { label: "ANTHROPIC", cls: "bg-orange-100 text-orange-700" },
@@ -361,6 +361,61 @@ function PortfolioSettingsSection() {
   );
 }
 
+// ─── Data Management ──────────────────────────────────────────────────────────
+
+function DataManagementSection() {
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<BackfillSectorsResult | null>(null);
+  const [error, setError] = useState("");
+
+  async function handleBackfill() {
+    setRunning(true);
+    setError("");
+    setResult(null);
+    try {
+      setResult(await backfillSectors());
+    } catch {
+      setError("Failed to refresh sectors");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  const total = result ? result.watchlist_updated + result.portfolio_updated : 0;
+
+  return (
+    <div className="bg-white border rounded-xl p-5 shadow-sm space-y-4">
+      <div>
+        <h3 className="font-semibold text-gray-800">Data Management</h3>
+        <p className="text-xs text-gray-500 mt-0.5">
+          Refresh stored sector labels for all portfolio and watchlist items.
+          Use this after adding stocks, or when sectors show as &quot;Other&quot;.
+        </p>
+      </div>
+      <div className="flex items-center gap-4 flex-wrap">
+        <button
+          onClick={handleBackfill}
+          disabled={running}
+          className="bg-gray-800 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-gray-900 disabled:opacity-50"
+        >
+          {running ? "Running…" : "Refresh All Sectors"}
+        </button>
+        {result && (
+          <span className="text-sm text-green-600">
+            ✓ Updated {total} sector{total !== 1 ? "s" : ""}
+            {result.failed.length > 0 && (
+              <span className="text-amber-600 ml-1">
+                ({result.failed.length} failed: {result.failed.join(", ")})
+              </span>
+            )}
+          </span>
+        )}
+        {error && <span className="text-sm text-red-500">{error}</span>}
+      </div>
+    </div>
+  );
+}
+
 // ─── Optimizer Layers ─────────────────────────────────────────────────────────
 
 const LAYER_DEFS: { key: "layer1" | "layer2" | "layer3"; label: string; desc: string }[] = [
@@ -445,12 +500,7 @@ function OptimizerLayersSection({ config }: { config: AIModelsConfig }) {
               </select>
               {saving === key && <span className="text-xs text-gray-400">saving…</span>}
             </div>
-            {(() => {
-              const entry = config.models.find((m) => (m.apiModel ?? m.id) === selectedModel);
-              return entry?.memo ? (
-                <p className="text-xs text-gray-400 mt-0.5">{entry.memo}</p>
-              ) : null;
-            })()}
+            <CostInfo model={config.models.find((m) => (m.apiModel ?? m.id) === selectedModel)} />
           </div>
         );
       })}
@@ -522,6 +572,9 @@ export default function SettingsPage() {
 
       {/* Optimizer Layers — auto-save on change */}
       {config && <OptimizerLayersSection config={config} />}
+
+      {/* Data Management */}
+      <DataManagementSection />
 
       {/* AI Model Settings */}
       <ModelSelector

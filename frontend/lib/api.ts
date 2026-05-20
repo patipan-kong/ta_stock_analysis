@@ -30,6 +30,8 @@ export interface Portfolio {
   created_at: string;
 }
 
+export type RiskLevel = "Low" | "Medium" | "High" | "Critical";
+
 export interface PortfolioItem {
   id: number;
   portfolio_id: number;
@@ -47,6 +49,10 @@ export interface PortfolioItem {
   ta_score: number | null;
   fa_score: number | null;
   allow_swap: boolean;
+  target_price: number | null;
+  upside_pct: number | null;
+  risk_level: RiskLevel | null;
+  sector?: string | null;
 }
 
 export interface WatchlistItem {
@@ -59,7 +65,28 @@ export interface WatchlistItem {
   risks: string | null;
   ta_score: number | null;
   fa_score: number | null;
+  target_price: number | null;
+  upside_pct: number | null;
+  risk_level: RiskLevel | null;
+  sector?: string | null;
 }
+
+export interface SectorBreakdownItem {
+  sector: string;
+  value: number;
+  weight_pct: number;
+  stocks: string[];
+  limit_pct: number;
+  status: "OK" | "WARNING" | "EXCEEDS";
+}
+
+export interface SectorBreakdown {
+  sectors: SectorBreakdownItem[];
+  total_value: number;
+}
+
+export const getSectorBreakdown = (portfolioId: number) =>
+  apiFetch<SectorBreakdown>(`/portfolios/${portfolioId}/sector-breakdown`);
 
 export interface TimeframeTA {
   period: string;
@@ -93,6 +120,10 @@ export interface FundamentalResult {
   roe: number | null;
   debt_equity: number | null;
   market_cap: number | null;
+  target_price: number | null;
+  analyst_count: number | null;
+  upside_pct: number | null;
+  upside_source: string | null;
   fa_score: number;
   fa_summary: string;
   error?: string;
@@ -402,6 +433,19 @@ export interface Layer3Result {
   error?: string;
 }
 
+export interface SectorWeight {
+  value: number;
+  weight_pct: number;
+}
+
+export interface SectorWarning {
+  sector: string;
+  current_pct: number;
+  projected_pct: number;
+  limit_pct: number;
+  status: "OK" | "WARNING" | "EXCEEDS";
+}
+
 export interface OptimizerConsensus {
   agrees: boolean;
   confidence: "high" | "medium" | "low";
@@ -438,6 +482,9 @@ export interface OptimizerResult {
   layer2_result?: Layer2Result | null;
   layer3_result?: Layer3Result | null;
   consensus?: OptimizerConsensus | null;
+  current_sector_weights?: Record<string, SectorWeight>;
+  projected_sector_weights?: Record<string, SectorWeight>;
+  sector_warnings?: SectorWarning[];
 }
 
 export interface OptimizerHistoryItem {
@@ -462,6 +509,56 @@ export const listOptimizerHistory = (portfolioId: number) =>
 
 export const getOptimizerHistory = (historyId: number) =>
   apiFetch<OptimizerResult>(`/optimizer/history/${historyId}`);
+
+export interface AnalysisLatencyStat {
+  provider: string;
+  model: string;
+  avg_latency_ms: number;
+  min_latency_ms: number;
+  max_latency_ms: number;
+  p95_latency_ms: number;
+  call_count: number;
+  last_used: string | null;
+}
+
+export interface OptimizerLatencyStat {
+  provider: string;
+  model: string;
+  layer: string;
+  avg_latency_ms: number;
+  call_count: number;
+}
+
+export interface LatencyStats {
+  analysis: AnalysisLatencyStat[];
+  optimizer: OptimizerLatencyStat[];
+}
+
+export interface ModelCostStat {
+  model: string;
+  provider: string;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  estimated_cost_usd: number;
+  call_count: number;
+}
+
+export interface CostEstimate {
+  by_model: ModelCostStat[];
+  total_estimated_usd: number;
+}
+
+export const getLatencyStats = () => apiFetch<LatencyStats>("/stats/latency");
+export const getCostEstimate = () => apiFetch<CostEstimate>("/stats/cost-estimate");
+
+export interface BackfillSectorsResult {
+  watchlist_updated: number;
+  portfolio_updated: number;
+  failed: string[];
+}
+
+export const backfillSectors = () =>
+  apiFetch<BackfillSectorsResult>("/admin/backfill-sectors", { method: "POST" });
 
 export const updateSwapPermission = (portfolioId: number, symbol: string, allow_swap: boolean) =>
   apiFetch<{ symbol: string; allow_swap: boolean }>(
