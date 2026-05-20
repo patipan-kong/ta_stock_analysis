@@ -86,8 +86,8 @@ export default function DashboardPage() {
 
   function _applyAnalysisToWatchlist(result: FullAnalysis): Partial<WatchlistItem> {
     const s = result.summary;
-    const tech = result.technical as Record<string, unknown>;
-    const fund = result.fundamental as Record<string, unknown>;
+    const tech = result.technical as unknown as Record<string, unknown>;
+    const fund = result.fundamental as unknown as Record<string, unknown>;
     return {
       latest_signal:    (s?.signal ?? null) as WatchlistItem["latest_signal"],
       signal_confidence:(s?.confidence ?? null) as WatchlistItem["signal_confidence"],
