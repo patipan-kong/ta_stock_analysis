@@ -27,6 +27,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 export interface Portfolio {
   id: number;
   name: string;
+  cash_balance: number;
   created_at: string;
 }
 
@@ -242,6 +243,12 @@ export const createPortfolio = (name: string) =>
 
 export const deletePortfolio = (id: number) =>
   apiFetch<{ deleted: number }>(`/portfolios/${id}`, { method: "DELETE" });
+
+export const updatePortfolioCash = (id: number, cash_balance: number) =>
+  apiFetch<{ id: number; cash_balance: number }>(`/portfolios/${id}/cash`, {
+    method: "PATCH",
+    body: JSON.stringify({ cash_balance }),
+  });
 
 // ─── Holdings ────────────────────────────────────────────────────────────────
 

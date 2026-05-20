@@ -36,6 +36,7 @@ class Portfolio(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
+    cash_balance = Column(Float, nullable=False, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     items = relationship("PortfolioItem", back_populates="portfolio", cascade="all, delete-orphan")
@@ -194,6 +195,12 @@ def migrate_legacy_data() -> None:
         # SQLite-only: apply incremental ALTER TABLE patches.
         # PostgreSQL uses Alembic migrations (`alembic upgrade head`) instead.
         if _is_sqlite:
+            if "portfolios" in tables:
+                with engine.begin() as conn:
+                    p_cols = {c["name"] for c in inspector.get_columns("portfolios")}
+                    if "cash_balance" not in p_cols:
+                        conn.execute(text("ALTER TABLE portfolios ADD COLUMN cash_balance REAL NOT NULL DEFAULT 0"))
+
             if "portfolio_items" in tables:
                 with engine.begin() as conn:
                     pi_cols = {c["name"] for c in inspector.get_columns("portfolio_items")}

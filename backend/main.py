@@ -386,7 +386,7 @@ class PortfolioCreate(BaseModel):
 @app.get("/portfolios")
 async def list_portfolios(db: Session = Depends(get_db)) -> list[dict]:
     items = db.query(Portfolio).order_by(Portfolio.created_at).all()
-    return [{"id": p.id, "name": p.name, "created_at": p.created_at.isoformat()} for p in items]
+    return [{"id": p.id, "name": p.name, "cash_balance": p.cash_balance or 0.0, "created_at": p.created_at.isoformat()} for p in items]
 
 
 @app.post("/portfolios", status_code=201)
@@ -395,7 +395,21 @@ async def create_portfolio(body: PortfolioCreate, db: Session = Depends(get_db))
     db.add(p)
     db.commit()
     db.refresh(p)
-    return {"id": p.id, "name": p.name, "created_at": p.created_at.isoformat()}
+    return {"id": p.id, "name": p.name, "cash_balance": p.cash_balance or 0.0, "created_at": p.created_at.isoformat()}
+
+
+class CashUpdate(BaseModel):
+    cash_balance: float
+
+
+@app.patch("/portfolios/{portfolio_id}/cash")
+async def update_portfolio_cash(portfolio_id: int, body: CashUpdate, db: Session = Depends(get_db)) -> dict:
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p.cash_balance = max(0.0, body.cash_balance)
+    db.commit()
+    return {"id": p.id, "cash_balance": p.cash_balance}
 
 
 @app.delete("/portfolios/{portfolio_id}")

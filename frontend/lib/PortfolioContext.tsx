@@ -10,6 +10,7 @@ interface PortfolioContextValue {
   setActiveId: (id: number) => void;
   createPortfolio: (name: string) => Promise<Portfolio>;
   deletePortfolio: (id: number) => Promise<void>;
+  refreshPortfolios: () => Promise<void>;
   loading: boolean;
 }
 
@@ -56,8 +57,13 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
     });
   }, [activeId, setActiveId]);
 
+  const refreshPortfolios = useCallback(async (): Promise<void> => {
+    const list = await listPortfolios();
+    setPortfolios(list);
+  }, []);
+
   return (
-    <PortfolioContext.Provider value={{ portfolios, activeId, setActiveId, createPortfolio, deletePortfolio, loading }}>
+    <PortfolioContext.Provider value={{ portfolios, activeId, setActiveId, createPortfolio, deletePortfolio, refreshPortfolios, loading }}>
       {children}
     </PortfolioContext.Provider>
   );

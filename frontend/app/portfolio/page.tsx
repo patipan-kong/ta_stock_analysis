@@ -6,7 +6,7 @@ import PortfolioTable from "@/components/PortfolioTable";
 import PortfolioSummary from "@/components/PortfolioSummary";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import AnalyzeAllButton from "@/components/AnalyzeAllButton";
-import { getHoldings, addHolding, removeHolding, analyzeSymbol, updateSwapPermission, getPortfolioPrices, getSectorBreakdown } from "@/lib/api";
+import { getHoldings, addHolding, removeHolding, analyzeSymbol, updateSwapPermission, getPortfolioPrices, getSectorBreakdown, updatePortfolioCash } from "@/lib/api";
 import type { PortfolioItem, AnalyzeAllResult, SectorBreakdown } from "@/lib/api";
 
 const PortfolioPieChart = dynamic(
@@ -19,7 +19,6 @@ const SectorPieChart = dynamic(
   { ssr: false, loading: () => <div className="h-[280px] animate-pulse bg-gray-100 rounded-xl" /> }
 );
 
-const cashKey = (id: number) => `portfolio_cash_${id}`;
 const PRICE_REFRESH_INTERVAL = 60_000; // 60 seconds
 
 function useSecondsAgo(since: Date | null): number {
@@ -37,7 +36,7 @@ function useSecondsAgo(since: Date | null): number {
 }
 
 export default function PortfolioPage() {
-  const { portfolios, activeId, setActiveId, createPortfolio, deletePortfolio, loading: ctxLoading } = usePortfolio();
+  const { portfolios, activeId, setActiveId, createPortfolio, deletePortfolio, refreshPortfolios, loading: ctxLoading } = usePortfolio();
 
   // Portfolio management
   const [creating, setCreating] = useState(false);
@@ -110,9 +109,9 @@ export default function PortfolioPage() {
     setItems([]);
     setSectorBreakdown(null);
     setPriceRefreshAt(null);
-    const stored = parseFloat(localStorage.getItem(cashKey(activeId)) ?? "0") || 0;
-    setCashBalance(stored);
-    setCashInput(stored.toString());
+    const cash = activePortfolio?.cash_balance ?? 0;
+    setCashBalance(cash);
+    setCashInput(cash.toString());
     getHoldings(activeId)
       .then((data) => {
         setItems(data);
@@ -149,12 +148,13 @@ export default function PortfolioPage() {
     return () => clearInterval(id);
   }, [activeId]);
 
-  function saveCash() {
+  async function saveCash() {
     if (activeId == null) return;
     const val = parseFloat(cashInput) || 0;
     setCashBalance(val);
-    localStorage.setItem(cashKey(activeId), val.toString());
     setEditingCash(false);
+    await updatePortfolioCash(activeId, val);
+    await refreshPortfolios();
   }
 
   async function handleAdd(e: React.FormEvent) {
