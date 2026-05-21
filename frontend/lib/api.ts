@@ -196,7 +196,7 @@ export interface ConsensusResult {
   agreement: number;
   high_disagreement: boolean;
   total_analyses: number;
-  signal_counts: { BUY: number; HOLD: number; SELL: number };
+  signal_counts: { ACCUMULATE: number; BUY: number; WATCH: number; HOLD: number; REDUCE: number; SELL: number };
   breakdown: AnalysisHistoryItem[];
   error?: string;
 }

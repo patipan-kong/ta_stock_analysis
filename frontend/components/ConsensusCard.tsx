@@ -118,7 +118,7 @@ export default function ConsensusCard({ symbol, refreshKey = 0 }: { symbol: stri
               <div className={`text-xs font-semibold ${sig === "BUY" ? "text-green-600" : sig === "SELL" ? "text-red-500" : "text-amber-600"}`}>
                 {sig}
               </div>
-              <div className="text-lg font-bold text-gray-700">{signal_counts[sig]}</div>
+              <div className="text-lg font-bold text-gray-700">{signal_counts[sig]} </div>
             </div>
           ))}
         </div>
