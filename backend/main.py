@@ -22,6 +22,13 @@ from services.ai_client import call_ai
 from services.json_utils import safe_parse_json
 from auth import router as auth_router, verify_token
 
+import sys
+try:
+    import pysqlite3
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except ImportError:
+    pass
+
 app = FastAPI(title="Stock Analysis API")
 
 app.add_middleware(
