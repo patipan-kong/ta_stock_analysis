@@ -8,7 +8,7 @@ from typing import Optional
 # DR (Depository Receipt) symbols traded on the Thai SET: letters + 2 digits + .BK
 # e.g. AAPL01.BK, AMD08.BK, MSFT12.BK → base US ticker: AAPL, AMD, MSFT
 _DR_RE = re.compile(r'^([A-Z]+)\d{2}\.BK$')
-
+yf.set_tz_cache_false()
 
 def normalize_dr_symbol(symbol: str) -> str:
     """Strip the DR digit-suffix so yfinance can find the underlying US company.
