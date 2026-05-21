@@ -604,6 +604,14 @@ export default function StockDetailPage() {
                       <dt className="font-medium text-gray-500 w-32 shrink-0">Expected Upside</dt>
                       <dd className={`font-semibold ${fund.upside_pct >= 0 ? "text-green-600" : "text-red-500"}`}>
                         {fund.upside_pct >= 0 ? "+" : ""}{fund.upside_pct.toFixed(1)}%
+                        {fund.is_dr && fund.parent_symbol && (
+                          <span
+                            title={`Upside calculated using ${fund.parent_symbol} price${fund.upside_reference_price != null ? ` ($${fund.upside_reference_price.toFixed(2)})` : ""}`}
+                            className="ml-1.5 text-xs font-semibold px-1 py-0.5 rounded border border-blue-300 text-blue-600 bg-blue-50 cursor-help"
+                          >
+                            DR → {fund.parent_symbol}
+                          </span>
+                        )}
                       </dd>
                     </div>
                   )}

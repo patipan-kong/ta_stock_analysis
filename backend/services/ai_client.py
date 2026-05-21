@@ -1,7 +1,8 @@
 """
 Unified AI client — single call_ai() works across all providers.
 - anthropic: uses anthropic SDK
-- all others (openai, deepseek, zhipu, groq, gemini): OpenAI-compatible SDK with custom base_url
+- gemini: uses google-genai SDK (from google import genai)
+- all others (openai, deepseek, zhipu, groq): OpenAI-compatible SDK with custom base_url
 
 call_ai() returns a dict: {"text": str, "latency_ms": int, "input_tokens": int,
                             "output_tokens": int, "provider": str, "model": str}
@@ -12,7 +13,24 @@ import json
 import time
 from functools import lru_cache
 from dotenv import load_dotenv
+from pydantic import BaseModel
 from models.database import SessionLocal, UserUsage
+
+
+# Pydantic schema for Gemini structured-output (Layer 1 optimizer)
+class _SwapItem(BaseModel):
+    sell: str | None = None
+    buy: str | None = None
+    score_delta: float = 0.0
+    sector: str = "Other"
+    type: str = "SWAP"
+
+
+class _Layer1Response(BaseModel):
+    swaps: list[_SwapItem] = []
+    top_buys: list[str] = []
+    sector_flags: list[str] = []
+    priority: str = "balanced"
 
 load_dotenv()
 
@@ -78,6 +96,7 @@ def call_ai(
     provider: str,
     model: str,
     max_tokens: int = 4096,
+    use_schema: bool = False,
     usage_operation: str = "other",
     usage_layer: str | None = None,
 ) -> dict:
@@ -110,6 +129,51 @@ def call_ai(
         _record_usage(provider, model, in_tokens, out_tokens, in_cost, out_cost, total_cost, usage_operation, usage_layer, latency_ms)
         return {
             "text": message.content[0].text,
+            "latency_ms": latency_ms,
+            "input_tokens": in_tokens,
+            "output_tokens": out_tokens,
+            "provider": provider,
+            "model": model,
+        }
+
+    if provider == "gemini":
+        from google import genai as google_genai
+        from google.genai import types as genai_types
+
+        gemini_client = google_genai.Client(api_key=api_key)
+        send_prompt = (
+            prompt
+            + "\n\nReturn only the structural JSON data specified in the schema. "
+            "Do not output any thinking process, chat greetings, or additional explanations."
+        )
+        if use_schema:
+            gen_config = genai_types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=_Layer1Response,
+                temperature=0.1,
+                max_output_tokens=1024,
+            )
+        else:
+            gen_config = genai_types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1,
+                max_output_tokens=max_tokens,
+            )
+        start = time.perf_counter()
+        gemini_response = gemini_client.models.generate_content(
+            model=model,
+            contents=send_prompt,
+            config=gen_config,
+        )
+        latency_ms = round((time.perf_counter() - start) * 1000)
+        text = gemini_response.text or ""
+        usage_meta = getattr(gemini_response, "usage_metadata", None)
+        in_tokens = int(getattr(usage_meta, "prompt_token_count", 0) or 0)
+        out_tokens = int(getattr(usage_meta, "candidates_token_count", 0) or 0)
+        in_cost, out_cost, total_cost = _compute_cost_usd(in_tokens, out_tokens, in_per_1m, out_per_1m)
+        _record_usage(provider, model, in_tokens, out_tokens, in_cost, out_cost, total_cost, usage_operation, usage_layer, latency_ms)
+        return {
+            "text": text,
             "latency_ms": latency_ms,
             "input_tokens": in_tokens,
             "output_tokens": out_tokens,

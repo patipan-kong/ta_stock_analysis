@@ -32,6 +32,11 @@ def normalize_dr_symbol(symbol: str) -> str:
     return m.group(1) if m else symbol
 
 
+def is_dr_symbol(symbol: str) -> bool:
+    """Return True if symbol is a Thai SET Depository Receipt (e.g. AMD80.BK, AAPL01.BK)."""
+    return bool(_DR_RE.match(symbol))
+
+
 def resolve_symbol(symbol: str) -> str:
     """Append .BK for Thai stocks if not already present and not a US ticker."""
     symbol = symbol.upper()

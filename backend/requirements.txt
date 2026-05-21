@@ -11,4 +11,6 @@ python-dotenv
 httpx
 python-jose[cryptography]
 openai
-google-generativeai
+google-genai
+apscheduler>=3.10
+holidays>=0.50

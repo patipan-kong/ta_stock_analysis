@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from jose import jwt, JWTError
@@ -9,8 +11,8 @@ _SECRET = "stock-analysis-jwt-secret-2024-internal"
 _ALGORITHM = "HS256"
 _EXPIRE_HOURS = 24 * 30  # 30 days
 
-_USERNAME = "takae"
-_PASSWORD = "121226"
+_USERNAME = os.getenv("APP_USERNAME")
+_PASSWORD = os.getenv("APP_PASSWORD")
 
 
 class LoginRequest(BaseModel):

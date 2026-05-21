@@ -113,7 +113,7 @@ export default function ConsensusCard({ symbol, refreshKey = 0 }: { symbol: stri
           <AgreementMeter value={agreement} />
         </div>
         <div className="flex gap-2 text-xs">
-          {(["BUY", "HOLD", "SELL"] as const).map((sig) => (
+          {(["ACCUMULATE", "BUY", "WATCH", "HOLD", "REDUCE", "SELL"] as const).map((sig) => (
             <div key={sig} className="flex-1 text-center">
               <div className={`text-xs font-semibold ${sig === "BUY" ? "text-green-600" : sig === "SELL" ? "text-red-500" : "text-amber-600"}`}>
                 {sig}

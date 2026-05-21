@@ -31,21 +31,44 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+class Workspace(Base):
+    """Top-level tenant boundary. Single default workspace in single-user mode."""
+    __tablename__ = "workspaces"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, default="Default")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    portfolios = relationship("Portfolio", back_populates="workspace", cascade="all, delete-orphan")
+    watchlist_items = relationship("Watchlist", back_populates="workspace", cascade="all, delete-orphan")
+    settings = relationship("Settings", back_populates="workspace", cascade="all, delete-orphan")
+    analysis_cache_items = relationship("AnalysisCache", back_populates="workspace", cascade="all, delete-orphan")
+    analysis_history_items = relationship("AnalysisHistory", back_populates="workspace", cascade="all, delete-orphan")
+    optimizer_history_items = relationship("OptimizerHistory", back_populates="workspace", cascade="all, delete-orphan")
+    signal_history_items = relationship("SignalHistory", back_populates="workspace", cascade="all, delete-orphan")
+
+
 class Portfolio(Base):
     __tablename__ = "portfolios"
 
     id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String, nullable=False)
     cash_balance = Column(Float, nullable=False, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    workspace = relationship("Workspace", back_populates="portfolios")
     items = relationship("PortfolioItem", back_populates="portfolio", cascade="all, delete-orphan")
+    transactions = relationship("Transaction", back_populates="portfolio", cascade="all, delete-orphan")
+    snapshots = relationship("PortfolioSnapshot", back_populates="portfolio", cascade="all, delete-orphan")
 
 
 class PortfolioItem(Base):
     __tablename__ = "portfolio_items"
 
     id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     portfolio_id = Column(Integer, ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False, index=True)
     symbol = Column(String, nullable=False)
     shares = Column(Float, nullable=False)
@@ -63,13 +86,18 @@ class Watchlist(Base):
     __tablename__ = "watchlist"
 
     id = Column(Integer, primary_key=True, index=True)
-    symbol = Column(String, unique=True, index=True, nullable=False)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    symbol = Column(String, index=True, nullable=False)
     sector = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    workspace = relationship("Workspace", back_populates="watchlist_items")
+
+    __table_args__ = (UniqueConstraint("workspace_id", "symbol", name="uq_watchlist_ws_symbol"),)
+
 
 class AgentCache(Base):
-    """Caches raw agent results (TA / FA / News) with per-agent TTLs."""
+    """Caches raw agent results (TA / FA / News) with per-agent TTLs. Shared across workspaces."""
     __tablename__ = "agent_cache"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -85,7 +113,8 @@ class AnalysisCache(Base):
     __tablename__ = "analysis_cache"
 
     id = Column(Integer, primary_key=True, index=True)
-    symbol = Column(String, unique=True, index=True, nullable=False)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    symbol = Column(String, index=True, nullable=False)
     signal = Column(String, nullable=False)
     confidence = Column(String, nullable=False)
     reasoning = Column(Text, nullable=False)
@@ -97,11 +126,16 @@ class AnalysisCache(Base):
     ai_model = Column(String, nullable=True)
     sources_used = Column(Text, nullable=True)
 
+    workspace = relationship("Workspace", back_populates="analysis_cache_items")
+
+    __table_args__ = (UniqueConstraint("workspace_id", "symbol", name="uq_analysis_cache_ws_symbol"),)
+
 
 class OptimizerHistory(Base):
     __tablename__ = "optimizer_history"
 
     id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     portfolio_id = Column(Integer, ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False, index=True)
     portfolio_name = Column(String, nullable=False)
     analyzed_at = Column(DateTime, nullable=False)
@@ -114,11 +148,14 @@ class OptimizerHistory(Base):
     layer3_latency_ms = Column(Integer, nullable=True)
     total_latency_ms = Column(Integer, nullable=True)
 
+    workspace = relationship("Workspace", back_populates="optimizer_history_items")
+
 
 class AnalysisHistory(Base):
     __tablename__ = "analysis_history"
 
     id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     symbol = Column(String, index=True, nullable=False)
     signal = Column(String, nullable=False)
     confidence = Column(String, nullable=False)
@@ -134,13 +171,97 @@ class AnalysisHistory(Base):
     total_latency_ms = Column(Integer, nullable=True)
     analyzed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
+    workspace = relationship("Workspace", back_populates="analysis_history_items")
+
+
+class Transaction(Base):
+    """Records individual transactions for a portfolio.
+
+    transaction_type values:
+      BUY, SELL             — equity transactions (symbol required)
+      DEPOSIT, WITHDRAW     — cash movements (symbol is null)
+      INITIAL_POSITION      — onboarding: import existing holding (symbol required)
+      INITIAL_CASH          — onboarding: set starting cash (symbol is null)
+    """
+    __tablename__ = "transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    portfolio_id = Column(Integer, ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False, index=True)
+    symbol = Column(String, nullable=True, index=True)        # null for cash-only transactions
+    transaction_type = Column(String, nullable=False, index=True)
+    shares = Column(Float, nullable=True)
+    price_per_share = Column(Float, nullable=True)
+    total_amount = Column(Float, nullable=False)
+    fees = Column(Float, nullable=False, default=0.0)
+    taxes = Column(Float, nullable=True, default=0.0)
+    currency = Column(String, nullable=True, default="THB")
+    exchange_rate = Column(Float, nullable=True, default=1.0)
+    transaction_date = Column(DateTime, nullable=False, index=True)
+    notes = Column(Text, nullable=True)
+    sector = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    portfolio = relationship("Portfolio", back_populates="transactions")
+
+
+class PortfolioSnapshot(Base):
+    """Daily snapshot of portfolio total value for historical charting."""
+    __tablename__ = "portfolio_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    portfolio_id = Column(Integer, ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False, index=True)
+    snapshot_date = Column(String, nullable=False, index=True)  # "YYYY-MM-DD"
+    total_value = Column(Float, nullable=False)
+    cash_balance = Column(Float, nullable=False, default=0.0)
+    total_invested = Column(Float, nullable=False, default=0.0)
+    unrealized_pnl = Column(Float, nullable=True)
+    unrealized_pnl_pct = Column(Float, nullable=True)
+    realized_pnl = Column(Float, nullable=True)           # cumulative realized P/L from all SELL txs
+    daily_return_pct = Column(Float, nullable=True)       # day-over-day return vs previous snapshot
+    sector_breakdown_json = Column(Text, nullable=True)  # JSON {"Technology": 35.2, ...}
+    holdings_json = Column(Text, nullable=True)          # JSON [{symbol, shares, market_value, ...}]
+    holdings_count = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    portfolio = relationship("Portfolio", back_populates="snapshots")
+
+    __table_args__ = (UniqueConstraint("portfolio_id", "snapshot_date", name="uq_portfolio_snapshot_date"),)
+
+
+class SignalHistory(Base):
+    """Append-only log of every signal generated, with sector for Thai SET grouping."""
+    __tablename__ = "signal_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    sector = Column(String, nullable=True, index=True)
+    signal = Column(String, nullable=False)
+    prev_signal = Column(String, nullable=True)
+    confidence = Column(String, nullable=True)
+    ta_score = Column(Integer, nullable=True)
+    fa_score = Column(Integer, nullable=True)
+    ai_provider = Column(String, nullable=True)
+    ai_model = Column(String, nullable=True)
+    price_at_signal = Column(Float, nullable=True)
+    recorded_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    workspace = relationship("Workspace", back_populates="signal_history_items")
+
 
 class Settings(Base):
     __tablename__ = "settings"
 
     id = Column(Integer, primary_key=True)
-    key = Column(String, unique=True, nullable=False, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    key = Column(String, nullable=False, index=True)
     value = Column(String, nullable=False)
+
+    workspace = relationship("Workspace", back_populates="settings")
+
+    __table_args__ = (UniqueConstraint("workspace_id", "key", name="uq_settings_ws_key"),)
 
 
 class UserUsage(Base):
@@ -169,6 +290,17 @@ def get_db():
         db.close()
 
 
+def get_default_workspace(db) -> Workspace:
+    """Return the default workspace, creating it if it does not exist."""
+    ws = db.query(Workspace).order_by(Workspace.id).first()
+    if ws is None:
+        ws = Workspace(name="Default")
+        db.add(ws)
+        db.commit()
+        db.refresh(ws)
+    return ws
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
 
@@ -183,9 +315,13 @@ def migrate_legacy_data() -> None:
 
     db = SessionLocal()
     try:
+        # Ensure default workspace exists first (required by all FK columns below)
+        ws = get_default_workspace(db)
+        ws_id = ws.id
+
         # Ensure at least one portfolio ("Main") exists
         if db.query(Portfolio).count() == 0:
-            main = Portfolio(name="Main")
+            main = Portfolio(name="Main", workspace_id=ws_id)
             db.add(main)
             db.commit()
             db.refresh(main)
@@ -195,6 +331,22 @@ def migrate_legacy_data() -> None:
         # SQLite-only: apply incremental ALTER TABLE patches.
         # PostgreSQL uses Alembic migrations (`alembic upgrade head`) instead.
         if _is_sqlite:
+            # ── workspace_id column on every user-owned table ──────────────────
+            _ws_tables = (
+                "portfolios", "portfolio_items", "watchlist",
+                "analysis_cache", "analysis_history", "optimizer_history", "settings",
+                "transactions", "portfolio_snapshots", "signal_history",
+            )
+            for t in _ws_tables:
+                if t in tables:
+                    cols = {c["name"] for c in inspector.get_columns(t)}
+                    if "workspace_id" not in cols:
+                        with engine.begin() as conn:
+                            conn.execute(text(
+                                f"ALTER TABLE {t} ADD COLUMN workspace_id INTEGER NOT NULL DEFAULT 1"
+                            ))
+
+            # ── pre-existing column patches ────────────────────────────────────
             if "portfolios" in tables:
                 with engine.begin() as conn:
                     p_cols = {c["name"] for c in inspector.get_columns("portfolios")}
@@ -259,6 +411,34 @@ def migrate_legacy_data() -> None:
                     if "latency_ms" not in uu_cols:
                         conn.execute(text("ALTER TABLE user_usage ADD COLUMN latency_ms INTEGER"))
 
+            if "signal_history" in tables:
+                with engine.begin() as conn:
+                    sh_cols = {c["name"] for c in inspector.get_columns("signal_history")}
+                    if "price_at_signal" not in sh_cols:
+                        conn.execute(text("ALTER TABLE signal_history ADD COLUMN price_at_signal REAL"))
+                    if "prev_signal" not in sh_cols:
+                        conn.execute(text("ALTER TABLE signal_history ADD COLUMN prev_signal TEXT"))
+
+            if "portfolio_snapshots" in tables:
+                with engine.begin() as conn:
+                    ps_cols = {c["name"] for c in inspector.get_columns("portfolio_snapshots")}
+                    if "realized_pnl" not in ps_cols:
+                        conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN realized_pnl REAL"))
+                    if "daily_return_pct" not in ps_cols:
+                        conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN daily_return_pct REAL"))
+                    if "holdings_json" not in ps_cols:
+                        conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN holdings_json TEXT"))
+
+            if "transactions" in tables:
+                with engine.begin() as conn:
+                    tx_cols = {c["name"] for c in inspector.get_columns("transactions")}
+                    if "taxes" not in tx_cols:
+                        conn.execute(text("ALTER TABLE transactions ADD COLUMN taxes REAL DEFAULT 0"))
+                    if "currency" not in tx_cols:
+                        conn.execute(text("ALTER TABLE transactions ADD COLUMN currency TEXT DEFAULT 'THB'"))
+                    if "exchange_rate" not in tx_cols:
+                        conn.execute(text("ALTER TABLE transactions ADD COLUMN exchange_rate REAL DEFAULT 1.0"))
+
         # Data migration: copy from old flat 'portfolio' table if it still exists (both DB types)
         if "portfolio" in tables:
             existing = {item.symbol for item in db.query(PortfolioItem).filter_by(portfolio_id=main.id).all()}
@@ -267,6 +447,7 @@ def migrate_legacy_data() -> None:
                 for row in rows:
                     if row.symbol not in existing:
                         db.add(PortfolioItem(
+                            workspace_id=ws_id,
                             portfolio_id=main.id,
                             symbol=row.symbol,
                             shares=row.shares,

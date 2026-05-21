@@ -1,4 +1,4 @@
-from services.data_fetcher import fetch_info, normalize_dr_symbol
+from services.data_fetcher import fetch_info, normalize_dr_symbol, is_dr_symbol
 from typing import TypedDict
 
 
@@ -17,10 +17,14 @@ class FundamentalResult(TypedDict):
     upside_source: str | None
     fa_score: int
     fa_summary: str
+    is_dr: bool
+    parent_symbol: str | None
+    upside_reference_price: float | None  # parent USD price used for upside (DR only)
 
 
 def analyze_fundamental(symbol: str) -> FundamentalResult | dict:
     yf_symbol = normalize_dr_symbol(symbol)  # DR: AAPL01.BK → AAPL; others unchanged
+    dr = is_dr_symbol(symbol)
     info = fetch_info(yf_symbol)
     if not info:
         return {"error": "data unavailable"}
@@ -37,6 +41,8 @@ def analyze_fundamental(symbol: str) -> FundamentalResult | dict:
     market_cap: float | None = info.get("marketCap")
     target_price: float | None = info.get("targetMeanPrice")
     analyst_count: int | None = info.get("numberOfAnalystOpinions")
+    # For DR symbols, currentPrice is the parent USD price (correct basis for upside).
+    # For regular symbols it's also the right price. So upside_pct is always correct here.
     current_price_info: float | None = info.get("currentPrice") or info.get("regularMarketPrice")
     upside_pct: float | None = (
         round((target_price - current_price_info) / current_price_info * 100, 1)
@@ -114,4 +120,7 @@ def analyze_fundamental(symbol: str) -> FundamentalResult | dict:
         upside_source=upside_source,
         fa_score=score,
         fa_summary=", ".join(notes),
+        is_dr=dr,
+        parent_symbol=yf_symbol if dr else None,
+        upside_reference_price=round(current_price_info, 4) if dr and current_price_info is not None else None,
     )

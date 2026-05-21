@@ -1,7 +1,9 @@
 import json
+import logging
 from services.ai_client import call_ai
 from services.json_utils import safe_parse_json
 
+logger = logging.getLogger(__name__)
 
 _DEFAULT_LAYERS: dict = {
     "layer1": {
@@ -49,6 +51,7 @@ def _compact_w(items: list[dict]) -> list[dict]:
     return [
         {
             "symbol": i["symbol"],
+            "sector": i.get("sector") or "Other",
             "signal": i.get("signal", "HOLD"),
             "combined_score": i.get("combined_score", 0),
             "ta_score": i.get("ta_score", 0),
@@ -58,6 +61,80 @@ def _compact_w(items: list[dict]) -> list[dict]:
             "roe": round(i["roe"] * 100, 1) if i.get("roe") else None,
         }
         for i in items
+    ]
+
+
+_L1_BUY_SIGNALS = {"BUY", "ACCUMULATE", "WATCH"}
+
+
+def _compress_for_layer1(pc: list[dict], wc: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Strip data to the minimum Layer 1 needs — shortened keys reduce prompt tokens."""
+    c_pc = [
+        {
+            "s": i["symbol"],
+            "sec": i.get("sector", "Other"),
+            "w": round(i.get("weight_pct", 0), 1),
+            "fa": i.get("fa_score", 0),
+            "ta": i.get("ta_score", 0),
+            "sig": i.get("signal", "HOLD"),
+            "swap": i.get("allow_swap", True),
+        }
+        for i in pc
+    ]
+    actionable = [w for w in wc if w.get("signal", "HOLD") in _L1_BUY_SIGNALS]
+    actionable.sort(key=lambda x: -(x.get("fa_score", 0) + x.get("ta_score", 0)))
+    c_wc = [
+        {
+            "s": w["symbol"],
+            "sec": w.get("sector", "Other"),
+            "fa": w.get("fa_score", 0),
+            "ta": w.get("ta_score", 0),
+            "sig": w.get("signal", "WATCH"),
+        }
+        for w in actionable[:10]
+    ]
+    return c_pc, c_wc
+
+
+def _normalize_l1_swaps(swaps: list) -> list[dict]:
+    """Convert L1 minimal swap objects to the full format used by post-processing and Layer 3."""
+    result = []
+    for s in (swaps or []):
+        result.append({
+            "sell_symbol": s.get("sell") or s.get("sell_symbol"),
+            "buy_symbol": s.get("buy") or s.get("buy_symbol"),
+            "reason": s.get("reason", ""),
+            "score_improvement": float(s.get("score_delta") or s.get("delta") or s.get("score_improvement") or 0),
+            "sector": s.get("sector", "Other"),
+            "type": s.get("type", "SWAP"),
+        })
+    return result
+
+
+def _rebuild_watchlist_ranking(top_buys: list, wc: list[dict]) -> list[dict]:
+    """Rebuild full watchlist_ranking from L1 top_buys + watchlist data."""
+    wc_map = {w["symbol"]: w for w in wc}
+    seen: set[str] = set()
+    ranked: list[str] = []
+    for sym in (top_buys or []):
+        if sym in wc_map and sym not in seen:
+            ranked.append(sym)
+            seen.add(sym)
+    for w in sorted(wc, key=lambda x: -(x.get("fa_score", 0) + x.get("ta_score", 0))):
+        if w["symbol"] not in seen:
+            ranked.append(w["symbol"])
+            seen.add(w["symbol"])
+    return [
+        {
+            "symbol": sym,
+            "rank": i + 1,
+            "signal": wc_map.get(sym, {}).get("signal", "WATCH"),
+            "combined_score": wc_map.get(sym, {}).get("combined_score", 0),
+            "sector": wc_map.get(sym, {}).get("sector", "Other"),
+            "suggested_allocation_pct": 0.0,
+            "reasoning": "",
+        }
+        for i, sym in enumerate(ranked)
     ]
 
 
@@ -221,97 +298,62 @@ def _consensus_engine(l2: dict, l3: dict) -> dict:
 # ─── Prompt builders ──────────────────────────────────────────────────────────
 
 def _layer1_prompt(
-    pc: list[dict], wc: list[dict], portfolio_name: str,
-    portfolio_count: int, max_reached: bool, room: int,
-    sell_forced: list[str], swap_eligible: list[str], locked: list[str],
-    role: str = "",
-    max_stocks: int = 12,
+    c_pc: list[dict],
+    c_wc: list[dict],
+    sell_forced: list[str],
+    swap_eligible: list[str],
     max_sector_pct: int = 40,
     sector_limits: dict | None = None,
-    current_sector_weights: dict | None = None,
 ) -> str:
-    role_line = f"Your focus: {role}\n\n" if role else ""
-    if sector_limits:
-        sector_block = (
-            f"SECTOR ALLOCATION LIMITS (from user settings):\n{json.dumps(sector_limits, indent=2)}\n"
-            "sector_limits apply to CURRENT portfolio holdings. "
-            "Flag only if current weight already exceeds limit. "
-            "Show projected weight after each swap suggestion. "
-            "\"default\" applies to sectors not listed above."
-        )
-    else:
-        sector_block = f"Max sector allocation: {max_sector_pct}% per sector. sector_limits apply to CURRENT holdings only."
+    sl = sector_limits or {"default": max_sector_pct}
+    return f"""You are a DIRECTOR. Output swap targets only.
+DO NOT explain. DO NOT describe. DO NOT reason.
+Every word not in the JSON structure is a failure.
+If you write reasoning, you fail.
+If you exceed 200 tokens, you fail.
 
-    sector_weights_block = ""
-    if current_sector_weights:
-        sector_weights_block = (
-            f"\nCURRENT PORTFOLIO SECTOR WEIGHTS (by market value):\n"
-            f"{json.dumps(current_sector_weights, indent=2)}\n"
-        )
-    return f"""Portfolio optimization expert for Thai (SET) and US stocks.
-{role_line}PORTFOLIO: "{portfolio_name}"
-{json.dumps(pc, indent=2)}
+Portfolio: {json.dumps(c_pc)}
+Watchlist: {json.dumps(c_wc)}
+Sector limits: {json.dumps(sl)}
+Swap eligible: {swap_eligible or "none"}
+Forced sells: {sell_forced or "none"}
 
-WATCHLIST:
-{json.dumps(wc, indent=2)}
+Output schema (strictly follow):
+swaps: max 3 items [sell, buy, delta, sector]
+top_buys: max 5 symbols
+sector_flags: max 3 short strings
+priority: one word only
 
-SCORING: combined_score = 0.4×ta_score + 0.6×fa_score (range ~−8 to +8). Thai stocks end in .BK.
-{sector_weights_block}
-CONSTRAINT GROUPS:
-- Portfolio size: {portfolio_count}/{max_stocks}. Room for {room} more. {"AT LIMIT — no net additions allowed." if max_reached else ""}
-- SELL/REDUCE-signal stocks (ALWAYS include as type=SELL, regardless of allow_swap): {sell_forced or "none"}
-- Swap-eligible: {swap_eligible or "none"}
-- Locked (exclude from SWAP, still SELL if signalled): {locked or "none"}
-
-RULES:
-1. type="SELL": one entry per forced-exit symbol. buy_symbol=null, score_improvement=0.
-2. type="SWAP": only swap_eligible, only if watchlist score >= portfolio score + 2. Max 4 SWAPs. {"No net additions." if max_reached else f"Up to {room} pure additions (sell_symbol=null, type=SWAP) if score is strong."}
-3. watchlist_ranking: ALL watchlist stocks by combined_score desc. Top {room} may have non-zero suggested_allocation_pct, rest=0. Non-zero must sum to 100, cap 25%/stock.
-   {sector_block}
-4. Use 6-level signals for watchlist_ranking: ACCUMULATE | BUY | WATCH | HOLD | REDUCE | SELL.
-5. reasoning: 1-2 sentences on overall strategy. priority: "growth"|"balanced"|"defensive".
-
-CRITICAL: Return JSON only. No markdown fences.
-
-{{
-  "portfolio_count": {portfolio_count},
-  "max_reached": {"true" if max_reached else "false"},
-  "portfolio_assessment": "One sentence.",
-  "optimization_notes": "1-2 recommendations.",
-  "reasoning": "1-2 sentence strategy rationale.",
-  "priority": "growth|balanced|defensive",
-  "swap_suggestions": [
-    {{"sell_symbol": "symbol or null", "buy_symbol": "symbol or null", "reason": "One sentence.",
-      "score_improvement": 0.0, "sector": "Banking|Energy|Retail|Healthcare|Tech|Utilities|Other", "type": "SELL|SWAP"}}
-  ],
-  "watchlist_ranking": [
-    {{"symbol": "...", "rank": 1, "signal": "ACCUMULATE|BUY|WATCH|HOLD|REDUCE|SELL", "combined_score": 0.0,
-      "sector": "...", "suggested_allocation_pct": 0.0, "reasoning": "One sentence."}}
-  ]
-}}"""
+{{"swaps":[{{"sell":"SYMBOL|null","buy":"SYMBOL|null","score_delta":0.0,"sector":"S","type":"SELL|SWAP"}}],"top_buys":["S"],"sector_flags":["S 45%>30%"],"priority":"growth"}}"""
 
 
 def _layer2_prompt(pc: list[dict], wc: list[dict], l1: dict, role: str = "") -> str:
     role_line = f"Your role: {role}\n\n" if role else ""
+    l1_swaps = l1.get("swap_suggestions", l1.get("swaps", []))
+    l1_top_buys = l1.get("top_buys", [])
+    l1_sector_flags = l1.get("sector_flags", [])
+    l1_priority = l1.get("priority", "balanced")
     return f"""You are an independent portfolio reviewer.
-{role_line}A strategist proposed these portfolio changes:
-{json.dumps(l1.get("swap_suggestions", []), indent=2)}
+{role_line}The strategist proposed:
+- Priority: {l1_priority}
+- Swaps: {json.dumps(l1_swaps, indent=2)}
+- Top watchlist picks: {l1_top_buys}
+- Sector flags: {l1_sector_flags}
 
-Strategist reasoning: {l1.get("reasoning", l1.get("portfolio_assessment", ""))}
-
-Portfolio context:
+Full portfolio data for your analysis:
 {json.dumps(pc, indent=2)}
 
-Watchlist alternatives:
+Full watchlist for your analysis:
 {json.dumps(wc, indent=2)}
 
-Challenge or confirm this proposal. Thai stocks end in .BK.
+Using the full data above, challenge or confirm the strategist's proposal with detailed reasoning.
+Thai stocks end in .BK.
 
 CRITICAL: Return JSON only. No markdown fences.
 
 {{
   "agrees_with_layer1": true,
-  "disagreements": ["reason if any"],
+  "disagreements": ["detailed reason if any"],
   "alternative_suggestions": [
     {{"sell_symbol": "...", "buy_symbol": "...", "reason": "...", "score_improvement": 0.0, "sector": "...", "type": "SELL|SWAP"}}
   ],
@@ -322,12 +364,14 @@ Use 6-level signals (ACCUMULATE|BUY|WATCH|HOLD|REDUCE|SELL) in any signal fields
 
 def _layer3_prompt(l1: dict, l2: dict, role: str = "", max_sector_pct: int = 40) -> str:
     role_line = f"Your role: {role}\n\n" if role else ""
+    l1_swaps = l1.get("swap_suggestions", l1.get("swaps", []))
+    l1_sector_flags = l1.get("sector_flags", [])
     return f"""You are a portfolio risk auditor.
 {role_line}Evaluate both proposals for concentration risk and allocation issues.
 
 Layer 1 (Strategist) swaps:
-{json.dumps(l1.get("swap_suggestions", []), indent=2)}
-Notes: {l1.get("optimization_notes", "")}
+{json.dumps(l1_swaps, indent=2)}
+Sector flags: {l1_sector_flags}
 
 Layer 2 (Challenger):
 Agrees: {l2.get("agrees_with_layer1", True)}
@@ -367,25 +411,29 @@ def run_optimizer(
     sell_forced   = [p["symbol"] for p in portfolio_data if p.get("signal") == "SELL"]
     swap_eligible = [p["symbol"] for p in portfolio_data if p.get("allow_swap", True) and p.get("signal") != "SELL"]
     locked        = [p["symbol"] for p in portfolio_data if not p.get("allow_swap", True)]
-    room = max(0, max_stocks - portfolio_count)
+    pc = _compact_p(portfolio_data)
+    wc = _compact_w(watchlist_data)
+    c_pc, c_wc = _compress_for_layer1(pc, wc)
     prompt = _layer1_prompt(
-        _compact_p(portfolio_data), _compact_w(watchlist_data),
-        portfolio_name, portfolio_count, max_reached, room,
-        sell_forced, swap_eligible, locked, role="",
-        max_stocks=max_stocks, max_sector_pct=max_sector_pct,
+        c_pc, c_wc, sell_forced, swap_eligible,
+        max_sector_pct=max_sector_pct,
     )
+    logger.info(f"L1 prompt chars: {len(prompt)}")
     ai_result = call_ai(
-        prompt,
-        provider,
-        model,
-        max_tokens=8192,
-        usage_operation="optimize",
-        usage_layer="layer1",
+        prompt, provider, model, max_tokens=1024,
+        use_schema=True,
+        usage_operation="optimize", usage_layer="layer1",
     )
+    logger.info(f"L1 response chars: {len(ai_result.get('text', ''))}")
     result = safe_parse_json(ai_result["text"])
+    result["portfolio_name"] = portfolio_name
+    result["portfolio_count"] = portfolio_count
+    result["max_reached"] = max_reached
+    result["max_stocks"] = max_stocks
     result["swap_suggestions"] = _postprocess_swaps(
-        result.get("swap_suggestions", []), sell_forced, locked
+        _normalize_l1_swaps(result.get("swaps", [])), sell_forced, locked
     )
+    result["watchlist_ranking"] = _rebuild_watchlist_ranking(result.get("top_buys", []), wc)
     return result
 
 
@@ -411,36 +459,43 @@ def run_layered_optimizer(
     sell_forced   = [p["symbol"] for p in portfolio_data if p.get("signal") == "SELL"]
     swap_eligible = [p["symbol"] for p in portfolio_data if p.get("allow_swap", True) and p.get("signal") != "SELL"]
     locked        = [p["symbol"] for p in portfolio_data if not p.get("allow_swap", True)]
-    room = max(0, max_stocks - portfolio_count)
-    pc, wc = _compact_p(portfolio_data), _compact_w(watchlist_data)
+    pc = _compact_p(portfolio_data)
+    wc = _compact_w(watchlist_data)
+    c_pc, c_wc = _compress_for_layer1(pc, wc)
 
     current_sector_weights = calculate_current_sector_weights(portfolio_data)
 
-    # Layer 1 — Strategist
+    # Layer 1 — Strategist (compressed data, minimal output schema)
     try:
+        l1_prompt = _layer1_prompt(
+            c_pc, c_wc, sell_forced, swap_eligible,
+            max_sector_pct=max_sector_pct,
+            sector_limits=sector_limits,
+        )
+        logger.info(f"L1 prompt chars: {len(l1_prompt)}")
         l1_raw = call_ai(
-            _layer1_prompt(pc, wc, portfolio_name, portfolio_count, max_reached, room,
-                           sell_forced, swap_eligible, locked, l1_cfg.get("role", ""),
-                           max_stocks=max_stocks, max_sector_pct=max_sector_pct,
-                           sector_limits=sector_limits,
-                           current_sector_weights=current_sector_weights),
-            l1_cfg["provider"], l1_cfg["model"], max_tokens=8192,
-            usage_operation="optimize",
-            usage_layer="layer1",
+            l1_prompt, l1_cfg["provider"], l1_cfg["model"], max_tokens=1024,
+            use_schema=True,
+            usage_operation="optimize", usage_layer="layer1",
         )
         l1_latency_ms = l1_raw["latency_ms"]
+        logger.info(f"L1 response chars: {len(l1_raw.get('text', ''))}")
         l1_result = safe_parse_json(l1_raw["text"])
+        # Normalize compact swaps → full format for L3 and post-processing
+        l1_result["swap_suggestions"] = _normalize_l1_swaps(l1_result.get("swaps", []))
     except Exception as e:
-        l1_result = {"error": str(e), "swap_suggestions": [], "watchlist_ranking": []}
+        l1_result = {
+            "error": str(e), "swaps": [], "swap_suggestions": [],
+            "top_buys": [], "sector_flags": [], "priority": "balanced",
+        }
         l1_latency_ms = 0
 
-    # Layer 2 — Challenger
+    # Layer 2 — Challenger (full pc/wc for reasoning, L1 compact summary as context)
     try:
         l2_raw = call_ai(
             _layer2_prompt(pc, wc, l1_result, l2_cfg.get("role", "")),
             l2_cfg["provider"], l2_cfg["model"], max_tokens=8192,
-            usage_operation="optimize",
-            usage_layer="layer2",
+            usage_operation="optimize", usage_layer="layer2",
         )
         l2_latency_ms = l2_raw["latency_ms"]
         l2_result = safe_parse_json(l2_raw["text"])
@@ -448,13 +503,12 @@ def run_layered_optimizer(
         l2_result = {"error": str(e), "agrees_with_layer1": True, "disagreements": [], "alternative_suggestions": []}
         l2_latency_ms = 0
 
-    # Layer 3 — Risk Auditor
+    # Layer 3 — Risk Auditor (works from normalized swap_suggestions)
     try:
         l3_raw = call_ai(
             _layer3_prompt(l1_result, l2_result, l3_cfg.get("role", ""), max_sector_pct=max_sector_pct),
-            l3_cfg["provider"], l3_cfg["model"], max_tokens=8192,
-            usage_operation="optimize",
-            usage_layer="layer3",
+            l3_cfg["provider"], l3_cfg["model"], max_tokens=2048,
+            usage_operation="optimize", usage_layer="layer3",
         )
         l3_latency_ms = l3_raw["latency_ms"]
         l3_result = safe_parse_json(l3_raw["text"])
@@ -474,15 +528,20 @@ def run_layered_optimizer(
     )
 
     total_latency_ms = l1_latency_ms + l2_latency_ms + l3_latency_ms
+    watchlist_ranking = _rebuild_watchlist_ranking(l1_result.get("top_buys", []), wc)
+    portfolio_assessment = (
+        "; ".join(l1_result.get("sector_flags", [])) or l1_result.get("priority", "")
+    )
 
     return {
         "portfolio_name": portfolio_name,
-        "portfolio_assessment": l1_result.get("portfolio_assessment", ""),
+        "portfolio_assessment": portfolio_assessment,
         "optimization_notes": consensus["recommended_action"],
         "swap_suggestions": swap_suggestions,
-        "watchlist_ranking": l1_result.get("watchlist_ranking", []),
+        "watchlist_ranking": watchlist_ranking,
         "portfolio_count": portfolio_count,
         "max_reached": max_reached,
+        "max_stocks": max_stocks,
         "ai_provider": l1_cfg["provider"],
         "ai_model": l1_cfg["model"],
         "current_sector_weights": current_sector_weights,

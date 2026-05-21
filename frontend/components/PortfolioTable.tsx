@@ -35,14 +35,33 @@ const RISK_COLOR: Record<RiskLevel, string> = {
   Critical: "#501313",
 };
 
-function UpsideCell({ upside, signal }: { upside: number | null; signal: PortfolioItem["latest_signal"] }) {
+function DRBadge({ parentSymbol }: { parentSymbol: string }) {
+  return (
+    <span
+      title="Upside calculated using parent stock price"
+      className="ml-1 text-xs font-semibold px-1 py-0.5 rounded border border-blue-300 text-blue-600 bg-blue-50 whitespace-nowrap cursor-help"
+    >
+      DR → {parentSymbol}
+    </span>
+  );
+}
+
+function UpsideCell({ upside, signal, isDr, parentSymbol }: {
+  upside: number | null;
+  signal: PortfolioItem["latest_signal"];
+  isDr?: boolean;
+  parentSymbol?: string | null;
+}) {
   if (upside == null) return <span className="text-gray-400 text-xs">N/A</span>;
   const warn = upside < 0 && (signal === "HOLD" || signal === "REDUCE");
   const color = upside > 0 ? "text-green-600" : "text-red-500";
   return (
-    <span className={`font-medium text-sm ${color}`}>
-      {warn && <span title="Negative upside on held position" className="mr-0.5">⚠</span>}
-      {upside > 0 ? "+" : ""}{upside.toFixed(1)}%
+    <span className="inline-flex items-center gap-0.5 flex-wrap">
+      <span className={`font-medium text-sm ${color}`}>
+        {warn && <span title="Negative upside on held position" className="mr-0.5">⚠</span>}
+        {upside > 0 ? "+" : ""}{upside.toFixed(1)}%
+      </span>
+      {isDr && parentSymbol && <DRBadge parentSymbol={parentSymbol} />}
     </span>
   );
 }
@@ -146,11 +165,13 @@ export default function PortfolioTable({
   onRemove,
   onReanalyze,
   onToggleSwap,
+  onSell,
 }: {
   rows: PortfolioItem[];
   onRemove: (symbol: string) => Promise<void>;
   onReanalyze: (symbol: string) => Promise<void>;
   onToggleSwap: (symbol: string, allow_swap: boolean) => Promise<void>;
+  onSell?: (item: PortfolioItem) => void;
 }) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [busy, setBusy] = useState<Record<string, "remove" | "reanalyze" | "toggle" | null>>({});
@@ -262,7 +283,12 @@ export default function PortfolioTable({
       columnHelper.accessor("upside_pct", {
         header: "Upside", sortingFn: "basic",
         cell: ({ getValue, row }) => (
-          <UpsideCell upside={getValue()} signal={row.original.latest_signal} />
+          <UpsideCell
+            upside={getValue()}
+            signal={row.original.latest_signal}
+            isDr={row.original.is_dr}
+            parentSymbol={row.original.parent_symbol}
+          />
         ),
       }),
       columnHelper.accessor("risk_level", {
@@ -303,6 +329,16 @@ export default function PortfolioTable({
               >
                 {state === "toggle" ? "…" : row.original.allow_swap ? "🔓" : "🔒"}
               </button>
+              {onSell && (
+                <button
+                  onClick={() => onSell(row.original)}
+                  disabled={!!state}
+                  className="text-xs font-semibold px-2 py-0.5 rounded border disabled:opacity-40 transition-colors"
+                  style={{ color: "#854F0B", borderColor: "#854F0B60", backgroundColor: "#854F0B10" }}
+                >
+                  Sell
+                </button>
+              )}
               <button onClick={() => handleReanalyze(sym)} disabled={!!state}
                 className="text-blue-500 hover:text-blue-700 text-xs disabled:opacity-40">
                 {state === "reanalyze" ? "…" : "Re-analyze"}
@@ -316,7 +352,7 @@ export default function PortfolioTable({
         },
       }),
     ],
-    [busy]
+    [busy, onSell]
   );
 
   const table = useReactTable({
@@ -397,7 +433,7 @@ export default function PortfolioTable({
                 </div>
                 <div className="flex flex-col">
                   <span className="text-xs text-gray-400">Upside</span>
-                  <UpsideCell upside={item.upside_pct} signal={item.latest_signal} />
+                  <UpsideCell upside={item.upside_pct} signal={item.latest_signal} isDr={item.is_dr} parentSymbol={item.parent_symbol} />
                 </div>
                 <div className="flex flex-col">
                   <span className="text-xs text-gray-400">Risk</span>
@@ -435,6 +471,16 @@ export default function PortfolioTable({
                 >
                   {state === "toggle" ? "…" : item.allow_swap ? "🔓" : "🔒"}
                 </button>
+                {onSell && (
+                  <button
+                    onClick={() => onSell(item)}
+                    disabled={!!state}
+                    className="text-sm font-semibold px-2 py-0.5 rounded border disabled:opacity-40"
+                    style={{ color: "#854F0B", borderColor: "#854F0B60", backgroundColor: "#854F0B10" }}
+                  >
+                    Sell
+                  </button>
+                )}
                 <button onClick={() => handleReanalyze(sym)} disabled={!!state}
                   className="text-blue-500 hover:text-blue-700 text-sm font-medium disabled:opacity-40">
                   {state === "reanalyze" ? "Analyzing…" : "Re-analyze"}
@@ -457,7 +503,13 @@ export default function PortfolioTable({
               <tr key={hg.id} className="border-b text-left text-gray-500">
                 {hg.headers.map((header) => (
                   <th key={header.id}
-                    className={`py-2 pr-4 font-medium whitespace-nowrap ${header.column.getCanSort() ? "cursor-pointer hover:text-gray-800 select-none" : ""}`}
+                    className={[
+                      "py-2 pr-4 font-medium whitespace-nowrap",
+                      header.column.getCanSort() ? "cursor-pointer hover:text-gray-800 select-none" : "",
+                      header.id === "symbol"
+                        ? "sticky left-0 z-20 bg-white pl-4 border-r border-gray-100"
+                        : "",
+                    ].join(" ")}
                     onClick={header.column.getToggleSortingHandler()}>
                     {flexRender(header.column.columnDef.header, header.getContext())}
                     <SortIcon column={header.column} />
@@ -468,9 +520,15 @@ export default function PortfolioTable({
           </thead>
           <tbody>
             {sortedRows.map((row) => (
-              <tr key={row.id} className="border-b hover:bg-gray-50">
+              <tr key={row.id} className="border-b hover:bg-gray-50 group">
                 {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id} className="py-2 pr-4">
+                  <td key={cell.id}
+                    className={[
+                      "py-2 pr-4",
+                      cell.column.id === "symbol"
+                        ? "sticky left-0 z-10 bg-white group-hover:bg-gray-50 pl-4 border-r border-gray-100"
+                        : "",
+                    ].join(" ")}>
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
                 ))}

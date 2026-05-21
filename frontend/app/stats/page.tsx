@@ -174,11 +174,30 @@ function CostTable({ data }: { data: CostEstimate }) {
   );
 }
 
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+function daysAgoStr(n: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+const DATE_PRESETS = [
+  { label: "Today",   from: () => todayStr(),     to: () => todayStr() },
+  { label: "7 days",  from: () => daysAgoStr(6),  to: () => todayStr() },
+  { label: "30 days", from: () => daysAgoStr(29), to: () => todayStr() },
+  { label: "All",     from: () => "",              to: () => "" },
+];
+
 export default function StatsPage() {
   const [latency, setLatency] = useState<LatencyStats | null>(null);
   const [cost, setCost] = useState<CostEstimate | null>(null);
   const [loading, setLoading] = useState(true);
+  const [filtering, setFiltering] = useState(false);
   const [error, setError] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
 
   useEffect(() => {
     Promise.all([getLatencyStats(), getCostEstimate()])
@@ -187,14 +206,68 @@ export default function StatsPage() {
       .finally(() => setLoading(false));
   }, []);
 
+  function applyDateFilter(from: string, to: string) {
+    setFromDate(from);
+    setToDate(to);
+    setFiltering(true);
+    const f = from || undefined;
+    const t = to || undefined;
+    Promise.all([getLatencyStats(f, t), getCostEstimate(f, t)])
+      .then(([l, c]) => { setLatency(l); setCost(c); })
+      .catch(() => setError("Failed to load stats"))
+      .finally(() => setFiltering(false));
+  }
+
   if (loading) return <p className="text-sm text-gray-400">Loading…</p>;
   if (error)   return <p className="text-sm text-red-500">{error}</p>;
 
+  const isFiltered = !!(fromDate || toDate);
+
   return (
     <div className="space-y-8 max-w-5xl">
-      <div>
-        <h1 className="text-2xl font-bold mb-1">AI Stats</h1>
-        <p className="text-sm text-gray-500">Latency and token usage across all AI calls.</p>
+      {/* Page header + global date filter */}
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold mb-1">AI Stats</h1>
+          <p className="text-sm text-gray-500">Latency and token usage across all AI calls.</p>
+        </div>
+        <div className="bg-white border rounded-xl px-4 py-3 shadow-sm flex flex-wrap items-center gap-2">
+          <span className="text-xs text-gray-500 font-medium mr-1">Period:</span>
+          {DATE_PRESETS.map(preset => {
+            const pFrom = preset.from();
+            const pTo = preset.to();
+            const active = fromDate === pFrom && toDate === pTo;
+            return (
+              <button
+                key={preset.label}
+                onClick={() => applyDateFilter(pFrom, pTo)}
+                className={`text-xs px-3 py-1 rounded-full border transition-colors ${
+                  active
+                    ? "bg-gray-800 text-white border-gray-800"
+                    : "bg-white text-gray-600 border-gray-300 hover:border-gray-500"
+                }`}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
+          <div className="flex items-center gap-1 ml-1">
+            <input
+              type="date"
+              value={fromDate}
+              onChange={e => applyDateFilter(e.target.value, toDate)}
+              className="text-xs border rounded px-2 py-1 text-gray-700 focus:outline-none focus:ring-1 focus:ring-gray-400"
+            />
+            <span className="text-xs text-gray-400">–</span>
+            <input
+              type="date"
+              value={toDate}
+              onChange={e => applyDateFilter(fromDate, e.target.value)}
+              className="text-xs border rounded px-2 py-1 text-gray-700 focus:outline-none focus:ring-1 focus:ring-gray-400"
+            />
+          </div>
+          {filtering && <span className="text-xs text-gray-400 ml-1">Loading…</span>}
+        </div>
       </div>
 
       {/* Analysis Latency */}
@@ -223,8 +296,8 @@ export default function StatsPage() {
             <p className="text-xs text-gray-500 mt-0.5">Based on actual token counts × pricing from ai-model.json.</p>
           </div>
           {cost && (
-            <div className="text-right">
-              <p className="text-xs text-gray-500">Total</p>
+            <div className="text-right shrink-0">
+              <p className="text-xs text-gray-500">{isFiltered ? "Filtered total" : "All-time total"}</p>
               <p className="text-xl font-bold text-gray-900">${cost.total_estimated_usd.toFixed(4)}</p>
             </div>
           )}

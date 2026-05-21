@@ -54,6 +54,9 @@ export interface PortfolioItem {
   upside_pct: number | null;
   risk_level: RiskLevel | null;
   sector?: string | null;
+  is_dr?: boolean;
+  parent_symbol?: string | null;
+  upside_reference_price?: number | null;
 }
 
 export interface WatchlistItem {
@@ -70,6 +73,9 @@ export interface WatchlistItem {
   upside_pct: number | null;
   risk_level: RiskLevel | null;
   sector?: string | null;
+  is_dr?: boolean;
+  parent_symbol?: string | null;
+  upside_reference_price?: number | null;
 }
 
 export interface SectorBreakdownItem {
@@ -127,6 +133,9 @@ export interface FundamentalResult {
   upside_source: string | null;
   fa_score: number;
   fa_summary: string;
+  is_dr?: boolean;
+  parent_symbol?: string | null;
+  upside_reference_price?: number | null;
   error?: string;
 }
 
@@ -555,8 +564,19 @@ export interface CostEstimate {
   total_estimated_usd: number;
 }
 
-export const getLatencyStats = () => apiFetch<LatencyStats>("/stats/latency");
-export const getCostEstimate = () => apiFetch<CostEstimate>("/stats/cost-estimate");
+function _dateQS(fromDate?: string, toDate?: string): string {
+  const p = new URLSearchParams();
+  if (fromDate) p.set("from_date", fromDate);
+  if (toDate) p.set("to_date", toDate);
+  const qs = p.toString();
+  return qs ? `?${qs}` : "";
+}
+
+export const getLatencyStats = (fromDate?: string, toDate?: string) =>
+  apiFetch<LatencyStats>(`/stats/latency${_dateQS(fromDate, toDate)}`);
+
+export const getCostEstimate = (fromDate?: string, toDate?: string) =>
+  apiFetch<CostEstimate>(`/stats/cost-estimate${_dateQS(fromDate, toDate)}`);
 
 export interface BackfillSectorsResult {
   watchlist_updated: number;
@@ -642,6 +662,158 @@ export const updateOptimizerLayer = (layer: "layer1" | "layer2" | "layer3", prov
     body: JSON.stringify({ layer, provider, model }),
   });
 
+// ─── Transactions ─────────────────────────────────────────────────────────────
+
+export type TransactionType =
+  | "BUY"
+  | "SELL"
+  | "DEPOSIT"
+  | "WITHDRAW"
+  | "INITIAL_POSITION"
+  | "INITIAL_CASH";
+
+export interface TransactionRecord {
+  id: number;
+  portfolio_id: number;
+  symbol: string | null;
+  type: TransactionType;
+  shares: number | null;
+  price_per_share: number | null;
+  total_amount: number;
+  fees: number;
+  taxes: number;
+  currency: string;
+  exchange_rate: number;
+  transaction_date: string;
+  notes: string | null;
+  sector: string | null;
+  created_at: string | null;
+}
+
+export interface TransactionHolding {
+  shares: number;
+  avg_cost: number;
+  sector: string | null;
+}
+
+export interface TransactionResult {
+  transaction_id: number;
+  type: TransactionType;
+  symbol: string | null;
+  // equity fields (BUY / SELL / INITIAL_POSITION)
+  shares?: number;
+  price_per_share?: number;
+  // cash fields (DEPOSIT / WITHDRAW / INITIAL_CASH)
+  amount?: number;
+  total_amount: number;
+  fees?: number;
+  taxes?: number;
+  transaction_date: string;
+  notes: string | null;
+  realized_pnl?: number;
+  holding_removed?: boolean;
+  cash_balance?: number | null;
+  holding: TransactionHolding | null;
+}
+
+export interface BuyPayload {
+  symbol: string;
+  shares: number;
+  price_per_share: number;
+  fees?: number;
+  taxes?: number;
+  currency?: string;
+  exchange_rate?: number;
+  transaction_date?: string;
+  notes?: string;
+}
+
+export interface SellPayload {
+  symbol: string;
+  shares: number;
+  price_per_share: number;
+  fees?: number;
+  taxes?: number;
+  currency?: string;
+  exchange_rate?: number;
+  transaction_date?: string;
+  notes?: string;
+  remove_if_zero?: boolean;
+}
+
+export interface DepositPayload {
+  amount: number;
+  currency?: string;
+  exchange_rate?: number;
+  transaction_date?: string;
+  notes?: string;
+}
+
+export interface WithdrawPayload {
+  amount: number;
+  currency?: string;
+  exchange_rate?: number;
+  transaction_date?: string;
+  notes?: string;
+}
+
+export interface InitialPositionPayload {
+  symbol: string;
+  shares: number;
+  avg_cost: number;
+  transaction_date?: string;
+  notes?: string;
+}
+
+export interface InitialCashPayload {
+  amount: number;
+  currency?: string;
+  transaction_date?: string;
+  notes?: string;
+}
+
+export const buyTransaction = (portfolioId: number, payload: BuyPayload) =>
+  apiFetch<TransactionResult>(`/portfolios/${portfolioId}/transactions/buy`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+export const sellTransaction = (portfolioId: number, payload: SellPayload) =>
+  apiFetch<TransactionResult>(`/portfolios/${portfolioId}/transactions/sell`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+export const depositTransaction = (portfolioId: number, payload: DepositPayload) =>
+  apiFetch<TransactionResult>(`/portfolios/${portfolioId}/transactions/deposit`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+export const withdrawTransaction = (portfolioId: number, payload: WithdrawPayload) =>
+  apiFetch<TransactionResult>(`/portfolios/${portfolioId}/transactions/withdraw`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+export const initialPositionTransaction = (portfolioId: number, payload: InitialPositionPayload) =>
+  apiFetch<TransactionResult>(`/portfolios/${portfolioId}/transactions/initial-position`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+export const initialCashTransaction = (portfolioId: number, payload: InitialCashPayload) =>
+  apiFetch<TransactionResult>(`/portfolios/${portfolioId}/transactions/initial-cash`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+export const getTransactionHistory = (portfolioId: number, symbol?: string, limit = 100) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (symbol) params.set("symbol", symbol);
+  return apiFetch<TransactionRecord[]>(`/portfolios/${portfolioId}/transactions?${params}`);
+};
+
 export const getLatestSignal = (symbol: string) =>
   apiFetch<{
     symbol: string;
@@ -688,3 +860,49 @@ export const getModelCostReport = (year?: number, month?: number) => {
   const qs = params.toString();
   return apiFetch<ModelCostReport>(`/usage/model-cost-report${qs ? `?${qs}` : ""}`);
 };
+
+// ─── Portfolio Snapshots ──────────────────────────────────────────────────────
+
+export interface SnapshotHolding {
+  symbol: string;
+  shares: number;
+  avg_cost: number;
+  current_price: number;
+  market_value: number;
+  unrealized_pnl: number;
+  unrealized_pnl_pct: number;
+  sector: string;
+}
+
+export interface PortfolioSnapshotRow {
+  id: number;
+  portfolio_id: number;
+  snapshot_date: string;           // "YYYY-MM-DD"
+  total_value: number;
+  cash_balance: number;
+  total_invested: number;
+  unrealized_pnl: number | null;
+  unrealized_pnl_pct: number | null;
+  realized_pnl: number | null;
+  daily_return_pct: number | null;
+  holdings_count: number | null;
+  sector_breakdown: Record<string, number> | null;  // {sector: weight_pct}
+  holdings: SnapshotHolding[] | null;
+  created_at: string | null;
+}
+
+export interface GenerateSnapshotResult extends PortfolioSnapshotRow {
+  equity_value: number;
+  updated: boolean;
+}
+
+export const generateSnapshot = (portfolioId: number, snapshotDate?: string) =>
+  apiFetch<GenerateSnapshotResult>("/snapshots/generate", {
+    method: "POST",
+    body: JSON.stringify({ portfolio_id: portfolioId, snapshot_date: snapshotDate ?? null }),
+  });
+
+export const getSnapshots = (portfolioId: number, limit = 365) =>
+  apiFetch<PortfolioSnapshotRow[]>(
+    `/portfolios/${portfolioId}/snapshots?limit=${limit}`
+  );

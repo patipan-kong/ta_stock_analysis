@@ -4,9 +4,11 @@ import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
 import SignalBadge from "@/components/SignalBadge";
 import AnalyzeAllButton from "@/components/AnalyzeAllButton";
-import { getWatchlist, addToWatchlist, removeFromWatchlist } from "@/lib/api";
-import type { WatchlistItem, AnalyzeAllResult, RiskLevel } from "@/lib/api";
+import TransactionModal from "@/components/TransactionModal";
+import { getWatchlist, addToWatchlist, removeFromWatchlist, buyTransaction } from "@/lib/api";
+import type { WatchlistItem, AnalyzeAllResult, RiskLevel, BuyPayload, TransactionResult } from "@/lib/api";
 import { sectorColor } from "@/lib/sectors";
+import { usePortfolio } from "@/lib/PortfolioContext";
 
 const TZ = "Asia/Bangkok";
 
@@ -97,10 +99,22 @@ function SortIcon({ col, sortKey, sortDir }: { col: SortKey; sortKey: SortKey; s
   return <span className="ml-0.5">{sortDir === "asc" ? "↑" : "↓"}</span>;
 }
 
-function UpsideCell({ value }: { value: number | null }) {
+function UpsideCell({ value, isDr, parentSymbol }: { value: number | null; isDr?: boolean; parentSymbol?: string | null }) {
   if (value == null) return <span className="text-gray-400 text-xs">N/A</span>;
   const color = value > 0 ? "text-green-600" : "text-red-500";
-  return <span className={`text-sm font-medium ${color}`}>{value > 0 ? "+" : ""}{value.toFixed(1)}%</span>;
+  return (
+    <span className="inline-flex items-center gap-0.5 flex-wrap">
+      <span className={`text-sm font-medium ${color}`}>{value > 0 ? "+" : ""}{value.toFixed(1)}%</span>
+      {isDr && parentSymbol && (
+        <span
+          title="Upside calculated using parent stock price"
+          className="text-xs font-semibold px-1 py-0.5 rounded border border-blue-300 text-blue-600 bg-blue-50 whitespace-nowrap cursor-help"
+        >
+          DR → {parentSymbol}
+        </span>
+      )}
+    </span>
+  );
 }
 
 function RiskBadge({ level }: { level: RiskLevel | null }) {
@@ -117,6 +131,7 @@ function RiskBadge({ level }: { level: RiskLevel | null }) {
 }
 
 export default function WatchlistPage() {
+  const { activeId: activePortfolioId } = usePortfolio();
   const [items, setItems] = useState<WatchlistItem[]>([]);
   const [symbol, setSymbol] = useState("");
   const [loading, setLoading] = useState(true);
@@ -124,6 +139,7 @@ export default function WatchlistPage() {
   const [sortKey, setSortKey] = useState<SortKey>(DEFAULT_SORT);
   const [sortDir, setSortDir] = useState<SortDir>(DEFAULT_DIR);
   const [sectorFilter, setSectorFilter] = useState("");
+  const [buyTarget, setBuyTarget] = useState<WatchlistItem | null>(null);
 
   useEffect(() => {
     getWatchlist().then(setItems).finally(() => setLoading(false));
@@ -262,7 +278,7 @@ export default function WatchlistPage() {
                 <Th col="upside_pct"  label="Upside" />
                 <Th col="risk_level"  label="Risk" />
                 <Th col="analyzed_at" label="Analyzed"  className="hidden sm:table-cell" />
-                <th className="py-2 pr-4" />
+                <th className="py-2 pr-4 text-right text-gray-400 font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -290,13 +306,25 @@ export default function WatchlistPage() {
                         ? <SignalBadge signal={item.latest_signal} />
                         : <span className="text-xs text-gray-400">—</span>}
                     </td>
-                    <td className="py-2.5 pr-3"><UpsideCell value={item.upside_pct} /></td>
+                    <td className="py-2.5 pr-3"><UpsideCell value={item.upside_pct} isDr={item.is_dr} parentSymbol={item.parent_symbol} /></td>
                     <td className="py-2.5 pr-3"><RiskBadge level={item.risk_level} /></td>
                     <td className="py-2.5 pr-3 text-xs text-gray-400 hidden sm:table-cell">{formatDate(item.analyzed_at)}</td>
-                    <td className="py-2.5 pr-4 text-right">
-                      <button onClick={() => handleRemove(item.symbol)} className="text-red-500 hover:text-red-700 text-xs">
-                        Remove
-                      </button>
+                    <td className="py-2.5 pr-4">
+                      <div className="flex items-center justify-end gap-2">
+                        {activePortfolioId != null && (
+                          <button
+                            onClick={() => setBuyTarget(item)}
+                            className="text-xs font-semibold px-2 py-0.5 rounded border transition-colors"
+                            style={{ color: "#27500A", borderColor: "#27500A60", backgroundColor: "#27500A10" }}
+                            title="Buy into active portfolio"
+                          >
+                            Buy
+                          </button>
+                        )}
+                        <button onClick={() => handleRemove(item.symbol)} className="text-red-500 hover:text-red-700 text-xs">
+                          Remove
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -306,6 +334,15 @@ export default function WatchlistPage() {
         </div>
         )}
         </>
+      )}
+
+      {buyTarget != null && activePortfolioId != null && (
+        <TransactionModal
+          mode="buy"
+          symbol={buyTarget.symbol}
+          onConfirm={(payload) => buyTransaction(activePortfolioId, payload as BuyPayload)}
+          onClose={() => setBuyTarget(null)}
+        />
       )}
     </div>
   );

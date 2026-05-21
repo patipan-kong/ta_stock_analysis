@@ -6,8 +6,19 @@ import PortfolioTable from "@/components/PortfolioTable";
 import PortfolioSummary from "@/components/PortfolioSummary";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import AnalyzeAllButton from "@/components/AnalyzeAllButton";
-import { getHoldings, addHolding, removeHolding, analyzeSymbol, updateSwapPermission, getPortfolioPrices, getSectorBreakdown, updatePortfolioCash } from "@/lib/api";
-import type { PortfolioItem, AnalyzeAllResult, SectorBreakdown } from "@/lib/api";
+import TransactionModal from "@/components/TransactionModal";
+import type { TransactionMode } from "@/components/TransactionModal";
+import {
+  getHoldings, removeHolding, analyzeSymbol, updateSwapPermission,
+  getPortfolioPrices, getSectorBreakdown,
+  buyTransaction, sellTransaction, depositTransaction, withdrawTransaction,
+  initialPositionTransaction,
+} from "@/lib/api";
+import type {
+  PortfolioItem, AnalyzeAllResult, SectorBreakdown,
+  BuyPayload, SellPayload, DepositPayload, WithdrawPayload,
+  InitialPositionPayload, TransactionResult,
+} from "@/lib/api";
 
 const PortfolioPieChart = dynamic(
   () => import("@/components/PortfolioPieChart"),
@@ -19,7 +30,7 @@ const SectorPieChart = dynamic(
   { ssr: false, loading: () => <div className="h-[280px] animate-pulse bg-gray-100 rounded-xl" /> }
 );
 
-const PRICE_REFRESH_INTERVAL = 60_000; // 60 seconds
+const PRICE_REFRESH_INTERVAL = 60_000;
 
 function useSecondsAgo(since: Date | null): number {
   const [secs, setSecs] = useState(0);
@@ -35,10 +46,34 @@ function useSecondsAgo(since: Date | null): number {
   return secs;
 }
 
+// ─── Toast ────────────────────────────────────────────────────────────────────
+
+function Toast({ message, kind, onDone }: { message: string; kind: "success" | "error"; onDone: () => void }) {
+  useEffect(() => {
+    const t = setTimeout(onDone, 3500);
+    return () => clearTimeout(t);
+  }, [onDone]);
+  return (
+    <div
+      className={`fixed bottom-6 right-6 z-[100] px-4 py-3 rounded-xl shadow-lg text-sm font-medium text-white max-w-xs ${kind === "success" ? "bg-green-700" : "bg-red-700"}`}
+    >
+      {message}
+    </div>
+  );
+}
+
+// ─── Modal state ──────────────────────────────────────────────────────────────
+
+interface ModalState {
+  mode: TransactionMode;
+  symbol?: string;
+  currentPrice?: number | null;
+  maxShares?: number;
+}
+
 export default function PortfolioPage() {
   const { portfolios, activeId, setActiveId, createPortfolio, deletePortfolio, refreshPortfolios, loading: ctxLoading } = usePortfolio();
 
-  // Portfolio management
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -63,13 +98,10 @@ export default function PortfolioPage() {
 
   const [items, setItems] = useState<PortfolioItem[]>([]);
   const [cashBalance, setCashBalance] = useState(0);
-  const [cashInput, setCashInput] = useState("0");
-  const [editingCash, setEditingCash] = useState(false);
-  const [symbol, setSymbol] = useState("");
-  const [shares, setShares] = useState("");
-  const [avgCost, setAvgCost] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+
+  // Import flow
+  const [showImport, setShowImport] = useState(false);
 
   // Price refresh
   const [sectorBreakdown, setSectorBreakdown] = useState<SectorBreakdown | null>(null);
@@ -77,8 +109,13 @@ export default function PortfolioPage() {
   const [priceRefreshAt, setPriceRefreshAt] = useState<Date | null>(null);
   const secondsAgo = useSecondsAgo(priceRefreshAt);
   const activeIdRef = useRef<number | null>(null);
-
   const refreshingRef = useRef(false);
+
+  // Toast
+  const [toast, setToast] = useState<{ message: string; kind: "success" | "error" } | null>(null);
+
+  // Active transaction modal
+  const [modal, setModal] = useState<ModalState | null>(null);
 
   const refreshPrices = useCallback(async (pid: number) => {
     if (refreshingRef.current) return;
@@ -94,12 +131,21 @@ export default function PortfolioPage() {
       );
       setPriceRefreshAt(new Date());
     } catch {
-      // silent — prices are best-effort
+      // silent
     } finally {
       refreshingRef.current = false;
       setRefreshingPrices(false);
     }
   }, []);
+
+  async function refreshHoldings(pid: number) {
+    const [updated, breakdown] = await Promise.all([
+      getHoldings(pid),
+      getSectorBreakdown(pid).catch(() => null),
+    ]);
+    setItems(updated);
+    if (breakdown) setSectorBreakdown(breakdown);
+  }
 
   // Initial load
   useEffect(() => {
@@ -111,7 +157,6 @@ export default function PortfolioPage() {
     setPriceRefreshAt(null);
     const cash = activePortfolio?.cash_balance ?? 0;
     setCashBalance(cash);
-    setCashInput(cash.toString());
     getHoldings(activeId)
       .then((data) => {
         setItems(data);
@@ -123,7 +168,12 @@ export default function PortfolioPage() {
       .finally(() => setLoading(false));
   }, [activeId]);
 
-  // Auto-refresh prices every 60s — uses refs to avoid stale closure
+  // Sync cash from context
+  useEffect(() => {
+    if (activePortfolio) setCashBalance(activePortfolio.cash_balance ?? 0);
+  }, [activePortfolio]);
+
+  // Auto-refresh prices every 60s
   useEffect(() => {
     if (activeId == null) return;
     const id = setInterval(async () => {
@@ -148,26 +198,43 @@ export default function PortfolioPage() {
     return () => clearInterval(id);
   }, [activeId]);
 
-  async function saveCash() {
-    if (activeId == null) return;
-    const val = parseFloat(cashInput) || 0;
-    setCashBalance(val);
-    setEditingCash(false);
-    await updatePortfolioCash(activeId, val);
+  // ─── Transaction handlers ──────────────────────────────────────────────────
+
+  async function handleTransactionConfirm(
+    payload: BuyPayload | SellPayload | DepositPayload | WithdrawPayload | InitialPositionPayload
+  ): Promise<TransactionResult> {
+    if (activeId == null) throw new Error("No active portfolio");
+    if (!modal) throw new Error("No active modal");
+
+    let result: TransactionResult;
+    switch (modal.mode) {
+      case "buy":
+        result = await buyTransaction(activeId, payload as BuyPayload);
+        break;
+      case "sell":
+        result = await sellTransaction(activeId, payload as SellPayload);
+        break;
+      case "deposit":
+        result = await depositTransaction(activeId, payload as DepositPayload);
+        break;
+      case "withdraw":
+        result = await withdrawTransaction(activeId, payload as WithdrawPayload);
+        break;
+      case "initial_position":
+        result = await initialPositionTransaction(activeId, payload as InitialPositionPayload);
+        break;
+    }
+
+    await refreshHoldings(activeId);
     await refreshPortfolios();
+    if (result.cash_balance != null) setCashBalance(result.cash_balance);
+
+    return result;
   }
 
-  async function handleAdd(e: React.FormEvent) {
-    e.preventDefault();
-    if (activeId == null) return;
-    setError("");
-    try {
-      const item = await addHolding(activeId, symbol.trim().toUpperCase(), parseFloat(shares), parseFloat(avgCost));
-      setItems((prev) => [...prev, item]);
-      setSymbol(""); setShares(""); setAvgCost("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to add");
-    }
+  function handleModalClose() {
+    setModal(null);
+    setShowImport(false);
   }
 
   async function handleRemove(sym: string) {
@@ -294,6 +361,7 @@ export default function PortfolioPage() {
         )}
       </div>
 
+      {/* ── Header + action buttons ── */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h1 className="text-2xl font-bold">Portfolio</h1>
         <div className="flex items-center gap-3 flex-wrap">
@@ -322,107 +390,162 @@ export default function PortfolioPage() {
         </div>
       </div>
 
-      {/* ── Add stock form ── */}
-      <form onSubmit={handleAdd} className="flex flex-wrap gap-3 items-end">
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Symbol</label>
-          <input
-            value={symbol}
-            onChange={(e) => setSymbol(e.target.value)}
-            placeholder="AAPL or SCB.BK"
-            required
-            disabled={activeId == null}
-            className="border rounded px-3 py-1.5 text-sm w-32 disabled:opacity-50"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Shares</label>
-          <input
-            value={shares}
-            onChange={(e) => setShares(e.target.value)}
-            type="number" min="0" step="any" required
-            disabled={activeId == null}
-            className="border rounded px-3 py-1.5 text-sm w-24 disabled:opacity-50"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Avg Cost</label>
-          <input
-            value={avgCost}
-            onChange={(e) => setAvgCost(e.target.value)}
-            type="number" min="0" step="any" required
-            disabled={activeId == null}
-            className="border rounded px-3 py-1.5 text-sm w-28 disabled:opacity-50"
-          />
-        </div>
+      {/* ── Transaction action buttons ── */}
+      <div className="flex flex-wrap gap-2">
         <button
-          type="submit"
           disabled={activeId == null}
-          className="bg-blue-600 text-white px-4 py-1.5 rounded text-sm hover:bg-blue-700 disabled:opacity-50"
+          onClick={() => setModal({ mode: "buy" })}
+          className="px-4 py-1.5 rounded text-sm font-semibold text-white bg-[#27500A] hover:bg-[#1d3c07] disabled:opacity-40 transition-colors"
         >
-          Add
+          Buy
         </button>
-        {error && <p className="text-red-500 text-xs self-center">{error}</p>}
-      </form>
+        <button
+          disabled={activeId == null || items.length === 0}
+          onClick={() => {
+            // If only one holding, pre-select it; otherwise let user pick in modal
+            if (items.length === 1) {
+              setModal({ mode: "sell", symbol: items[0].symbol, currentPrice: items[0].current_price, maxShares: items[0].shares });
+            } else {
+              setModal({ mode: "sell" });
+            }
+          }}
+          className="px-4 py-1.5 rounded text-sm font-semibold text-white bg-[#854F0B] hover:bg-[#6b3f09] disabled:opacity-40 transition-colors"
+        >
+          Sell
+        </button>
+        <button
+          disabled={activeId == null}
+          onClick={() => setModal({ mode: "deposit" })}
+          className="px-4 py-1.5 rounded text-sm font-semibold text-white bg-[#0C447C] hover:bg-[#093560] disabled:opacity-40 transition-colors"
+        >
+          Deposit
+        </button>
+        <button
+          disabled={activeId == null}
+          onClick={() => setModal({ mode: "withdraw" })}
+          className="px-4 py-1.5 rounded text-sm font-semibold text-white bg-[#791F1F] hover:bg-[#611919] disabled:opacity-40 transition-colors"
+        >
+          Withdraw
+        </button>
+        <button
+          disabled={activeId == null}
+          onClick={() => setShowImport((v) => !v)}
+          className="px-4 py-1.5 rounded text-sm font-semibold text-gray-600 border border-gray-300 hover:bg-gray-50 disabled:opacity-40 transition-colors"
+        >
+          {showImport ? "Cancel Import" : "Import Existing"}
+        </button>
+      </div>
+
+      {/* ── Import Existing Portfolio ── */}
+      {showImport && activeId != null && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-3">
+          <div>
+            <p className="text-sm font-semibold text-amber-800">Import Existing Portfolio</p>
+            <p className="text-xs text-amber-600 mt-0.5">
+              Records existing holdings as INITIAL_POSITION transactions. Does not affect cash balance.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setModal({ mode: "initial_position" })}
+              className="px-3 py-1.5 rounded text-sm font-semibold text-white bg-[#444441] hover:bg-[#333330] transition-colors"
+            >
+              Import Position
+            </button>
+            <button
+              onClick={() => setModal({ mode: "deposit" })}
+              className="px-3 py-1.5 rounded text-sm font-semibold text-white bg-[#0C447C] hover:bg-[#093560] transition-colors"
+            >
+              Set Starting Cash
+            </button>
+          </div>
+          <p className="text-xs text-amber-500">
+            Tip: Import all your positions first, then set your starting cash balance with &quot;Set Starting Cash&quot;.
+          </p>
+        </div>
+      )}
 
       {isLoading ? (
         <p className="text-sm text-gray-400">Loading…</p>
       ) : (
         <>
-          {hasData && (
-            <>
-              {/* Charts row — side-by-side on md+, stacked on mobile */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="bg-white border rounded-xl p-4 shadow-sm">
-                  <h2 className="text-sm font-semibold text-gray-600 mb-2">Portfolio Allocation</h2>
-                  <PortfolioPieChart items={items} cashBalance={cashBalance} />
-                </div>
-                <div className="bg-white border rounded-xl p-4 shadow-sm">
-                  <h2 className="text-sm font-semibold text-gray-600 mb-2">Sector Allocation</h2>
-                  {sectorBreakdown
-                    ? <SectorPieChart breakdown={sectorBreakdown} />
-                    : <div className="h-[220px] animate-pulse bg-gray-100 rounded-xl" />}
-                </div>
-              </div>
+          <PortfolioSummary items={items} cashBalance={cashBalance} />
 
-              {/* Cash + Summary row */}
-              <div className="bg-white border rounded-xl p-4 shadow-sm flex items-center gap-4">
-                <div className="flex-1">
-                  <p className="text-xs text-gray-400 mb-0.5">Cash Balance</p>
-                  {editingCash ? (
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number" min="0" step="any"
-                        value={cashInput}
-                        onChange={(e) => setCashInput(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && saveCash()}
-                        autoFocus
-                        className="border rounded px-2 py-1 text-sm w-36"
-                      />
-                      <button onClick={saveCash} className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">Save</button>
-                      <button onClick={() => { setCashInput(cashBalance.toString()); setEditingCash(false); }} className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
-                    </div>
-                  ) : (
-                    <p className="text-xl font-bold text-gray-800">
-                      {cashBalance.toLocaleString("th-TH", { minimumFractionDigits: 2 })}
-                    </p>
-                  )}
-                </div>
-                {!editingCash && (
-                  <button onClick={() => setEditingCash(true)} className="text-xs text-blue-500 hover:text-blue-700 border border-blue-200 rounded px-3 py-1">Edit</button>
-                )}
-              </div>
-              <PortfolioSummary items={items} cashBalance={cashBalance} />
-            </>
-          )}
+          {/* Cash Balance display (read-only; modified via Deposit / Withdraw) */}
+          <div className="bg-white border rounded-xl p-4 shadow-sm flex items-center gap-4">
+            <div className="flex-1">
+              <p className="text-xs text-gray-400 mb-0.5">Cash Balance</p>
+              <p className={`text-xl font-bold ${cashBalance < 0 ? "text-red-600" : "text-gray-800"}`}>
+                {cashBalance.toLocaleString("th-TH", { minimumFractionDigits: 2 })}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setModal({ mode: "deposit" })}
+                className="text-xs text-blue-600 hover:text-blue-800 border border-blue-200 rounded px-3 py-1 hover:bg-blue-50 transition-colors"
+              >
+                + Deposit
+              </button>
+              <button
+                onClick={() => setModal({ mode: "withdraw" })}
+                className="text-xs text-red-500 hover:text-red-700 border border-red-200 rounded px-3 py-1 hover:bg-red-50 transition-colors"
+              >
+                − Withdraw
+              </button>
+            </div>
+          </div>
 
           <PortfolioTable
             rows={items}
             onRemove={handleRemove}
             onReanalyze={handleReanalyze}
             onToggleSwap={handleToggleSwap}
+            onSell={(item) =>
+              setModal({
+                mode: "sell",
+                symbol: item.symbol,
+                currentPrice: item.current_price,
+                maxShares: item.shares,
+              })
+            }
           />
+
+          {hasData && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="bg-white border rounded-xl p-4 shadow-sm">
+                <h2 className="text-sm font-semibold text-gray-600 mb-2">Portfolio Allocation</h2>
+                <PortfolioPieChart items={items} cashBalance={cashBalance} />
+              </div>
+              <div className="bg-white border rounded-xl p-4 shadow-sm">
+                <h2 className="text-sm font-semibold text-gray-600 mb-2">Sector Allocation</h2>
+                {sectorBreakdown
+                  ? <SectorPieChart breakdown={sectorBreakdown} />
+                  : <div className="h-[220px] animate-pulse bg-gray-100 rounded-xl" />}
+              </div>
+            </div>
+          )}
         </>
+      )}
+
+      {/* ── Transaction Modal ── */}
+      {modal != null && (
+        <TransactionModal
+          mode={modal.mode}
+          symbol={modal.symbol}
+          currentPrice={modal.currentPrice}
+          maxShares={modal.maxShares}
+          onConfirm={handleTransactionConfirm}
+          onClose={handleModalClose}
+        />
+      )}
+
+      {/* ── Toast notification ── */}
+      {toast && (
+        <Toast
+          message={toast.message}
+          kind={toast.kind}
+          onDone={() => setToast(null)}
+        />
       )}
     </div>
   );

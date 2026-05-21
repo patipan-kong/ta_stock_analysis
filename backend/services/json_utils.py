@@ -4,21 +4,29 @@ import re
 
 def safe_parse_json(text: str) -> dict:
     """
-    Robustly parse a JSON object from Claude's raw response.
+    Robustly parse a JSON object from any AI provider's raw response.
 
     Handles:
     - Markdown fences  (```json ... ``` or ``` ... ```)
     - Leading/trailing prose before or after the JSON block
+    - Gemini edge cases (fence wrapping even with response_mime_type set)
     - Finds the first matching { ... } block by brace depth
     """
     text = text.strip()
 
-    # 1. If fenced, extract the content inside the outermost fence pair
+    # 1. Strip leading/trailing markdown fences (Gemini sometimes adds them
+    #    even when response_mime_type="application/json" is set)
+    text = re.sub(r"^```json\s*", "", text)
+    text = re.sub(r"^```\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    text = text.strip()
+
+    # 2. If still fenced (e.g. inner fence pair), extract the fenced content
     fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
     if fenced:
         text = fenced.group(1).strip()
 
-    # 2. Find the first '{' and walk to its matching '}'
+    # 3. Find the first '{' and walk to its matching '}'
     start = text.find("{")
     if start == -1:
         raise ValueError(f"No JSON object found in response: {text[:200]!r}")

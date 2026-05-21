@@ -1,5 +1,6 @@
 import asyncio
 import random
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,18 +11,32 @@ from sqlalchemy import func
 
 import os
 import json as _json
-from models.database import init_db, migrate_legacy_data, get_db, Portfolio, PortfolioItem, Watchlist, AgentCache, AnalysisCache, AnalysisHistory, OptimizerHistory, Settings, UserUsage
+from models.database import (
+    init_db, migrate_legacy_data, get_db,
+    Workspace, get_default_workspace,
+    Portfolio, PortfolioItem, Watchlist,
+    AgentCache, AnalysisCache, AnalysisHistory, OptimizerHistory,
+    Settings, UserUsage, Transaction, PortfolioSnapshot,
+)
 from agents.technical import analyze_technical
 from agents.fundamental import analyze_fundamental
 from agents.news import analyze_news
 from agents.summary import analyze_summary
 from agents.optimizer import run_optimizer, run_layered_optimizer, _DEFAULT_LAYERS
 from agents.chart_data import fetch_chart_data
-from services.data_fetcher import fetch_price_info, fetch_info, normalize_dr_symbol
+from services.data_fetcher import fetch_price_info, fetch_info, normalize_dr_symbol, is_dr_symbol
 from services.scorer import compute_scores
 from services.ai_client import call_ai
 from services.json_utils import safe_parse_json
+from services.portfolio_transactions import (
+    execute_buy, execute_sell,
+    execute_deposit, execute_withdraw,
+    execute_initial_position, execute_initial_cash,
+)
+from services.portfolio_snapshots import generate_daily_snapshot
+from services.snapshot_scheduler import setup_scheduler, shutdown_scheduler
 from auth import router as auth_router, verify_token
+from routers.scheduler import router as scheduler_router
 
 import sys
 try:
@@ -30,7 +45,16 @@ try:
 except ImportError:
     pass
 
-app = FastAPI(title="Stock Analysis API")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    migrate_legacy_data()
+    setup_scheduler()
+    yield
+    shutdown_scheduler()
+
+
+app = FastAPI(title="Stock Analysis API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,6 +66,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(scheduler_router)
 
 _OPEN_PATHS = {"/auth/login", "/docs", "/openapi.json", "/redoc"}
 
@@ -56,17 +81,17 @@ async def auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-@app.on_event("startup")
-async def startup() -> None:
-    init_db()
-    migrate_legacy_data()
-
 
 def _resolve_symbol(symbol: str) -> str:
     s = symbol.upper()
     if "." in s:
         return s
     return s
+
+
+def _ws_id(db: Session) -> int:
+    """Return the default workspace ID (single-user mode)."""
+    return get_default_workspace(db).id
 
 
 # ─── AI settings ──────────────────────────────────────────────────────────────
@@ -80,8 +105,8 @@ _DEFAULT_AI = {
 _DEFAULT_SOURCES = {"use_ta": True, "use_fa": True, "use_news": True}
 
 
-def _get_ai_settings(db: Session) -> dict:
-    rows = db.query(Settings).all()
+def _get_ai_settings(db: Session, ws: int) -> dict:
+    rows = db.query(Settings).filter(Settings.workspace_id == ws).all()
     m = {r.key: r.value for r in rows}
     return {k: m.get(k, v) for k, v in _DEFAULT_AI.items()}
 
@@ -122,8 +147,11 @@ def _set_agent_cache(db: Session, symbol: str, agent: str, result: dict) -> None
     db.commit()
 
 
-def _get_analysis_sources(db: Session) -> dict:
-    row = db.query(Settings).filter(Settings.key == "analysis_sources").first()
+def _get_analysis_sources(db: Session, ws: int) -> dict:
+    row = db.query(Settings).filter(
+        Settings.workspace_id == ws,
+        Settings.key == "analysis_sources",
+    ).first()
     if not row:
         return dict(_DEFAULT_SOURCES)
     try:
@@ -133,18 +161,22 @@ def _get_analysis_sources(db: Session) -> dict:
         return dict(_DEFAULT_SOURCES)
 
 
-def _upsert_setting(db: Session, key: str, value: str) -> None:
-    row = db.query(Settings).filter(Settings.key == key).first()
+def _upsert_setting(db: Session, ws: int, key: str, value: str) -> None:
+    row = db.query(Settings).filter(
+        Settings.workspace_id == ws,
+        Settings.key == key,
+    ).first()
     if row:
         row.value = value
     else:
-        db.add(Settings(key=key, value=value))
+        db.add(Settings(workspace_id=ws, key=key, value=value))
 
 
 # ─── Cache helper ─────────────────────────────────────────────────────────────
 
 def _save_analysis_cache(
     db: Session,
+    ws: int,
     symbol: str,
     summary: dict,
     technical: dict | None = None,
@@ -159,7 +191,10 @@ def _save_analysis_cache(
     ai_provider = summary.get("ai_provider")
     ai_model    = summary.get("ai_model")
     su_json     = _json.dumps(sources_used) if sources_used else None
-    existing = db.query(AnalysisCache).filter(AnalysisCache.symbol == symbol).first()
+    existing = db.query(AnalysisCache).filter(
+        AnalysisCache.workspace_id == ws,
+        AnalysisCache.symbol == symbol,
+    ).first()
     if existing:
         existing.signal      = summary.get("signal", "HOLD")
         existing.confidence  = summary.get("confidence", "low")
@@ -173,6 +208,7 @@ def _save_analysis_cache(
         if su_json     is not None: existing.sources_used = su_json
     else:
         db.add(AnalysisCache(
+            workspace_id=ws,
             symbol=symbol,
             signal=summary.get("signal", "HOLD"),
             confidence=summary.get("confidence", "low"),
@@ -188,6 +224,7 @@ def _save_analysis_cache(
 
 def _save_analysis_history(
     db: Session,
+    ws: int,
     symbol: str,
     summary: dict,
     technical: dict | None = None,
@@ -204,6 +241,7 @@ def _save_analysis_history(
     ta_score = technical.get("ta_score") if technical and "error" not in technical else None
     fa_score = fundamental.get("fa_score") if fundamental and "error" not in fundamental else None
     entry = AnalysisHistory(
+        workspace_id=ws,
         symbol=symbol,
         signal=summary.get("signal", "HOLD"),
         confidence=summary.get("confidence", "low"),
@@ -303,23 +341,20 @@ def _get_sector(symbol: str, fa_cache: dict | None) -> str:
 
     base = normalize_dr_symbol(symbol)
     if base != symbol:
-        # DR stock: fundamental data comes from base US ticker, so FA cache already has US sector
         return _from_cache() or "Other"
 
     if symbol.endswith(".BK"):
-        # Regular Thai stock: static map is more reliable than yfinance .BK sector data
         mapped = THAI_SECTOR_MAP.get(symbol)
         if mapped:
             return mapped
         return _from_cache() or "Other"
 
-    # US stock: use FA cache (yfinance sector)
     return _from_cache() or "Other"
 
 
 async def _fetch_sector(symbol: str) -> str:
     """Resolve sector at add-time. THAI_SECTOR_MAP is free; yfinance is used for DR/US."""
-    sector = _get_sector(symbol, None)   # free for THAI_SECTOR_MAP entries
+    sector = _get_sector(symbol, None)
     if sector != "Other":
         return sector
     try:
@@ -340,11 +375,43 @@ def _risk_level(ta_score: int | None, fa_score: int | None) -> str | None:
     return "Critical"
 
 
+def _latest_day_consensus(symbols: list[str], ws: int, db: Session) -> dict[str, dict]:
+    """Return {symbol: {signal, confidence}} using only today's (latest day) analyses."""
+    if not symbols:
+        return {}
+    _valid = {"ACCUMULATE", "BUY", "WATCH", "HOLD", "REDUCE", "SELL"}
+    recent = (
+        db.query(AnalysisHistory)
+        .filter(AnalysisHistory.workspace_id == ws, AnalysisHistory.symbol.in_(symbols))
+        .order_by(AnalysisHistory.analyzed_at.desc())
+        .limit(len(symbols) * 20)
+        .all()
+    )
+    by_symbol: dict[str, list] = {}
+    for r in recent:
+        by_symbol.setdefault(r.symbol, []).append(r)
+
+    result: dict[str, dict] = {}
+    for sym, rows in by_symbol.items():
+        latest_date = rows[0].analyzed_at.strftime("%Y-%m-%d")
+        day_rows = [r for r in rows if r.analyzed_at.strftime("%Y-%m-%d") == latest_date]
+        counts = {s: 0 for s in _valid}
+        for r in day_rows:
+            if r.signal in counts:
+                counts[r.signal] += 1
+        dominant = max(counts, key=counts.get)
+        conf = next((r.confidence for r in day_rows if r.signal == dominant), day_rows[0].confidence)
+        result[sym] = {"signal": dominant, "confidence": conf}
+    return result
+
+
 def _enrich_holdings(
     items: list[PortfolioItem],
     prices: list[dict],
     cached: dict,
-    fa_map: dict | None = None,
+    fa_info: dict | None = None,
+    parent_prices: dict | None = None,
+    consensus_map: dict | None = None,
 ) -> list[dict]:
     """sector is read directly from the DB column on each PortfolioItem."""
     def _c(sym: str, attr: str, default=None):
@@ -355,11 +422,18 @@ def _enrich_holdings(
         sym = item.symbol
         ta_score = _c(sym, "ta_score")
         fa_score = _c(sym, "fa_score")
-        current_price = price.get("current_price")
-        target_price = (fa_map or {}).get(sym)
+        info = (fa_info or {}).get(sym, {})
+        target_price = info.get("target_price")
+        is_dr = info.get("is_dr", False)
+        parent_sym = info.get("parent_symbol")
+        # For DR symbols use parent stock price (USD) for upside; DR local price stays for P/L
+        if is_dr and parent_sym and parent_prices:
+            upside_price = (parent_prices.get(parent_sym) or {}).get("current_price")
+        else:
+            upside_price = price.get("current_price")
         upside_pct: float | None = (
-            round((target_price - current_price) / current_price * 100, 1)
-            if target_price and current_price and current_price > 0
+            round((target_price - upside_price) / upside_price * 100, 1)
+            if target_price and upside_price and upside_price > 0
             else None
         )
         result.append({
@@ -369,8 +443,8 @@ def _enrich_holdings(
             "shares": item.shares,
             "avg_cost": item.avg_cost,
             **price,
-            "latest_signal":    _c(sym, "signal"),
-            "signal_confidence": _c(sym, "confidence"),
+            "latest_signal":    (consensus_map or {}).get(sym, {}).get("signal") or _c(sym, "signal"),
+            "signal_confidence": (consensus_map or {}).get(sym, {}).get("confidence") or _c(sym, "confidence"),
             "analyzed_at": (_c(sym, "analyzed_at").isoformat() + "Z") if _c(sym, "analyzed_at") else None,
             "reasoning":  _c(sym, "reasoning"),
             "risks":      _c(sym, "risks"),
@@ -381,6 +455,9 @@ def _enrich_holdings(
             "upside_pct":   upside_pct,
             "risk_level":   _risk_level(ta_score, fa_score),
             "sector":       item.sector or "Other",
+            "is_dr":        is_dr,
+            "parent_symbol": parent_sym,
+            "upside_reference_price": upside_price if is_dr else None,
         })
     return result
 
@@ -393,13 +470,15 @@ class PortfolioCreate(BaseModel):
 
 @app.get("/portfolios")
 async def list_portfolios(db: Session = Depends(get_db)) -> list[dict]:
-    items = db.query(Portfolio).order_by(Portfolio.created_at).all()
+    ws = _ws_id(db)
+    items = db.query(Portfolio).filter(Portfolio.workspace_id == ws).order_by(Portfolio.created_at).all()
     return [{"id": p.id, "name": p.name, "cash_balance": p.cash_balance or 0.0, "created_at": p.created_at.isoformat()} for p in items]
 
 
 @app.post("/portfolios", status_code=201)
 async def create_portfolio(body: PortfolioCreate, db: Session = Depends(get_db)) -> dict:
-    p = Portfolio(name=body.name.strip())
+    ws = _ws_id(db)
+    p = Portfolio(workspace_id=ws, name=body.name.strip())
     db.add(p)
     db.commit()
     db.refresh(p)
@@ -412,7 +491,8 @@ class CashUpdate(BaseModel):
 
 @app.patch("/portfolios/{portfolio_id}/cash")
 async def update_portfolio_cash(portfolio_id: int, body: CashUpdate, db: Session = Depends(get_db)) -> dict:
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id).first()
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
     if not p:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     p.cash_balance = max(0.0, body.cash_balance)
@@ -422,10 +502,11 @@ async def update_portfolio_cash(portfolio_id: int, body: CashUpdate, db: Session
 
 @app.delete("/portfolios/{portfolio_id}")
 async def delete_portfolio(portfolio_id: int, db: Session = Depends(get_db)) -> dict:
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id).first()
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
     if not p:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    if db.query(Portfolio).count() <= 1:
+    if db.query(Portfolio).filter(Portfolio.workspace_id == ws).count() <= 1:
         raise HTTPException(status_code=400, detail="Cannot delete the last portfolio")
     db.delete(p)
     db.commit()
@@ -442,7 +523,8 @@ class HoldingCreate(BaseModel):
 
 @app.get("/portfolios/{portfolio_id}/holdings")
 async def list_holdings(portfolio_id: int, db: Session = Depends(get_db)) -> list[dict]:
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id).first()
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
     if not p:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     items = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == portfolio_id).all()
@@ -452,21 +534,39 @@ async def list_holdings(portfolio_id: int, db: Session = Depends(get_db)) -> lis
     symbols = [item.symbol for item in items]
     cached = {
         c.symbol: c
-        for c in db.query(AnalysisCache).filter(AnalysisCache.symbol.in_(symbols)).all()
+        for c in db.query(AnalysisCache).filter(
+            AnalysisCache.workspace_id == ws,
+            AnalysisCache.symbol.in_(symbols),
+        ).all()
     }
-    # Read FA AgentCache only for target_price; sector comes from DB column
-    fa_map: dict = {}
+    fa_info: dict[str, dict] = {}
     for row in db.query(AgentCache).filter(AgentCache.symbol.in_(symbols), AgentCache.agent == "fundamental").all():
         try:
-            fa_map[row.symbol] = _json.loads(row.result_json).get("target_price")
+            data = _json.loads(row.result_json)
+            dr = is_dr_symbol(row.symbol)
+            fa_info[row.symbol] = {
+                "target_price": data.get("target_price"),
+                "is_dr": dr,
+                "parent_symbol": normalize_dr_symbol(row.symbol) if dr else None,
+            }
         except Exception:
             pass
-    return _enrich_holdings(items, prices, cached, fa_map)
+    dr_parents = sorted({d["parent_symbol"] for d in fa_info.values() if d.get("is_dr") and d.get("parent_symbol")})
+    parent_prices: dict[str, dict] = {}
+    if dr_parents:
+        pp_list = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, s) for s in dr_parents])
+        parent_prices = dict(zip(dr_parents, pp_list))
+    consensus_map = _latest_day_consensus(symbols, ws, db)
+    return _enrich_holdings(items, prices, cached, fa_info, parent_prices, consensus_map)
 
 
 @app.get("/portfolios/{portfolio_id}/prices")
 async def get_portfolio_prices(portfolio_id: int, db: Session = Depends(get_db)) -> list[dict]:
     """Lightweight real-time price refresh — parallel yfinance fast_info, no AI or cache queries."""
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
     items = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == portfolio_id).all()
     if not items:
         return []
@@ -477,25 +577,27 @@ async def get_portfolio_prices(portfolio_id: int, db: Session = Depends(get_db))
 @app.get("/portfolios/{portfolio_id}/sector-breakdown")
 async def get_sector_breakdown(portfolio_id: int, db: Session = Depends(get_db)) -> dict:
     """Return sector allocation for the portfolio with limit status for each sector."""
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
     items = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == portfolio_id).all()
     if not items:
         return {"sectors": [], "total_value": 0}
 
-    # Prices (best-effort; fallback to avg_cost)
     prices_list = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, i.symbol) for i in items])
     price_map = {item.symbol: p for item, p in zip(items, prices_list)}
 
-    # Read sector directly from DB column — same source as the portfolio table
     sector_map: dict[str, str] = {item.symbol: item.sector or "Other" for item in items}
 
-    sector_limits = _get_sector_limits(db)
-    default_limit: int = int(sector_limits.get("default") or _get_portfolio_settings(db).get("max_sector_pct", 40))
+    sector_limits = _get_sector_limits(db, ws)
+    default_limit: int = int(sector_limits.get("default") or _get_portfolio_settings(db, ws).get("max_sector_pct", 40))
 
     agg: dict[str, dict] = {}
     for item in items:
         sym = item.symbol
-        p = price_map.get(sym, {})
-        price = p.get("current_price") or item.avg_cost
+        pr = price_map.get(sym, {})
+        price = pr.get("current_price") or item.avg_cost
         mv = item.shares * price
         sector = sector_map.get(sym, "Other")
         if sector not in agg:
@@ -522,14 +624,15 @@ async def get_sector_breakdown(portfolio_id: int, db: Session = Depends(get_db))
 
 @app.post("/portfolios/{portfolio_id}/holdings", status_code=201)
 async def add_holding(portfolio_id: int, body: HoldingCreate, db: Session = Depends(get_db)) -> dict:
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id).first()
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
     if not p:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     symbol = _resolve_symbol(body.symbol)
     existing = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     if existing:
         raise HTTPException(status_code=409, detail="Symbol already in this portfolio")
-    item = PortfolioItem(portfolio_id=portfolio_id, symbol=symbol, shares=body.shares, avg_cost=body.avg_cost)
+    item = PortfolioItem(workspace_id=ws, portfolio_id=portfolio_id, symbol=symbol, shares=body.shares, avg_cost=body.avg_cost)
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -566,7 +669,11 @@ class SwapPermissionBody(BaseModel):
 async def update_swap_permission(
     portfolio_id: int, symbol: str, body: SwapPermissionBody, db: Session = Depends(get_db)
 ) -> dict:
+    ws = _ws_id(db)
     symbol = _resolve_symbol(symbol)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
     item = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     if not item:
         raise HTTPException(status_code=404, detail="Symbol not found in this portfolio")
@@ -577,7 +684,11 @@ async def update_swap_permission(
 
 @app.delete("/portfolios/{portfolio_id}/holdings/{symbol}")
 async def remove_holding(portfolio_id: int, symbol: str, db: Session = Depends(get_db)) -> dict:
+    ws = _ws_id(db)
     symbol = _resolve_symbol(symbol)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
     item = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     if not item:
         raise HTTPException(status_code=404, detail="Symbol not found in this portfolio")
@@ -592,17 +703,30 @@ class WatchlistCreate(BaseModel):
     symbol: str
 
 
-def _watchlist_row(item: Watchlist, cached: dict, target_price: float | None = None, price_info: dict | None = None) -> dict:
+def _watchlist_row(
+    item: Watchlist,
+    cached: dict,
+    fa_info_item: dict | None = None,
+    price_info: dict | None = None,
+    parent_price: dict | None = None,
+) -> dict:
     def _c(attr, default=None):
         return getattr(cached[item.symbol], attr, default) if item.symbol in cached else default
 
     p = price_info or {}
-    current_price = p.get("current_price")
+    fi = fa_info_item or {}
+    target_price = fi.get("target_price")
+    is_dr = fi.get("is_dr", False)
+    parent_sym = fi.get("parent_symbol")
     ta_score = _c("ta_score")
     fa_score = _c("fa_score")
+    if is_dr and parent_sym and parent_price:
+        upside_price = parent_price.get("current_price")
+    else:
+        upside_price = p.get("current_price")
     upside_pct: float | None = (
-        round((target_price - current_price) / current_price * 100, 1)
-        if target_price and current_price and current_price > 0
+        round((target_price - upside_price) / upside_price * 100, 1)
+        if target_price and upside_price and upside_price > 0
         else None
     )
     return {
@@ -619,42 +743,67 @@ def _watchlist_row(item: Watchlist, cached: dict, target_price: float | None = N
         "upside_pct":   upside_pct,
         "risk_level":   _risk_level(ta_score, fa_score),
         "sector":       item.sector or "Other",
+        "is_dr":        is_dr,
+        "parent_symbol": parent_sym,
+        "upside_reference_price": upside_price if is_dr else None,
     }
 
 
 @app.get("/watchlist")
 async def list_watchlist(db: Session = Depends(get_db)) -> list[dict]:
-    items = db.query(Watchlist).order_by(Watchlist.symbol).all()
+    ws = _ws_id(db)
+    items = db.query(Watchlist).filter(Watchlist.workspace_id == ws).order_by(Watchlist.symbol).all()
     if not items:
         return []
     symbols = [i.symbol for i in items]
     cached = {
         c.symbol: c
-        for c in db.query(AnalysisCache).filter(AnalysisCache.symbol.in_(symbols)).all()
+        for c in db.query(AnalysisCache).filter(
+            AnalysisCache.workspace_id == ws,
+            AnalysisCache.symbol.in_(symbols),
+        ).all()
     }
-    # Read FA AgentCache only for target_price; sector comes from DB column
-    fa_map: dict[str, float | None] = {}
+    fa_info: dict[str, dict] = {}
     for row in db.query(AgentCache).filter(AgentCache.symbol.in_(symbols), AgentCache.agent == "fundamental").all():
         try:
-            fa_map[row.symbol] = _json.loads(row.result_json).get("target_price")
+            data = _json.loads(row.result_json)
+            dr = is_dr_symbol(row.symbol)
+            fa_info[row.symbol] = {
+                "target_price": data.get("target_price"),
+                "is_dr": dr,
+                "parent_symbol": normalize_dr_symbol(row.symbol) if dr else None,
+            }
         except Exception:
             pass
-    # Current prices via fast_info (lightweight)
     prices_list = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, i.symbol) for i in items])
     price_map = {items[j].symbol: p for j, p in enumerate(prices_list)}
+    dr_parents = sorted({d["parent_symbol"] for d in fa_info.values() if d.get("is_dr") and d.get("parent_symbol")})
+    parent_prices: dict[str, dict] = {}
+    if dr_parents:
+        pp_list = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, s) for s in dr_parents])
+        parent_prices = dict(zip(dr_parents, pp_list))
     return [
-        _watchlist_row(item, cached, fa_map.get(item.symbol), price_map.get(item.symbol))
+        _watchlist_row(
+            item, cached,
+            fa_info.get(item.symbol),
+            price_map.get(item.symbol),
+            parent_prices.get(fa_info.get(item.symbol, {}).get("parent_symbol", ""), {}),
+        )
         for item in items
     ]
 
 
 @app.post("/watchlist", status_code=201)
 async def add_watchlist(body: WatchlistCreate, db: Session = Depends(get_db)) -> dict:
+    ws = _ws_id(db)
     symbol = _resolve_symbol(body.symbol)
-    existing = db.query(Watchlist).filter(Watchlist.symbol == symbol).first()
+    existing = db.query(Watchlist).filter(
+        Watchlist.workspace_id == ws,
+        Watchlist.symbol == symbol,
+    ).first()
     if existing:
         raise HTTPException(status_code=409, detail="Symbol already in watchlist")
-    item = Watchlist(symbol=symbol)
+    item = Watchlist(workspace_id=ws, symbol=symbol)
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -662,15 +811,22 @@ async def add_watchlist(body: WatchlistCreate, db: Session = Depends(get_db)) ->
     db.commit()
     cached = {
         c.symbol: c
-        for c in db.query(AnalysisCache).filter(AnalysisCache.symbol == symbol).all()
+        for c in db.query(AnalysisCache).filter(
+            AnalysisCache.workspace_id == ws,
+            AnalysisCache.symbol == symbol,
+        ).all()
     }
     return _watchlist_row(item, cached)
 
 
 @app.delete("/watchlist/{symbol}")
 async def remove_watchlist(symbol: str, db: Session = Depends(get_db)) -> dict:
+    ws = _ws_id(db)
     symbol = _resolve_symbol(symbol)
-    item = db.query(Watchlist).filter(Watchlist.symbol == symbol).first()
+    item = db.query(Watchlist).filter(
+        Watchlist.workspace_id == ws,
+        Watchlist.symbol == symbol,
+    ).first()
     if not item:
         raise HTTPException(status_code=404, detail="Symbol not found")
     db.delete(item)
@@ -742,8 +898,6 @@ async def _fetch_agents(
             elif name == "fundamental": fund = result
             elif name == "news":      news_r = result
 
-    # Patch FA cache when sector is missing (cache hit from before sector field was added).
-    # THAI_SECTOR_MAP lookup is free; DR stocks get "Other" here and need a full re-analysis.
     if fund and "error" not in fund and not fund.get("sector"):
         resolved_sector = _get_sector(symbol, None)
         if resolved_sector != "Other":
@@ -766,7 +920,6 @@ async def _run_full_analysis_async(
     t0 = _time.perf_counter()
     tech, fund, news_r = await _fetch_agents(db, symbol, sources)
     su = {"ta": bool(sources.get("use_ta", True)), "fa": bool(sources.get("use_fa", True)), "news": bool(sources.get("use_news", True))}
-    # Compute deterministic scores before AI call so they can anchor the prompt
     scores = compute_scores(tech, fund, news_r)
     summary = await asyncio.to_thread(analyze_summary, symbol, tech, fund, news_r, provider, model, scores)
     total_latency_ms = round((_time.perf_counter() - t0) * 1000)
@@ -775,13 +928,16 @@ async def _run_full_analysis_async(
 
 @app.get("/stocks/{symbol}")
 async def get_stock_quick(symbol: str, db: Session = Depends(get_db)) -> dict:
-    """Fast path: agent cache (15m/1h/24h TTL) for raw data + cached AI summary.
-    Always fetches all three agents for display regardless of analysis source settings."""
+    """Fast path: agent cache (15m/1h/24h TTL) for raw data + cached AI summary."""
+    ws = _ws_id(db)
     resolved = _resolve_symbol(symbol)
     _all = {"use_ta": True, "use_fa": True, "use_news": True}
     tech, fund, news_result = await _fetch_agents(db, resolved, _all)
 
-    cached = db.query(AnalysisCache).filter(AnalysisCache.symbol == resolved).first()
+    cached = db.query(AnalysisCache).filter(
+        AnalysisCache.workspace_id == ws,
+        AnalysisCache.symbol == resolved,
+    ).first()
     summary = None
     if cached:
         summary = {
@@ -809,10 +965,10 @@ async def get_stock_quick(symbol: str, db: Session = Depends(get_db)) -> dict:
 
 @app.get("/analyze/{symbol}")
 async def analyze_symbol(symbol: str, db: Session = Depends(get_db)) -> dict:
+    ws = _ws_id(db)
     resolved = _resolve_symbol(symbol)
-    s = _get_ai_settings(db)
-    src = _get_analysis_sources(db)
-    # Always fetch all agents for display; pass only enabled ones to the AI summary.
+    s = _get_ai_settings(db, ws)
+    src = _get_analysis_sources(db, ws)
     _all = {"use_ta": True, "use_fa": True, "use_news": True}
     tech, fund, news_r = await _fetch_agents(db, resolved, _all)
     ta_ai   = tech  if src.get("use_ta",   True) else None
@@ -824,8 +980,8 @@ async def analyze_symbol(symbol: str, db: Session = Depends(get_db)) -> dict:
     sc = compute_scores(tech, fund, news_r)
     summary = await asyncio.to_thread(analyze_summary, resolved, ta_ai, fa_ai, news_ai, s["analyze_provider"], s["analyze_model"], sc)
     total_latency_ms = round((_time.perf_counter() - t0) * 1000)
-    _save_analysis_cache(db, resolved, summary, tech, fund, su)
-    _save_analysis_history(db, resolved, summary, tech, fund, su, sc,
+    _save_analysis_cache(db, ws, resolved, summary, tech, fund, su)
+    _save_analysis_history(db, ws, resolved, summary, tech, fund, su, sc,
                            latency_ms=summary.get("latency_ms") if isinstance(summary, dict) else None,
                            total_latency_ms=total_latency_ms)
     if isinstance(summary, dict) and "error" not in summary:
@@ -854,21 +1010,27 @@ async def get_stock_chart(
     period: str = "1d",
     interval: str = "5m",
 ) -> dict:
-    """Return OHLCV candles with EMA20, Bollinger Bands, and RSI for charting."""
     resolved = _resolve_symbol(symbol)
     return await asyncio.to_thread(fetch_chart_data, resolved, period, interval)
 
 
 @app.post("/portfolios/{portfolio_id}/analyze")
 async def analyze_portfolio_holdings(portfolio_id: int, db: Session = Depends(get_db)) -> list[dict]:
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id).first()
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
     if not p:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     items = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == portfolio_id).all()
     symbols = [i.symbol for i in items]
-    cache_map = {c.symbol: c for c in db.query(AnalysisCache).filter(AnalysisCache.symbol.in_(symbols)).all()}
-    s = _get_ai_settings(db)
-    src = _get_analysis_sources(db)
+    cache_map = {
+        c.symbol: c
+        for c in db.query(AnalysisCache).filter(
+            AnalysisCache.workspace_id == ws,
+            AnalysisCache.symbol.in_(symbols),
+        ).all()
+    }
+    s = _get_ai_settings(db, ws)
+    src = _get_analysis_sources(db, ws)
     results = []
     for item in items:
         cache = cache_map.get(item.symbol)
@@ -877,8 +1039,8 @@ async def analyze_portfolio_holdings(portfolio_id: int, db: Session = Depends(ge
             su = result.get("sources_used")
             sc = result.get("scores")
             _sm = result.get("summary", {})
-            _save_analysis_cache(db, item.symbol, _sm, result.get("technical"), result.get("fundamental"), su)
-            _save_analysis_history(db, item.symbol, _sm, result.get("technical"), result.get("fundamental"), su, sc,
+            _save_analysis_cache(db, ws, item.symbol, _sm, result.get("technical"), result.get("fundamental"), su)
+            _save_analysis_history(db, ws, item.symbol, _sm, result.get("technical"), result.get("fundamental"), su, sc,
                                    latency_ms=_sm.get("latency_ms") if isinstance(_sm, dict) else None,
                                    total_latency_ms=result.get("total_latency_ms"))
             if isinstance(_sm, dict) and "error" not in _sm:
@@ -893,11 +1055,18 @@ async def analyze_portfolio_holdings(portfolio_id: int, db: Session = Depends(ge
 
 @app.post("/analyze/watchlist")
 async def analyze_watchlist_all(db: Session = Depends(get_db)) -> list[dict]:
-    items = db.query(Watchlist).all()
+    ws = _ws_id(db)
+    items = db.query(Watchlist).filter(Watchlist.workspace_id == ws).all()
     symbols = [i.symbol for i in items]
-    cache_map = {c.symbol: c for c in db.query(AnalysisCache).filter(AnalysisCache.symbol.in_(symbols)).all()}
-    s = _get_ai_settings(db)
-    src = _get_analysis_sources(db)
+    cache_map = {
+        c.symbol: c
+        for c in db.query(AnalysisCache).filter(
+            AnalysisCache.workspace_id == ws,
+            AnalysisCache.symbol.in_(symbols),
+        ).all()
+    }
+    s = _get_ai_settings(db, ws)
+    src = _get_analysis_sources(db, ws)
     results = []
     for item in items:
         cache = cache_map.get(item.symbol)
@@ -906,8 +1075,8 @@ async def analyze_watchlist_all(db: Session = Depends(get_db)) -> list[dict]:
             su = result.get("sources_used")
             sc = result.get("scores")
             _sm = result.get("summary", {})
-            _save_analysis_cache(db, item.symbol, _sm, result.get("technical"), result.get("fundamental"), su)
-            _save_analysis_history(db, item.symbol, _sm, result.get("technical"), result.get("fundamental"), su, sc,
+            _save_analysis_cache(db, ws, item.symbol, _sm, result.get("technical"), result.get("fundamental"), su)
+            _save_analysis_history(db, ws, item.symbol, _sm, result.get("technical"), result.get("fundamental"), su, sc,
                                    latency_ms=_sm.get("latency_ms") if isinstance(_sm, dict) else None,
                                    total_latency_ms=result.get("total_latency_ms"))
             if isinstance(_sm, dict) and "error" not in _sm:
@@ -931,13 +1100,13 @@ def _is_stale_60m(cache: AnalysisCache | None) -> bool:
     return (datetime.utcnow() - cache.analyzed_at) > _ANALYZE_ALL_TTL
 
 
-async def _analyze_symbol_and_save(db: Session, sym: str, s: dict, src: dict) -> dict:
+async def _analyze_symbol_and_save(db: Session, ws: int, sym: str, s: dict, src: dict) -> dict:
     result = await _run_full_analysis_async(db, sym, s["analyze_provider"], s["analyze_model"], src)
     su = result.get("sources_used")
     sc = result.get("scores")
     _sm = result.get("summary", {})
-    _save_analysis_cache(db, sym, _sm, result.get("technical"), result.get("fundamental"), su)
-    _save_analysis_history(db, sym, _sm, result.get("technical"), result.get("fundamental"), su, sc,
+    _save_analysis_cache(db, ws, sym, _sm, result.get("technical"), result.get("fundamental"), su)
+    _save_analysis_history(db, ws, sym, _sm, result.get("technical"), result.get("fundamental"), su, sc,
                            latency_ms=_sm.get("latency_ms") if isinstance(_sm, dict) else None,
                            total_latency_ms=result.get("total_latency_ms"))
     if isinstance(_sm, dict) and "error" not in _sm:
@@ -948,19 +1117,26 @@ async def _analyze_symbol_and_save(db: Session, sym: str, s: dict, src: dict) ->
 @app.post("/portfolios/{portfolio_id}/analyze/all")
 async def analyze_portfolio_all(portfolio_id: int, db: Session = Depends(get_db)) -> dict:
     """Analyze only stale holdings (> 60 min since last analysis). Returns summary counts."""
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id).first()
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
     if not p:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     items = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == portfolio_id).all()
     symbols = [i.symbol for i in items]
-    cache_map = {c.symbol: c for c in db.query(AnalysisCache).filter(AnalysisCache.symbol.in_(symbols)).all()}
-    s = _get_ai_settings(db)
-    src = _get_analysis_sources(db)
+    cache_map = {
+        c.symbol: c
+        for c in db.query(AnalysisCache).filter(
+            AnalysisCache.workspace_id == ws,
+            AnalysisCache.symbol.in_(symbols),
+        ).all()
+    }
+    s = _get_ai_settings(db, ws)
+    src = _get_analysis_sources(db, ws)
     results: list[dict] = []
     skipped_symbols: list[str] = []
     for sym in symbols:
         if _is_stale_60m(cache_map.get(sym)):
-            results.append(await _analyze_symbol_and_save(db, sym, s, src))
+            results.append(await _analyze_symbol_and_save(db, ws, sym, s, src))
             await asyncio.sleep(random.uniform(1.0, 2.0))
         else:
             skipped_symbols.append(sym)
@@ -976,16 +1152,23 @@ async def analyze_portfolio_all(portfolio_id: int, db: Session = Depends(get_db)
 @app.post("/watchlist/analyze/all")
 async def analyze_watchlist_60m(db: Session = Depends(get_db)) -> dict:
     """Analyze only stale watchlist symbols (> 60 min since last analysis)."""
-    items = db.query(Watchlist).order_by(Watchlist.symbol).all()
+    ws = _ws_id(db)
+    items = db.query(Watchlist).filter(Watchlist.workspace_id == ws).order_by(Watchlist.symbol).all()
     symbols = [i.symbol for i in items]
-    cache_map = {c.symbol: c for c in db.query(AnalysisCache).filter(AnalysisCache.symbol.in_(symbols)).all()}
-    s = _get_ai_settings(db)
-    src = _get_analysis_sources(db)
+    cache_map = {
+        c.symbol: c
+        for c in db.query(AnalysisCache).filter(
+            AnalysisCache.workspace_id == ws,
+            AnalysisCache.symbol.in_(symbols),
+        ).all()
+    }
+    s = _get_ai_settings(db, ws)
+    src = _get_analysis_sources(db, ws)
     results: list[dict] = []
     skipped_symbols: list[str] = []
     for sym in symbols:
         if _is_stale_60m(cache_map.get(sym)):
-            results.append(await _analyze_symbol_and_save(db, sym, s, src))
+            results.append(await _analyze_symbol_and_save(db, ws, sym, s, src))
             await asyncio.sleep(random.uniform(1.0, 2.0))
         else:
             skipped_symbols.append(sym)
@@ -1002,10 +1185,11 @@ async def analyze_watchlist_60m(db: Session = Depends(get_db)) -> dict:
 
 @app.get("/analysis/history/{symbol}")
 async def get_analysis_history(symbol: str, db: Session = Depends(get_db)) -> list[dict]:
+    ws = _ws_id(db)
     resolved = _resolve_symbol(symbol)
     rows = (
         db.query(AnalysisHistory)
-        .filter(AnalysisHistory.symbol == resolved)
+        .filter(AnalysisHistory.workspace_id == ws, AnalysisHistory.symbol == resolved)
         .order_by(AnalysisHistory.analyzed_at.desc())
         .limit(20)
         .all()
@@ -1017,9 +1201,12 @@ async def get_analysis_history(symbol: str, db: Session = Depends(get_db)) -> li
 async def delete_analysis_history_entry(
     symbol: str, history_id: int, db: Session = Depends(get_db)
 ) -> dict:
+    ws = _ws_id(db)
     resolved = _resolve_symbol(symbol)
     row = db.query(AnalysisHistory).filter(
-        AnalysisHistory.id == history_id, AnalysisHistory.symbol == resolved
+        AnalysisHistory.workspace_id == ws,
+        AnalysisHistory.id == history_id,
+        AnalysisHistory.symbol == resolved,
     ).first()
     if not row:
         raise HTTPException(status_code=404, detail="History record not found")
@@ -1033,18 +1220,27 @@ async def delete_analysis_history_entry(
 @app.get("/analyze/{symbol}/consensus")
 async def get_consensus(symbol: str, db: Session = Depends(get_db)) -> dict:
     """Aggregate the last 5 analyses for a symbol and report signal agreement."""
+    ws = _ws_id(db)
     resolved = _resolve_symbol(symbol)
-    rows = (
+    # Fetch recent rows to find the latest day
+    recent = (
         db.query(AnalysisHistory)
-        .filter(AnalysisHistory.symbol == resolved)
+        .filter(AnalysisHistory.workspace_id == ws, AnalysisHistory.symbol == resolved)
         .order_by(AnalysisHistory.analyzed_at.desc())
-        .limit(5)
+        .limit(20)
         .all()
     )
-    if not rows:
+    if not recent:
         return {"symbol": resolved, "error": "No analysis history found", "breakdown": []}
 
-    signal_counts: dict[str, int] = {"BUY": 0, "HOLD": 0, "SELL": 0}
+    # Only keep analyses from the same calendar day as the most recent one (UTC)
+    latest_date = recent[0].analyzed_at[:10] if isinstance(recent[0].analyzed_at, str) else recent[0].analyzed_at.strftime("%Y-%m-%d")
+    rows = [
+        r for r in recent
+        if (r.analyzed_at[:10] if isinstance(r.analyzed_at, str) else r.analyzed_at.strftime("%Y-%m-%d")) == latest_date
+    ]
+
+    signal_counts: dict[str, int] = {"ACCUMULATE": 0, "BUY": 0, "WATCH": 0, "HOLD": 0, "REDUCE": 0, "SELL": 0}
     for r in rows:
         if r.signal in signal_counts:
             signal_counts[r.signal] += 1
@@ -1069,10 +1265,11 @@ async def get_consensus(symbol: str, db: Session = Depends(get_db)) -> dict:
 @app.post("/analyze/{symbol}/why-disagree")
 async def why_disagree(symbol: str, db: Session = Depends(get_db)) -> dict:
     """Ask Claude to synthesize why recent analyses for this symbol reached different conclusions."""
+    ws = _ws_id(db)
     resolved = _resolve_symbol(symbol)
     rows = (
         db.query(AnalysisHistory)
-        .filter(AnalysisHistory.symbol == resolved)
+        .filter(AnalysisHistory.workspace_id == ws, AnalysisHistory.symbol == resolved)
         .order_by(AnalysisHistory.analyzed_at.desc())
         .limit(5)
         .all()
@@ -1080,7 +1277,7 @@ async def why_disagree(symbol: str, db: Session = Depends(get_db)) -> dict:
     if len(rows) < 2:
         return {"error": "Need at least 2 analyses to compare"}
 
-    s = _get_ai_settings(db)
+    s = _get_ai_settings(db, ws)
     analyses = [
         {
             "model":    (r.ai_model    or "unknown"),
@@ -1133,13 +1330,14 @@ async def analyze_second_opinion(
     symbol: str, body: OpinionRequest, db: Session = Depends(get_db)
 ) -> dict:
     """Run analysis with a specific model; saves to history only, not the main cache."""
+    ws = _ws_id(db)
     resolved = _resolve_symbol(symbol)
-    src = _get_analysis_sources(db)
+    src = _get_analysis_sources(db, ws)
     result = await _run_full_analysis_async(db, resolved, body.provider, body.model, src)
     summary = result.get("summary", {})
     su = result.get("sources_used")
     sc = result.get("scores")
-    entry = _save_analysis_history(db, resolved, summary, result.get("technical"), result.get("fundamental"), su, sc,
+    entry = _save_analysis_history(db, ws, resolved, summary, result.get("technical"), result.get("fundamental"), su, sc,
                                    latency_ms=summary.get("latency_ms") if isinstance(summary, dict) else None,
                                    total_latency_ms=result.get("total_latency_ms"))
     if isinstance(summary, dict) and "error" not in summary:
@@ -1165,12 +1363,16 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     Runs tech+fund for all symbols (parallel, no Claude per symbol),
     then sends combined scores to Claude for swap suggestions and ranking.
     """
-    portfolio = db.query(Portfolio).filter(Portfolio.id == body.portfolio_id).first()
+    ws = _ws_id(db)
+    portfolio = db.query(Portfolio).filter(
+        Portfolio.id == body.portfolio_id,
+        Portfolio.workspace_id == ws,
+    ).first()
     if not portfolio:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     holdings = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == body.portfolio_id).all()
-    watchlist_items = db.query(Watchlist).all()
+    watchlist_items = db.query(Watchlist).filter(Watchlist.workspace_id == ws).all()
 
     if not holdings:
         raise HTTPException(status_code=400, detail="Portfolio has no holdings to optimize")
@@ -1179,18 +1381,18 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
 
     all_symbols = [h.symbol for h in holdings] + [w.symbol for w in watchlist_items]
 
-    # Fetch cached signals
     cache_map = {
         c.symbol: c
-        for c in db.query(AnalysisCache).filter(AnalysisCache.symbol.in_(all_symbols)).all()
+        for c in db.query(AnalysisCache).filter(
+            AnalysisCache.workspace_id == ws,
+            AnalysisCache.symbol.in_(all_symbols),
+        ).all()
     }
 
-    # Run tech+fund for all symbols concurrently (no Claude, ~2s per symbol)
     semaphore = asyncio.Semaphore(5)
-    opt_src = _get_analysis_sources(db)
+    opt_src = _get_analysis_sources(db, ws)
 
     async def _get_scores(symbol: str) -> dict:
-        # Use agent cache; only hit yfinance if stale (semaphore throttles live calls)
         ta_cached = _get_agent_cache(db, symbol, "technical")   if opt_src.get("use_ta", True) else None
         fa_cached = _get_agent_cache(db, symbol, "fundamental") if opt_src.get("use_fa", True) else None
         live_tasks: list[tuple[str, object]] = []
@@ -1217,13 +1419,18 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
             combined = float(fa_score)
         else:
             combined = float(ta_score)
-        # Current price + analyst target (lightweight fast_info call)
         price_info = await asyncio.to_thread(fetch_price_info, symbol)
         current_price = price_info.get("current_price")
         target_price  = fa.get("target_price") or price_info.get("target_price")
+        dr = is_dr_symbol(symbol)
+        parent_sym = normalize_dr_symbol(symbol) if dr else None
+        upside_price = current_price
+        if dr and parent_sym:
+            parent_pi = await asyncio.to_thread(fetch_price_info, parent_sym)
+            upside_price = parent_pi.get("current_price") or current_price
         upside_pct: float | None = None
-        if target_price and current_price and current_price > 0:
-            upside_pct = round((target_price - current_price) / current_price * 100, 1)
+        if target_price and upside_price and upside_price > 0:
+            upside_pct = round((target_price - upside_price) / upside_price * 100, 1)
         return {
             "symbol": symbol,
             "signal":   c.signal if c else "HOLD",
@@ -1240,6 +1447,9 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
             "target_price":  target_price,
             "upside_pct":    upside_pct,
             "sector":        fa.get("sector") or "Other",
+            "is_dr":         dr,
+            "parent_symbol": parent_sym,
+            "upside_reference_price": upside_price if dr else None,
         }
 
     scores_list = await asyncio.gather(*[_get_scores(sym) for sym in all_symbols])
@@ -1256,15 +1466,14 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         if w.symbol in scores_map
     ]
 
-    ps = _get_portfolio_settings(db)
+    ps = _get_portfolio_settings(db, ws)
     max_stocks = ps["max_stocks"]
     max_sector_pct = ps["max_sector_pct"]
-    sector_limits = _get_sector_limits(db)
+    sector_limits = _get_sector_limits(db, ws)
     portfolio_count = len(portfolio_data)
     max_reached = portfolio_count >= max_stocks
     room = max(0, max_stocks - portfolio_count)
 
-    # Compute PE percentiles across all analyzed symbols (portfolio + watchlist)
     all_pe = [(sym, d["pe_ratio"]) for sym, d in scores_map.items()
               if d.get("pe_ratio") and d["pe_ratio"] > 0]
     all_pe.sort(key=lambda x: x[1])
@@ -1273,7 +1482,7 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     for sym in scores_map:
         scores_map[sym]["valuation_percentile"] = pe_pct.get(sym)
 
-    layers = _get_optimizer_layers(db)
+    layers = _get_optimizer_layers(db, ws)
     if body.provider:
         layers["layer1"]["provider"] = body.provider
     if body.model:
@@ -1287,15 +1496,12 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     result.setdefault("portfolio_count", portfolio_count)
     result.setdefault("max_reached", max_reached)
 
-    # Enrich watchlist_ranking with upside_pct from pre-fetched scores_map
     upside_map = {sym: d.get("upside_pct") for sym, d in scores_map.items()}
     for item in result.get("watchlist_ranking", []):
         sym = item.get("symbol")
         if sym and item.get("upside_pct") is None:
             item["upside_pct"] = upside_map.get(sym)
 
-    # Hard-enforce: watchlist-only stocks beyond available room get 0% allocation.
-    # AI sometimes ignores the cap in the prompt, so we post-process deterministically.
     portfolio_syms = {h.symbol for h in holdings}
     ranking = result.get("watchlist_ranking", [])
     new_stocks = sorted(
@@ -1305,7 +1511,6 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     for i, r in enumerate(new_stocks):
         if i >= room:
             r["suggested_allocation_pct"] = 0.0
-    # Renormalize remaining non-zero entries so they still sum to 100
     total_alloc = sum(r.get("suggested_allocation_pct", 0) for r in ranking)
     if total_alloc > 0:
         scale = 100.0 / total_alloc
@@ -1314,8 +1519,8 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
                 r["suggested_allocation_pct"] = round(r["suggested_allocation_pct"] * scale, 1)
     result["watchlist_ranking"] = ranking
 
-    # Persist to history
     entry = OptimizerHistory(
+        workspace_id=ws,
         portfolio_id=body.portfolio_id,
         portfolio_name=portfolio.name,
         analyzed_at=datetime.utcnow(),
@@ -1337,9 +1542,10 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
 
 @app.get("/optimizer/history")
 async def list_optimizer_history(portfolio_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    ws = _ws_id(db)
     rows = (
         db.query(OptimizerHistory)
-        .filter(OptimizerHistory.portfolio_id == portfolio_id)
+        .filter(OptimizerHistory.workspace_id == ws, OptimizerHistory.portfolio_id == portfolio_id)
         .order_by(OptimizerHistory.analyzed_at.desc())
         .limit(30)
         .all()
@@ -1357,7 +1563,11 @@ async def list_optimizer_history(portfolio_id: int, db: Session = Depends(get_db
 
 @app.get("/optimizer/history/{history_id}")
 async def get_optimizer_history_detail(history_id: int, db: Session = Depends(get_db)) -> dict:
-    row = db.query(OptimizerHistory).filter(OptimizerHistory.id == history_id).first()
+    ws = _ws_id(db)
+    row = db.query(OptimizerHistory).filter(
+        OptimizerHistory.workspace_id == ws,
+        OptimizerHistory.id == history_id,
+    ).first()
     if not row:
         raise HTTPException(status_code=404, detail="History not found")
     return _json.loads(row.result_json)
@@ -1379,8 +1589,11 @@ _DEFAULT_SECTOR_LIMITS: dict = {
 }
 
 
-def _get_sector_limits(db: Session) -> dict:
-    row = db.query(Settings).filter(Settings.key == "sector_limits").first()
+def _get_sector_limits(db: Session, ws: int) -> dict:
+    row = db.query(Settings).filter(
+        Settings.workspace_id == ws,
+        Settings.key == "sector_limits",
+    ).first()
     if not row:
         return dict(_DEFAULT_SECTOR_LIMITS)
     try:
@@ -1394,7 +1607,7 @@ def _get_sector_limits(db: Session) -> dict:
 
 @app.get("/settings/sector-limits")
 async def get_sector_limits(db: Session = Depends(get_db)) -> dict:
-    return _get_sector_limits(db)
+    return _get_sector_limits(db, _ws_id(db))
 
 
 class SectorLimitsBody(BaseModel):
@@ -1403,19 +1616,23 @@ class SectorLimitsBody(BaseModel):
 
 @app.patch("/settings/sector-limits")
 async def update_sector_limits(body: SectorLimitsBody, db: Session = Depends(get_db)) -> dict:
-    current = _get_sector_limits(db)
+    ws = _ws_id(db)
+    current = _get_sector_limits(db, ws)
     for sector, pct in body.limits.items():
         try:
             current[sector] = max(5, min(100, int(pct)))
         except (TypeError, ValueError):
             pass
-    _upsert_setting(db, "sector_limits", _json.dumps(current))
+    _upsert_setting(db, ws, "sector_limits", _json.dumps(current))
     db.commit()
     return current
 
 
-def _get_portfolio_settings(db: Session) -> dict:
-    row = db.query(Settings).filter(Settings.key == "portfolio_settings").first()
+def _get_portfolio_settings(db: Session, ws: int) -> dict:
+    row = db.query(Settings).filter(
+        Settings.workspace_id == ws,
+        Settings.key == "portfolio_settings",
+    ).first()
     if not row:
         return dict(_DEFAULT_PORTFOLIO_SETTINGS)
     try:
@@ -1427,7 +1644,7 @@ def _get_portfolio_settings(db: Session) -> dict:
 
 @app.get("/settings/portfolio")
 async def get_portfolio_settings(db: Session = Depends(get_db)) -> dict:
-    return _get_portfolio_settings(db)
+    return _get_portfolio_settings(db, _ws_id(db))
 
 
 class PortfolioSettingsBody(BaseModel):
@@ -1437,18 +1654,22 @@ class PortfolioSettingsBody(BaseModel):
 
 @app.patch("/settings/portfolio")
 async def update_portfolio_settings(body: PortfolioSettingsBody, db: Session = Depends(get_db)) -> dict:
-    current = _get_portfolio_settings(db)
+    ws = _ws_id(db)
+    current = _get_portfolio_settings(db, ws)
     if body.max_stocks is not None:
         current["max_stocks"] = max(1, min(30, body.max_stocks))
     if body.max_sector_pct is not None:
         current["max_sector_pct"] = max(10, min(100, body.max_sector_pct))
-    _upsert_setting(db, "portfolio_settings", _json.dumps(current))
+    _upsert_setting(db, ws, "portfolio_settings", _json.dumps(current))
     db.commit()
     return current
 
 
-def _get_optimizer_layers(db: Session) -> dict:
-    row = db.query(Settings).filter(Settings.key == "optimizer_layers").first()
+def _get_optimizer_layers(db: Session, ws: int) -> dict:
+    row = db.query(Settings).filter(
+        Settings.workspace_id == ws,
+        Settings.key == "optimizer_layers",
+    ).first()
     if not row:
         return _DEFAULT_LAYERS
     try:
@@ -1460,7 +1681,7 @@ def _get_optimizer_layers(db: Session) -> dict:
 
 @app.get("/settings/optimizer-layers")
 async def get_optimizer_layers(db: Session = Depends(get_db)) -> dict:
-    return _get_optimizer_layers(db)
+    return _get_optimizer_layers(db, _ws_id(db))
 
 
 class OptimizerLayerUpdate(BaseModel):
@@ -1471,9 +1692,10 @@ class OptimizerLayerUpdate(BaseModel):
 
 @app.patch("/settings/optimizer-layers")
 async def update_optimizer_layer(body: OptimizerLayerUpdate, db: Session = Depends(get_db)) -> dict:
+    ws = _ws_id(db)
     if body.layer not in ("layer1", "layer2", "layer3"):
         raise HTTPException(status_code=400, detail="Invalid layer name")
-    row = db.query(Settings).filter(Settings.key == "optimizer_layers").first()
+    row = db.query(Settings).filter(Settings.workspace_id == ws, Settings.key == "optimizer_layers").first()
     try:
         current = _json.loads(row.value) if row else {}
     except Exception:
@@ -1481,7 +1703,7 @@ async def update_optimizer_layer(body: OptimizerLayerUpdate, db: Session = Depen
     layers = {k: {**_DEFAULT_LAYERS[k], **current.get(k, {})} for k in ("layer1", "layer2", "layer3")}
     layers[body.layer]["provider"] = body.provider
     layers[body.layer]["model"] = body.model
-    _upsert_setting(db, "optimizer_layers", _json.dumps(layers))
+    _upsert_setting(db, ws, "optimizer_layers", _json.dumps(layers))
     db.commit()
     return layers
 
@@ -1502,32 +1724,30 @@ class AISettingsBody(BaseModel):
 
 @app.post("/admin/backfill-sectors")
 async def backfill_sectors(db: Session = Depends(get_db)) -> dict:
-    """Backfill sector column for existing watchlist and portfolio items that are missing it.
-    Fetches yfinance info for DR/US stocks; THAI_SECTOR_MAP is used instantly at no cost.
-    A 0.3 s pause is added between live yfinance calls to respect rate limits.
-    """
+    """Backfill sector column for existing watchlist and portfolio items that are missing it."""
     import asyncio as _asyncio
+    ws = _ws_id(db)
 
-    wl_items  = db.query(Watchlist).filter(
-        (Watchlist.sector == None) | (Watchlist.sector == "Other")  # noqa: E711
+    wl_items = db.query(Watchlist).filter(
+        Watchlist.workspace_id == ws,
+        (Watchlist.sector == None) | (Watchlist.sector == "Other"),  # noqa: E711
     ).all()
-    pi_items  = db.query(PortfolioItem).filter(
-        (PortfolioItem.sector == None) | (PortfolioItem.sector == "Other")  # noqa: E711
+    pi_items = db.query(PortfolioItem).filter(
+        PortfolioItem.workspace_id == ws,
+        (PortfolioItem.sector == None) | (PortfolioItem.sector == "Other"),  # noqa: E711
     ).all()
 
     wl_updated = 0
     pi_updated = 0
     failed: list[str] = []
-    last_was_live = False  # track whether the previous symbol needed a yfinance call
+    last_was_live = False
 
     async def _resolve(symbol: str) -> str:
         nonlocal last_was_live
-        # Free resolution — no yfinance
         sector = _get_sector(symbol, None)
         if sector != "Other":
             last_was_live = False
             return sector
-        # Live yfinance call — throttle to avoid rate limits
         if last_was_live:
             await _asyncio.sleep(random.uniform(1.0, 2.0))
         try:
@@ -1566,18 +1786,12 @@ async def backfill_sectors(db: Session = Depends(get_db)) -> dict:
 
 @app.post("/admin/fix-sectors")
 async def fix_sectors(db: Session = Depends(get_db)) -> dict:
-    """One-time migration: patch FA agent cache entries with the correct sector field
-    so that _get_sector() can use it for DR and US stocks without a live yfinance call.
-
-    For Thai SET stocks in THAI_SECTOR_MAP the sector is always resolved from the map —
-    no cache patch needed, but we still report the resolved sector in the response.
-    For DR stocks (AAPL01.BK) we resolve via normalize_dr_symbol and update the cached JSON.
-    """
-    portfolio_syms = {i.symbol for i in db.query(PortfolioItem).all()}
-    watchlist_syms = {i.symbol for i in db.query(Watchlist).all()}
+    """One-time migration: patch FA agent cache entries with the correct sector field."""
+    ws = _ws_id(db)
+    portfolio_syms = {i.symbol for i in db.query(PortfolioItem).filter(PortfolioItem.workspace_id == ws).all()}
+    watchlist_syms = {i.symbol for i in db.query(Watchlist).filter(Watchlist.workspace_id == ws).all()}
     all_symbols = sorted(portfolio_syms | watchlist_syms)
 
-    # Load all existing FA cache entries in one query
     fa_rows: dict[str, AgentCache] = {
         row.symbol: row
         for row in db.query(AgentCache).filter(
@@ -1589,7 +1803,6 @@ async def fix_sectors(db: Session = Depends(get_db)) -> dict:
     updated = 0
 
     for sym in all_symbols:
-        # Cheap resolution first (THAI_SECTOR_MAP + DR normalization — no yfinance call)
         fa_data: dict | None = None
         row = fa_rows.get(sym)
         if row:
@@ -1600,7 +1813,6 @@ async def fix_sectors(db: Session = Depends(get_db)) -> dict:
 
         sector = _get_sector(sym, fa_data)
 
-        # Patch FA cache JSON if sector is resolved but not stored there yet
         if row and fa_data is not None:
             stored = fa_data.get("sector")
             if sector != "Other" and stored != sector:
@@ -1617,9 +1829,18 @@ async def fix_sectors(db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/stats/latency")
-async def get_latency_stats(db: Session = Depends(get_db)) -> dict:
+async def get_latency_stats(
+    db: Session = Depends(get_db),
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> dict:
     """Aggregated AI call latency grouped by provider+model (analysis) and provider+model+layer (optimizer)."""
-    rows = db.query(UserUsage).all()
+    query = db.query(UserUsage)
+    if from_date:
+        query = query.filter(UserUsage.created_at >= datetime.fromisoformat(from_date))
+    if to_date:
+        query = query.filter(UserUsage.created_at < datetime.fromisoformat(to_date) + timedelta(days=1))
+    rows = query.all()
 
     def _p95(vals: list[int]) -> int:
         if not vals:
@@ -1669,9 +1890,18 @@ async def get_latency_stats(db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/stats/cost-estimate")
-async def get_cost_estimate(db: Session = Depends(get_db)) -> dict:
+async def get_cost_estimate(
+    db: Session = Depends(get_db),
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> dict:
     """Token usage and cost estimate grouped by provider+model from UserUsage records."""
-    rows = db.query(UserUsage).all()
+    query = db.query(UserUsage)
+    if from_date:
+        query = query.filter(UserUsage.created_at >= datetime.fromisoformat(from_date))
+    if to_date:
+        query = query.filter(UserUsage.created_at < datetime.fromisoformat(to_date) + timedelta(days=1))
+    rows = query.all()
     by_model: dict[str, dict] = {}
     for row in rows:
         key = f"{row.provider}/{row.model}"
@@ -1701,20 +1931,21 @@ async def get_cost_estimate(db: Session = Depends(get_db)) -> dict:
 
 @app.get("/settings/ai-models")
 async def get_ai_settings_endpoint(db: Session = Depends(get_db)) -> dict:
-    return _get_ai_settings(db)
+    return _get_ai_settings(db, _ws_id(db))
 
 
 @app.patch("/settings/ai-models")
 async def update_ai_settings(body: AISettingsBody, db: Session = Depends(get_db)) -> dict:
+    ws = _ws_id(db)
     for key, value in body.dict(exclude_none=True).items():
-        _upsert_setting(db, key, value)
+        _upsert_setting(db, ws, key, value)
     db.commit()
-    return _get_ai_settings(db)
+    return _get_ai_settings(db, ws)
 
 
 @app.get("/settings/analysis-sources")
 async def get_analysis_sources_endpoint(db: Session = Depends(get_db)) -> dict:
-    return _get_analysis_sources(db)
+    return _get_analysis_sources(db, _ws_id(db))
 
 
 class AnalysisSourcesBody(BaseModel):
@@ -1725,10 +1956,11 @@ class AnalysisSourcesBody(BaseModel):
 
 @app.patch("/settings/analysis-sources")
 async def update_analysis_sources(body: AnalysisSourcesBody, db: Session = Depends(get_db)) -> dict:
-    current = _get_analysis_sources(db)
+    ws = _ws_id(db)
+    current = _get_analysis_sources(db, ws)
     updates = {k: v for k, v in body.dict().items() if v is not None}
     merged = {**current, **updates}
-    _upsert_setting(db, "analysis_sources", _json.dumps(merged))
+    _upsert_setting(db, ws, "analysis_sources", _json.dumps(merged))
     db.commit()
     return merged
 
@@ -1905,8 +2137,12 @@ async def get_model_cost_report(
 
 @app.get("/portfolio/{symbol}/latest-signal")
 async def get_latest_signal(symbol: str, db: Session = Depends(get_db)) -> dict:
+    ws = _ws_id(db)
     symbol = _resolve_symbol(symbol)
-    cached = db.query(AnalysisCache).filter(AnalysisCache.symbol == symbol).first()
+    cached = db.query(AnalysisCache).filter(
+        AnalysisCache.workspace_id == ws,
+        AnalysisCache.symbol == symbol,
+    ).first()
     if not cached:
         return {"symbol": symbol, "signal": None, "confidence": None, "reasoning": None, "risks": None, "analyzed_at": None}
     return {
@@ -1917,3 +2153,403 @@ async def get_latest_signal(symbol: str, db: Session = Depends(get_db)) -> dict:
         "risks": cached.risks,
         "analyzed_at": cached.analyzed_at.isoformat() + "Z",
     }
+
+
+# ─── Transactions ─────────────────────────────────────────────────────────────
+
+class TransactionBuyBody(BaseModel):
+    symbol: str
+    shares: float
+    price_per_share: float
+    fees: float = 0.0
+    taxes: float = 0.0
+    currency: str = "THB"
+    exchange_rate: float = 1.0
+    transaction_date: str | None = None
+    notes: str | None = None
+
+
+class TransactionSellBody(BaseModel):
+    symbol: str
+    shares: float
+    price_per_share: float
+    fees: float = 0.0
+    taxes: float = 0.0
+    currency: str = "THB"
+    exchange_rate: float = 1.0
+    transaction_date: str | None = None
+    notes: str | None = None
+    remove_if_zero: bool = True
+
+
+class TransactionDepositBody(BaseModel):
+    amount: float
+    currency: str = "THB"
+    exchange_rate: float = 1.0
+    transaction_date: str | None = None
+    notes: str | None = None
+
+
+class TransactionWithdrawBody(BaseModel):
+    amount: float
+    currency: str = "THB"
+    exchange_rate: float = 1.0
+    transaction_date: str | None = None
+    notes: str | None = None
+
+
+class TransactionInitialPositionBody(BaseModel):
+    symbol: str
+    shares: float
+    avg_cost: float
+    transaction_date: str | None = None
+    notes: str | None = None
+
+
+class TransactionInitialCashBody(BaseModel):
+    amount: float
+    currency: str = "THB"
+    transaction_date: str | None = None
+    notes: str | None = None
+
+
+def _parse_tx_date(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.rstrip("Z"))
+    except ValueError:
+        return None
+
+
+def _tx_row(tx: Transaction) -> dict:
+    return {
+        "id": tx.id,
+        "portfolio_id": tx.portfolio_id,
+        "symbol": tx.symbol,
+        "type": tx.transaction_type,
+        "shares": tx.shares,
+        "price_per_share": tx.price_per_share,
+        "total_amount": tx.total_amount,
+        "fees": tx.fees,
+        "taxes": tx.taxes if tx.taxes is not None else 0.0,
+        "currency": tx.currency or "THB",
+        "exchange_rate": tx.exchange_rate if tx.exchange_rate is not None else 1.0,
+        "transaction_date": tx.transaction_date.isoformat() + "Z",
+        "notes": tx.notes,
+        "sector": tx.sector,
+        "created_at": tx.created_at.isoformat() + "Z" if tx.created_at else None,
+    }
+
+
+@app.post("/portfolios/{portfolio_id}/transactions/buy", status_code=201)
+async def transaction_buy(
+    portfolio_id: int,
+    body: TransactionBuyBody,
+    db: Session = Depends(get_db),
+) -> dict:
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    symbol = _resolve_symbol(body.symbol)
+
+    if body.shares <= 0:
+        raise HTTPException(status_code=422, detail="shares must be positive")
+    if body.price_per_share <= 0:
+        raise HTTPException(status_code=422, detail="price_per_share must be positive")
+    if body.fees < 0:
+        raise HTTPException(status_code=422, detail="fees cannot be negative")
+
+    tx_date = _parse_tx_date(body.transaction_date)
+
+    # Resolve sector for new holdings (may already exist; service handles both paths)
+    sector = await _fetch_sector(symbol)
+
+    result = execute_buy(
+        db=db,
+        ws_id=ws,
+        portfolio_id=portfolio_id,
+        symbol=symbol,
+        shares=body.shares,
+        price_per_share=body.price_per_share,
+        fees=body.fees,
+        taxes=body.taxes,
+        currency=body.currency,
+        exchange_rate=body.exchange_rate,
+        transaction_date=tx_date,
+        notes=body.notes,
+        sector=sector,
+    )
+    return result
+
+
+@app.post("/portfolios/{portfolio_id}/transactions/sell", status_code=201)
+async def transaction_sell(
+    portfolio_id: int,
+    body: TransactionSellBody,
+    db: Session = Depends(get_db),
+) -> dict:
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    symbol = _resolve_symbol(body.symbol)
+
+    if body.shares <= 0:
+        raise HTTPException(status_code=422, detail="shares must be positive")
+    if body.price_per_share <= 0:
+        raise HTTPException(status_code=422, detail="price_per_share must be positive")
+    if body.fees < 0:
+        raise HTTPException(status_code=422, detail="fees cannot be negative")
+
+    tx_date = _parse_tx_date(body.transaction_date)
+
+    try:
+        result = execute_sell(
+            db=db,
+            ws_id=ws,
+            portfolio_id=portfolio_id,
+            symbol=symbol,
+            shares=body.shares,
+            price_per_share=body.price_per_share,
+            fees=body.fees,
+            taxes=body.taxes,
+            currency=body.currency,
+            exchange_rate=body.exchange_rate,
+            transaction_date=tx_date,
+            notes=body.notes,
+            remove_if_zero=body.remove_if_zero,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return result
+
+
+@app.get("/portfolios/{portfolio_id}/transactions")
+async def list_transactions(
+    portfolio_id: int,
+    symbol: str | None = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    q = db.query(Transaction).filter(
+        Transaction.workspace_id == ws,
+        Transaction.portfolio_id == portfolio_id,
+    )
+    if symbol:
+        q = q.filter(Transaction.symbol == _resolve_symbol(symbol))
+
+    txs = q.order_by(Transaction.transaction_date.desc()).limit(min(limit, 500)).all()
+    return [_tx_row(tx) for tx in txs]
+
+
+@app.post("/portfolios/{portfolio_id}/transactions/deposit", status_code=201)
+async def transaction_deposit(
+    portfolio_id: int,
+    body: TransactionDepositBody,
+    db: Session = Depends(get_db),
+) -> dict:
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    if body.amount <= 0:
+        raise HTTPException(status_code=422, detail="amount must be positive")
+
+    tx_date = _parse_tx_date(body.transaction_date)
+    try:
+        return execute_deposit(
+            db=db,
+            ws_id=ws,
+            portfolio_id=portfolio_id,
+            amount=body.amount,
+            currency=body.currency,
+            exchange_rate=body.exchange_rate,
+            transaction_date=tx_date,
+            notes=body.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/portfolios/{portfolio_id}/transactions/withdraw", status_code=201)
+async def transaction_withdraw(
+    portfolio_id: int,
+    body: TransactionWithdrawBody,
+    db: Session = Depends(get_db),
+) -> dict:
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    if body.amount <= 0:
+        raise HTTPException(status_code=422, detail="amount must be positive")
+
+    tx_date = _parse_tx_date(body.transaction_date)
+    try:
+        return execute_withdraw(
+            db=db,
+            ws_id=ws,
+            portfolio_id=portfolio_id,
+            amount=body.amount,
+            currency=body.currency,
+            exchange_rate=body.exchange_rate,
+            transaction_date=tx_date,
+            notes=body.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/portfolios/{portfolio_id}/transactions/initial-position", status_code=201)
+async def transaction_initial_position(
+    portfolio_id: int,
+    body: TransactionInitialPositionBody,
+    db: Session = Depends(get_db),
+) -> dict:
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    if body.shares <= 0:
+        raise HTTPException(status_code=422, detail="shares must be positive")
+    if body.avg_cost <= 0:
+        raise HTTPException(status_code=422, detail="avg_cost must be positive")
+
+    symbol = _resolve_symbol(body.symbol)
+    tx_date = _parse_tx_date(body.transaction_date)
+    sector = await _fetch_sector(symbol)
+
+    try:
+        return execute_initial_position(
+            db=db,
+            ws_id=ws,
+            portfolio_id=portfolio_id,
+            symbol=symbol,
+            shares=body.shares,
+            avg_cost=body.avg_cost,
+            transaction_date=tx_date,
+            notes=body.notes,
+            sector=sector,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/portfolios/{portfolio_id}/transactions/initial-cash", status_code=201)
+async def transaction_initial_cash(
+    portfolio_id: int,
+    body: TransactionInitialCashBody,
+    db: Session = Depends(get_db),
+) -> dict:
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    if body.amount <= 0:
+        raise HTTPException(status_code=422, detail="amount must be positive")
+
+    tx_date = _parse_tx_date(body.transaction_date)
+    try:
+        return execute_initial_cash(
+            db=db,
+            ws_id=ws,
+            portfolio_id=portfolio_id,
+            amount=body.amount,
+            currency=body.currency,
+            transaction_date=tx_date,
+            notes=body.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ─── Portfolio Snapshots ───────────────────────────────────────────────────────
+
+class SnapshotGenerateBody(BaseModel):
+    portfolio_id: int
+    snapshot_date: str | None = None  # "YYYY-MM-DD", defaults to today (UTC)
+
+
+def _snapshot_row(s: PortfolioSnapshot) -> dict:
+    def _parse(raw: str | None):
+        if not raw:
+            return None
+        try:
+            return _json.loads(raw)
+        except Exception:
+            return None
+
+    return {
+        "id": s.id,
+        "portfolio_id": s.portfolio_id,
+        "snapshot_date": s.snapshot_date,
+        "total_value": s.total_value,
+        "cash_balance": s.cash_balance,
+        "total_invested": s.total_invested,
+        "unrealized_pnl": s.unrealized_pnl,
+        "unrealized_pnl_pct": s.unrealized_pnl_pct,
+        "realized_pnl": s.realized_pnl,
+        "daily_return_pct": s.daily_return_pct,
+        "holdings_count": s.holdings_count,
+        "sector_breakdown": _parse(s.sector_breakdown_json),
+        "holdings": _parse(s.holdings_json),
+        "created_at": s.created_at.isoformat() + "Z" if s.created_at else None,
+    }
+
+
+@app.post("/snapshots/generate", status_code=201)
+async def snapshot_generate(
+    body: SnapshotGenerateBody,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Generate (or refresh) today's snapshot for the given portfolio.
+
+    Fetches current market prices, computes unrealized/realized P/L, sector
+    allocation, and per-holding breakdown, then upserts the PortfolioSnapshot row.
+    Safe to call multiple times per day — subsequent calls overwrite the same row.
+    """
+    ws = _ws_id(db)
+    try:
+        return await generate_daily_snapshot(
+            db=db,
+            portfolio_id=body.portfolio_id,
+            workspace_id=ws,
+            snapshot_date=body.snapshot_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/portfolios/{portfolio_id}/snapshots")
+async def list_snapshots(
+    portfolio_id: int,
+    limit: int = 365,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Return historical snapshots for the portfolio, oldest-first (max 365)."""
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    snaps = (
+        db.query(PortfolioSnapshot)
+        .filter(
+            PortfolioSnapshot.portfolio_id == portfolio_id,
+            PortfolioSnapshot.workspace_id == ws,
+        )
+        .order_by(PortfolioSnapshot.snapshot_date.asc())
+        .limit(min(limit, 365))
+        .all()
+    )
+    return [_snapshot_row(s) for s in snaps]
