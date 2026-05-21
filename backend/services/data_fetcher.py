@@ -1,4 +1,5 @@
 import re
+import traceback
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timezone
@@ -53,6 +54,9 @@ def fetch_info(symbol: str) -> dict:
 
 def fetch_price_info(symbol: str) -> dict:
     try:
+        # ลองส่องดูว่า symbol ที่ส่งเข้ามาหน้าตาเป็นยังไง มี .BK ไหม
+        # print(f"Fetching price for: {symbol}") 
+        
         fi = yf.Ticker(symbol).fast_info
         current_price: float | None = fi.last_price
         prev_close: float | None = fi.previous_close
@@ -64,7 +68,10 @@ def fetch_price_info(symbol: str) -> dict:
             "change_percent": change_percent,
             "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
-    except Exception:
+    except Exception as e:
+        # 🚨 จุดสำคัญ: พ่น Error ตัวจริงออกมาดูใน pm2 logs
+        print(f"❌ Error fetching price for {symbol}: {str(e)}")
+        traceback.print_exc() 
         return {"current_price": None, "change_percent": None, "last_updated": None}
 
 
