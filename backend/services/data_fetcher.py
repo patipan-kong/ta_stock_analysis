@@ -1,13 +1,25 @@
 import re
+import time
+import random
 import traceback
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timezone
 from typing import Optional
 
+try:
+    from yfinance.exceptions import YFRateLimitError as _YFRateLimitError
+except ImportError:
+    _YFRateLimitError = None
+
 # DR (Depository Receipt) symbols traded on the Thai SET: letters + 2 digits + .BK
 # e.g. AAPL01.BK, AMD08.BK, MSFT12.BK → base US ticker: AAPL, AMD, MSFT
 _DR_RE = re.compile(r'^([A-Z]+)\d{2}\.BK$')
+
+# In-memory price cache: {symbol: {current_price, change_percent, last_updated, cached_at}}
+_price_cache: dict = {}
+_PRICE_CACHE_TTL = 15 * 60  # 15 minutes
+
 
 def normalize_dr_symbol(symbol: str) -> str:
     """Strip the DR digit-suffix so yfinance can find the underlying US company.
@@ -25,16 +37,35 @@ def resolve_symbol(symbol: str) -> str:
     symbol = symbol.upper()
     if symbol.endswith(".BK"):
         return symbol
-    # Heuristic: Thai SET symbols are 1-5 uppercase letters without digits (mostly)
-    # Frontend sends symbols without .BK; we rely on caller to pass the flag
     return symbol
+
+
+def _is_rate_limit(e: Exception) -> bool:
+    if _YFRateLimitError and isinstance(e, _YFRateLimitError):
+        return True
+    msg = str(e).lower()
+    return "429" in msg or "rate limit" in msg or "too many requests" in msg
+
+
+def _yf_retry(fn, *args, max_attempts: int = 3, **kwargs):
+    """Call fn(*args, **kwargs) with exponential backoff on rate-limit errors."""
+    for attempt in range(max_attempts):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            if _is_rate_limit(e) and attempt < max_attempts - 1:
+                wait = (2 ** attempt) + random.uniform(1, 3)
+                print(f"⚠️ yfinance rate limit, retry in {wait:.1f}s (attempt {attempt + 1}/{max_attempts})")
+                time.sleep(wait)
+                continue
+            raise
 
 
 def fetch_history(symbol: str, period: str = "6mo", interval: str = "1d") -> Optional[pd.DataFrame]:
     try:
         ticker = yf.Ticker(symbol)
-        df = ticker.history(period=period, interval=interval)
-        if df.empty:
+        df = _yf_retry(ticker.history, period=period, interval=interval)
+        if df is None or df.empty:
             return None
         return df
     except Exception:
@@ -46,31 +77,51 @@ def fetch_info(symbol: str) -> dict:
     Callers are responsible for normalising DR symbols via normalize_dr_symbol() first."""
     try:
         ticker = yf.Ticker(symbol)
-        return ticker.info or {}
+        return _yf_retry(lambda: ticker.info) or {}
     except Exception:
         return {}
 
 
 def fetch_price_info(symbol: str) -> dict:
-    try:
-        # ลองส่องดูว่า symbol ที่ส่งเข้ามาหน้าตาเป็นยังไง มี .BK ไหม
-        # print(f"Fetching price for: {symbol}") 
-        
-        fi = yf.Ticker(symbol).fast_info
-        current_price: float | None = fi.last_price
-        prev_close: float | None = fi.previous_close
-        change_percent: float | None = None
-        if current_price is not None and prev_close and prev_close != 0:
-            change_percent = round((current_price - prev_close) / prev_close * 100, 2)
+    # Return cached price if still fresh
+    cached = _price_cache.get(symbol)
+    if cached and (time.time() - cached["cached_at"]) < _PRICE_CACHE_TTL:
         return {
+            "current_price": cached["current_price"],
+            "change_percent": cached["change_percent"],
+            "last_updated": cached["last_updated"],
+        }
+
+    # Jitter before hitting yfinance to reduce thundering-herd on bulk calls
+    time.sleep(random.uniform(0.5, 1.5))
+
+    try:
+        ticker = yf.Ticker(symbol)
+        # Use history() — fast_info.last_price triggers a full 1y history fetch internally
+        df = _yf_retry(ticker.history, period="5d")
+
+        current_price: float | None = None
+        change_percent: float | None = None
+
+        if df is not None and not df.empty:
+            current_price = float(df["Close"].iloc[-1])
+            if len(df) >= 2:
+                prev_close = float(df["Close"].iloc[-2])
+                if prev_close and prev_close != 0:
+                    change_percent = round((current_price - prev_close) / prev_close * 100, 2)
+
+        last_updated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        result = {
             "current_price": round(current_price, 4) if current_price is not None else None,
             "change_percent": change_percent,
-            "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "last_updated": last_updated,
         }
+        _price_cache[symbol] = {**result, "cached_at": time.time()}
+        return result
+
     except Exception as e:
-        # 🚨 จุดสำคัญ: พ่น Error ตัวจริงออกมาดูใน pm2 logs
         print(f"❌ Error fetching price for {symbol}: {str(e)}")
-        traceback.print_exc() 
+        traceback.print_exc()
         return {"current_price": None, "change_percent": None, "last_updated": None}
 
 
@@ -78,7 +129,7 @@ def fetch_news(symbol: str) -> list[dict]:
     """Callers are responsible for normalising DR symbols via normalize_dr_symbol() first."""
     try:
         ticker = yf.Ticker(symbol)
-        news = ticker.news or []
+        news = _yf_retry(lambda: ticker.news) or []
         result = []
         for item in news[:10]:
             content = item.get("content", {})

@@ -1,4 +1,5 @@
 import asyncio
+import random
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -883,7 +884,7 @@ async def analyze_portfolio_holdings(portfolio_id: int, db: Session = Depends(ge
             if isinstance(_sm, dict) and "error" not in _sm:
                 result["summary"] = {**_sm, "analyzed_at": datetime.utcnow().isoformat() + "Z", "from_cache": False}
             results.append(result)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(random.uniform(1.0, 2.0))
         else:
             tech_r, fund_r, news_r = await _fetch_agents(db, item.symbol, src)
             results.append(_build_cached_result(item.symbol, cache, tech_r, fund_r, news_r))
@@ -912,7 +913,7 @@ async def analyze_watchlist_all(db: Session = Depends(get_db)) -> list[dict]:
             if isinstance(_sm, dict) and "error" not in _sm:
                 result["summary"] = {**_sm, "analyzed_at": datetime.utcnow().isoformat() + "Z", "from_cache": False}
             results.append(result)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(random.uniform(1.0, 2.0))
         else:
             tech_r, fund_r, news_r = await _fetch_agents(db, item.symbol, src)
             results.append(_build_cached_result(item.symbol, cache, tech_r, fund_r, news_r))
@@ -960,7 +961,7 @@ async def analyze_portfolio_all(portfolio_id: int, db: Session = Depends(get_db)
     for sym in symbols:
         if _is_stale_60m(cache_map.get(sym)):
             results.append(await _analyze_symbol_and_save(db, sym, s, src))
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(random.uniform(1.0, 2.0))
         else:
             skipped_symbols.append(sym)
     return {
@@ -985,7 +986,7 @@ async def analyze_watchlist_60m(db: Session = Depends(get_db)) -> dict:
     for sym in symbols:
         if _is_stale_60m(cache_map.get(sym)):
             results.append(await _analyze_symbol_and_save(db, sym, s, src))
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(random.uniform(1.0, 2.0))
         else:
             skipped_symbols.append(sym)
     return {
@@ -1528,7 +1529,7 @@ async def backfill_sectors(db: Session = Depends(get_db)) -> dict:
             return sector
         # Live yfinance call — throttle to avoid rate limits
         if last_was_live:
-            await _asyncio.sleep(0.3)
+            await _asyncio.sleep(random.uniform(1.0, 2.0))
         try:
             normalized = normalize_dr_symbol(symbol)
             info = await _asyncio.to_thread(fetch_info, normalized)
