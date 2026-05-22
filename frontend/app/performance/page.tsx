@@ -3,10 +3,24 @@
 import { useEffect, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { usePortfolio } from "@/lib/PortfolioContext";
-import { generateSnapshot, getSnapshots, listPortfolios } from "@/lib/api";
-import type { PortfolioSnapshotRow, GenerateSnapshotResult } from "@/lib/api";
+import {
+  generateSnapshot,
+  getSnapshots,
+  getPerformanceComparison,
+  benchmarkBackfill,
+} from "@/lib/api";
+import type {
+  PortfolioSnapshotRow,
+  GenerateSnapshotResult,
+  PerformanceComparisonResult,
+} from "@/lib/api";
 
 const EquityCurve = dynamic(() => import("@/components/EquityCurveChart"), {
+  ssr: false,
+  loading: () => <div className="h-72 animate-pulse bg-gray-100 rounded-xl" />,
+});
+
+const BenchmarkChart = dynamic(() => import("@/components/BenchmarkComparisonChart"), {
   ssr: false,
   loading: () => <div className="h-72 animate-pulse bg-gray-100 rounded-xl" />,
 });
@@ -104,8 +118,12 @@ export default function PerformancePage() {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [latestResult, setLatestResult] = useState<GenerateSnapshotResult | null>(null);
+  const [, setLatestResult] = useState<GenerateSnapshotResult | null>(null);
   const [showHoldings, setShowHoldings] = useState(false);
+
+  const [perfData, setPerfData] = useState<PerformanceComparisonResult | null>(null);
+  const [perfLoading, setPerfLoading] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
 
   const portfolioId = activePortfolioId ?? 0;
 
@@ -123,9 +141,36 @@ export default function PerformancePage() {
     }
   }, [portfolioId]);
 
+  const loadPerfData = useCallback(async () => {
+    if (!portfolioId) return;
+    setPerfLoading(true);
+    try {
+      const data = await getPerformanceComparison(portfolioId);
+      setPerfData(data);
+    } catch {
+      // silently ignore — chart section shows empty state
+    } finally {
+      setPerfLoading(false);
+    }
+  }, [portfolioId]);
+
   useEffect(() => {
     loadSnapshots();
-  }, [loadSnapshots]);
+    loadPerfData();
+  }, [loadSnapshots, loadPerfData]);
+
+  const handleBackfill = async () => {
+    setBackfilling(true);
+    try {
+      const result = await benchmarkBackfill();
+      setToast(`Benchmark data seeded — ${result.total_rows_written} rows written.`);
+      await loadPerfData();
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : "Backfill failed");
+    } finally {
+      setBackfilling(false);
+    }
+  };
 
   const handleGenerate = async () => {
     if (!portfolioId) return;
@@ -153,11 +198,7 @@ export default function PerformancePage() {
   const latest = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null;
   const prev = snapshots.length > 1 ? snapshots[snapshots.length - 2] : null;
 
-  // Compute total P/L = unrealized + realized for display
-  const totalPnl =
-    latest
-      ? (latest.unrealized_pnl ?? 0) + (latest.realized_pnl ?? 0)
-      : null;
+
 
   return (
     <main className="max-w-5xl mx-auto px-4 py-6 space-y-6">
@@ -234,10 +275,43 @@ export default function PerformancePage() {
           <EquityCurve snapshots={snapshots} />
         )}
 
-        {/* Benchmark placeholder */}
-        <p className="text-xs text-gray-400 mt-2 text-right">
-          Benchmark comparison coming soon
-        </p>
+      </div>
+
+      {/* Benchmark comparison */}
+      <div className="bg-white border rounded-xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-700">vs Benchmarks (base = 100)</h2>
+            {perfData?.base_date && (
+              <p className="text-xs text-gray-400 mt-0.5">
+                Normalised from {perfData.base_date} · ^SET.BK (SET) &amp; QQQ
+              </p>
+            )}
+          </div>
+          <button
+            onClick={handleBackfill}
+            disabled={backfilling}
+            className="px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {backfilling ? "Seeding…" : "Seed Benchmark Data"}
+          </button>
+        </div>
+        {perfLoading ? (
+          <div className="h-72 animate-pulse bg-gray-100 rounded-lg" />
+        ) : !perfData || perfData.data.length === 0 ? (
+          <div className="h-72 flex flex-col items-center justify-center gap-3 text-gray-400 text-sm">
+            <p>No benchmark data yet.</p>
+            <button
+              onClick={handleBackfill}
+              disabled={backfilling}
+              className="px-4 py-2 text-xs font-medium text-blue-700 border border-blue-300 rounded-lg hover:bg-blue-50 disabled:opacity-50 transition-colors"
+            >
+              {backfilling ? "Seeding…" : "Seed Benchmark Data"}
+            </button>
+          </div>
+        ) : (
+          <BenchmarkChart comparison={perfData} />
+        )}
       </div>
 
       {/* Latest snapshot — holdings detail */}

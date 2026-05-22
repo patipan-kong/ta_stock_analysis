@@ -114,6 +114,7 @@ Signal badge colors: ACCUMULATE=teal (#0F6E56), BUY=green (#27500A), WATCH=blue 
 | `OptimizerHistory` | Full optimizer result JSON + per-layer latency columns |
 | `Settings` | Key-value store for all user settings |
 | `UserUsage` | Per-call AI token usage + cost + **latency_ms** |
+| `SignalHistory` | Append-only optimizer action log: `session_id` (ties rows to one optimizer run / `OptimizerHistory.id`), `symbol`, `action` (BUY/SELL/ACCUMULATE/REDUCE), `signal_type` (L1\|L2), `score_at_signal`, `price_at_signal`, `reasoning_snippet` (≤200 chars) |
 
 `migrate_legacy_data()` runs at startup for SQLite ALTER TABLE patches. PostgreSQL uses Alembic.
 
@@ -437,6 +438,32 @@ The binary `agrees: bool` consensus has been replaced with a **7-type Consensus 
 **TypeScript types** (`frontend/lib/api.ts`):
 - `ConsensusType` union type exported
 - `OptimizerConsensus` extended with 6 new optional fields; all legacy fields preserved
+
+### Signal History Pipeline ✅ SHIPPED 2026-05-22
+
+Every optimizer run that produces actionable allocations (BUY/SELL/ACCUMULATE/REDUCE) now writes rows into `signal_history` automatically, laying the foundation for backtesting and AI tuning.
+
+**How it works (as-built):**
+- `analyze_optimizer` (`main.py`) inserts one `SignalHistory` row per actionable allocation after the `OptimizerHistory` entry is committed.
+- `session_id` = `str(OptimizerHistory.id)` — groups all signals from the same optimizer run.
+- `signal_type = "L2"` — rows reflect the Challenger's final allocation plan (the authoritative output).
+- `score_at_signal` = `combined_score` from `scores_map` (0.4 × TA + 0.6 × FA), computed before the AI call.
+- `price_at_signal` = live price at time of optimizer run (from `fetch_price_info`).
+- `reasoning_snippet` = first 200 chars of the allocation `reason` field from L2.
+- HOLD and WATCH actions are **not** recorded — only actionable changes.
+
+**New endpoint:**
+```
+GET /analytics/signals
+  ?symbol=      filter by symbol (optional)
+  ?action=      BUY | SELL | ACCUMULATE | REDUCE (optional)
+  ?signal_type= L1 | L2 (optional)
+  ?session_id=  tie-break to one optimizer run (optional)
+  ?limit=       max rows, default 100, cap 500
+```
+Returns rows ordered by `recorded_at DESC`. No auth required beyond existing JWT middleware.
+
+**Alembic migration:** `j4k5l6m7n8o9_add_signal_history_action_fields.py` — adds `session_id`, `action`, `score_at_signal`, `signal_type`, `reasoning_snippet` to `signal_history`. SQLite handled via `migrate_legacy_data()`.
 
 ---
 

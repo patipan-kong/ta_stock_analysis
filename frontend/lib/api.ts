@@ -1111,3 +1111,39 @@ export const getSnapshots = (portfolioId: number, limit = 365) =>
   apiFetch<PortfolioSnapshotRow[]>(
     `/portfolios/${portfolioId}/snapshots?limit=${limit}`
   );
+
+// ─── Benchmark / performance-comparison ──────────────────────────────────────
+
+export interface BenchmarkSeriesMeta {
+  key: string;                       // "portfolio" | "bm_SET" | "bm_QQQ"
+  label: string;                     // "Main" | "SET Index" | "QQQ (NASDAQ-100)"
+  type: "portfolio" | "benchmark";
+  symbol: string | null;
+}
+
+/** One date point in the flat recharts-ready array. */
+export type PerformanceDataPoint = { date: string } & Record<string, number | null>;
+
+export interface PerformanceComparisonResult {
+  base_date: string | null;
+  portfolio_name: string;
+  series: BenchmarkSeriesMeta[];
+  data: PerformanceDataPoint[];
+}
+
+export const getPerformanceComparison = (
+  portfolioId: number,
+  benchmarks = "^SET.BK,QQQ",
+) =>
+  apiFetch<PerformanceComparisonResult>(
+    `/analytics/performance-comparison?portfolio_id=${portfolioId}&benchmarks=${encodeURIComponent(benchmarks)}`,
+  );
+
+export const benchmarkBackfill = (
+  fromDate = "2026-05-21",
+  symbols = "^SET.BK,QQQ",
+) =>
+  apiFetch<{ results: { symbol: string; status: string; rows: number }[]; total_rows_written: number }>(
+    `/admin/benchmark-backfill?from_date=${fromDate}&symbols=${encodeURIComponent(symbols)}`,
+    { method: "POST" },
+  );

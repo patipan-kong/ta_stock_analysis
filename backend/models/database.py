@@ -235,22 +235,40 @@ class PortfolioSnapshot(Base):
     __table_args__ = (UniqueConstraint("portfolio_id", "snapshot_date", name="uq_portfolio_snapshot_date"),)
 
 
+class BenchmarkPrice(Base):
+    """Daily closing price for an index or ETF benchmark (e.g. ^SET, QQQ)."""
+    __tablename__ = "benchmark_prices"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    price_date = Column(String, nullable=False, index=True)  # "YYYY-MM-DD"
+    close_price = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("symbol", "price_date", name="uq_benchmark_symbol_date"),)
+
+
 class SignalHistory(Base):
-    """Append-only log of every signal generated, with sector for Thai SET grouping."""
+    """Append-only log of every AI-confirmed optimizer action for backtesting."""
     __tablename__ = "signal_history"
 
     id = Column(Integer, primary_key=True, index=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_id = Column(String, nullable=True, index=True)       # ties rows to one optimizer run
     symbol = Column(String, nullable=False, index=True)
     sector = Column(String, nullable=True, index=True)
-    signal = Column(String, nullable=False)
+    action = Column(String, nullable=True)                        # BUY/SELL/SWAP/ACCUMULATE/REDUCE
+    signal = Column(String, nullable=False)                       # current signal at time of record
     prev_signal = Column(String, nullable=True)
+    signal_type = Column(String, nullable=True)                   # "L1" | "L2"
     confidence = Column(String, nullable=True)
     ta_score = Column(Integer, nullable=True)
     fa_score = Column(Integer, nullable=True)
+    score_at_signal = Column(Float, nullable=True)                # combined_score (0-100)
     ai_provider = Column(String, nullable=True)
     ai_model = Column(String, nullable=True)
     price_at_signal = Column(Float, nullable=True)
+    reasoning_snippet = Column(Text, nullable=True)               # first 200 chars of allocation reason
     recorded_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 
     workspace = relationship("Workspace", back_populates="signal_history_items")
@@ -428,6 +446,16 @@ def migrate_legacy_data() -> None:
                         conn.execute(text("ALTER TABLE signal_history ADD COLUMN price_at_signal REAL"))
                     if "prev_signal" not in sh_cols:
                         conn.execute(text("ALTER TABLE signal_history ADD COLUMN prev_signal TEXT"))
+                    if "session_id" not in sh_cols:
+                        conn.execute(text("ALTER TABLE signal_history ADD COLUMN session_id TEXT"))
+                    if "action" not in sh_cols:
+                        conn.execute(text("ALTER TABLE signal_history ADD COLUMN action TEXT"))
+                    if "score_at_signal" not in sh_cols:
+                        conn.execute(text("ALTER TABLE signal_history ADD COLUMN score_at_signal REAL"))
+                    if "signal_type" not in sh_cols:
+                        conn.execute(text("ALTER TABLE signal_history ADD COLUMN signal_type TEXT"))
+                    if "reasoning_snippet" not in sh_cols:
+                        conn.execute(text("ALTER TABLE signal_history ADD COLUMN reasoning_snippet TEXT"))
 
             if "portfolio_snapshots" in tables:
                 with engine.begin() as conn:
@@ -448,6 +476,22 @@ def migrate_legacy_data() -> None:
                         conn.execute(text("ALTER TABLE transactions ADD COLUMN currency TEXT DEFAULT 'THB'"))
                     if "exchange_rate" not in tx_cols:
                         conn.execute(text("ALTER TABLE transactions ADD COLUMN exchange_rate REAL DEFAULT 1.0"))
+
+            # benchmark_prices: create if missing (SQLite has no CREATE TABLE IF NOT EXISTS in ALTER path)
+            if "benchmark_prices" not in tables:
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS benchmark_prices (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            symbol TEXT NOT NULL,
+                            price_date TEXT NOT NULL,
+                            close_price REAL NOT NULL,
+                            created_at DATETIME,
+                            UNIQUE (symbol, price_date)
+                        )
+                    """))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_benchmark_prices_symbol ON benchmark_prices (symbol)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_benchmark_prices_price_date ON benchmark_prices (price_date)"))
 
         # Data migration: copy from old flat 'portfolio' table if it still exists (both DB types)
         if "portfolio" in tables:

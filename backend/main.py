@@ -19,8 +19,8 @@ from models.database import (
     init_db, migrate_legacy_data, get_db, SessionLocal,
     Workspace, get_default_workspace,
     Portfolio, PortfolioItem, Watchlist,
-    AgentCache, AnalysisCache, AnalysisHistory, OptimizerHistory,
-    Settings, UserUsage, Transaction, PortfolioSnapshot,
+    AgentCache, AnalysisCache, AnalysisHistory, OptimizerHistory, SignalHistory,
+    Settings, UserUsage, Transaction, PortfolioSnapshot, BenchmarkPrice,
 )
 from agents.technical import analyze_technical
 from agents.fundamental import analyze_fundamental
@@ -1865,6 +1865,45 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     db.commit()
     db.refresh(entry)
     result["history_id"] = entry.id
+
+    # ── Signal History pipeline ────────────────────────────────────────────────
+    # Record every actionable allocation confirmed by the Consensus Engine so
+    # the data is available for future backtesting and AI tuning.
+    _ACTIONABLE = {"BUY", "SELL", "ACCUMULATE", "REDUCE"}
+    session_id = str(entry.id)
+    ai_provider = result.get("ai_provider")
+    ai_model = result.get("ai_model")
+    signal_rows: list[SignalHistory] = []
+
+    for alloc in result.get("target_allocations", []):
+        action = (alloc.get("action") or "").upper()
+        if action not in _ACTIONABLE:
+            continue
+        sym = alloc.get("symbol", "")
+        score_data = scores_map.get(sym, {})
+        signal_rows.append(SignalHistory(
+            workspace_id=ws,
+            session_id=session_id,
+            symbol=sym,
+            sector=score_data.get("sector"),
+            action=action,
+            signal=score_data.get("signal", "HOLD"),
+            signal_type="L2",
+            confidence=result.get("consensus", {}).get("confidence"),
+            ta_score=score_data.get("ta_score"),
+            fa_score=score_data.get("fa_score"),
+            score_at_signal=score_data.get("combined_score"),
+            ai_provider=ai_provider,
+            ai_model=ai_model,
+            price_at_signal=score_data.get("current_price"),
+            reasoning_snippet=(alloc.get("reason") or "")[:200],
+            recorded_at=datetime.utcnow(),
+        ))
+
+    if signal_rows:
+        db.add_all(signal_rows)
+        db.commit()
+
     return result
 
 
@@ -2960,3 +2999,225 @@ async def list_snapshots(
         .all()
     )
     return [_snapshot_row(s) for s in snaps]
+
+
+# ─── Signal History ───────────────────────────────────────────────────────────
+
+@app.get("/analytics/signals")
+async def get_signal_history(
+    symbol: str | None = None,
+    action: str | None = None,
+    signal_type: str | None = None,
+    session_id: str | None = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Return optimizer-confirmed trade signals ordered by most recent first.
+
+    Query params:
+      symbol      — filter to a single symbol
+      action      — BUY | SELL | ACCUMULATE | REDUCE
+      signal_type — L1 | L2
+      session_id  — tie-break to a specific optimizer run (OptimizerHistory.id)
+      limit       — max rows returned (default 100, max 500)
+    """
+    ws = _ws_id(db)
+    limit = min(limit, 500)
+    q = (
+        db.query(SignalHistory)
+        .filter(SignalHistory.workspace_id == ws)
+    )
+    if symbol:
+        q = q.filter(SignalHistory.symbol == symbol.upper())
+    if action:
+        q = q.filter(SignalHistory.action == action.upper())
+    if signal_type:
+        q = q.filter(SignalHistory.signal_type == signal_type.upper())
+    if session_id:
+        q = q.filter(SignalHistory.session_id == session_id)
+    rows = q.order_by(SignalHistory.recorded_at.desc()).limit(limit).all()
+    return [
+        {
+            "id":               r.id,
+            "session_id":       r.session_id,
+            "symbol":           r.symbol,
+            "sector":           r.sector,
+            "action":           r.action,
+            "signal":           r.signal,
+            "signal_type":      r.signal_type,
+            "confidence":       r.confidence,
+            "ta_score":         r.ta_score,
+            "fa_score":         r.fa_score,
+            "score_at_signal":  r.score_at_signal,
+            "price_at_signal":  r.price_at_signal,
+            "reasoning_snippet": r.reasoning_snippet,
+            "ai_provider":      r.ai_provider,
+            "ai_model":         r.ai_model,
+            "recorded_at":      r.recorded_at.isoformat() + "Z" if r.recorded_at else None,
+        }
+        for r in rows
+    ]
+
+
+# ─── Performance comparison (benchmark-normalised) ────────────────────────────
+
+@app.get("/analytics/performance-comparison")
+async def get_performance_comparison(
+    portfolio_id: int,
+    benchmarks: str = "^SET,QQQ",
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return portfolio and benchmark performance normalised to base=100.
+
+    Both series start at 100.0 on the portfolio's earliest snapshot date so
+    the chart shows relative performance rather than absolute values.
+
+    Query params:
+        portfolio_id  — required; the portfolio to compare
+        benchmarks    — comma-separated yfinance symbols (default: "^SET,QQQ")
+
+    Response shape (recharts-ready flat array):
+        {
+          "base_date": "YYYY-MM-DD",
+          "portfolio_name": "Main",
+          "series": [
+            {"key": "portfolio", "label": "Main", "type": "portfolio", "symbol": null},
+            {"key": "bm_SET",    "label": "SET Index", "type": "benchmark", "symbol": "^SET"},
+            {"key": "bm_QQQ",   "label": "QQQ (NASDAQ-100)", "type": "benchmark", "symbol": "QQQ"},
+          ],
+          "data": [
+            {"date": "2026-05-21", "portfolio": 100.0, "bm_SET": 100.0, "bm_QQQ": 100.0},
+            {"date": "2026-05-22", "portfolio": 103.2, "bm_SET": 101.5, "bm_QQQ": null},
+          ]
+        }
+    """
+    from services.benchmark_service import bench_key, benchmark_label
+
+    ws = _ws_id(db)
+
+    # Verify portfolio ownership
+    portfolio = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id,
+        Portfolio.workspace_id == ws,
+    ).first()
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    # Load all portfolio snapshots (oldest first)
+    snap_rows = (
+        db.query(PortfolioSnapshot)
+        .filter(
+            PortfolioSnapshot.portfolio_id == portfolio_id,
+            PortfolioSnapshot.workspace_id == ws,
+        )
+        .order_by(PortfolioSnapshot.snapshot_date.asc())
+        .all()
+    )
+    if not snap_rows:
+        return {
+            "base_date": None,
+            "portfolio_name": portfolio.name,
+            "series": [],
+            "data": [],
+        }
+
+    base_date: str = snap_rows[0].snapshot_date
+    portfolio_map: dict[str, float] = {s.snapshot_date: s.total_value for s in snap_rows}
+    base_portfolio_value: float = snap_rows[0].total_value
+
+    # Parse requested benchmark symbols
+    bench_symbols: list[str] = [s.strip() for s in benchmarks.split(",") if s.strip()]
+
+    # Load benchmark prices for those symbols
+    bench_map: dict[str, dict[str, float]] = {sym: {} for sym in bench_symbols}
+    bench_base: dict[str, float] = {}
+
+    if bench_symbols:
+        bm_rows = (
+            db.query(BenchmarkPrice)
+            .filter(BenchmarkPrice.symbol.in_(bench_symbols))
+            .order_by(BenchmarkPrice.price_date.asc())
+            .all()
+        )
+        for row in bm_rows:
+            bench_map[row.symbol][row.price_date] = row.close_price
+
+        # Anchor each benchmark to the closest available price on or after base_date
+        for sym in bench_symbols:
+            dated = {d: v for d, v in bench_map[sym].items() if d >= base_date}
+            if dated:
+                anchor_date = min(dated.keys())
+                bench_base[sym] = dated[anchor_date]
+
+    # Collect all dates from portfolio + all benchmarks, sorted
+    all_dates: set[str] = set(portfolio_map.keys())
+    for sym in bench_symbols:
+        all_dates.update(d for d in bench_map[sym] if d >= base_date)
+    sorted_dates = sorted(all_dates)
+
+    # Build flat recharts data array
+    data: list[dict] = []
+    for d in sorted_dates:
+        row: dict = {"date": d}
+
+        # Portfolio — normalised to base=100
+        if d in portfolio_map and base_portfolio_value and base_portfolio_value > 0:
+            row["portfolio"] = round(portfolio_map[d] / base_portfolio_value * 100, 4)
+        else:
+            row["portfolio"] = None
+
+        # Each benchmark — normalised to base=100 from its own anchor price
+        for sym in bench_symbols:
+            key = bench_key(sym)
+            bv = bench_base.get(sym)
+            price = bench_map[sym].get(d)
+            if price is not None and bv and bv > 0:
+                row[key] = round(price / bv * 100, 4)
+            else:
+                row[key] = None
+
+        data.append(row)
+
+    # Series metadata for the frontend legend / line colours
+    series = [
+        {"key": "portfolio", "label": portfolio.name, "type": "portfolio", "symbol": None}
+    ] + [
+        {
+            "key": bench_key(sym),
+            "label": benchmark_label(sym),
+            "type": "benchmark",
+            "symbol": sym,
+        }
+        for sym in bench_symbols
+    ]
+
+    return {
+        "base_date": base_date,
+        "portfolio_name": portfolio.name,
+        "series": series,
+        "data": data,
+    }
+
+
+@app.post("/admin/benchmark-backfill")
+async def admin_benchmark_backfill(
+    from_date: str = "2026-05-21",
+    to_date: str | None = None,
+    symbols: str = "^SET,QQQ",
+    db: Session = Depends(get_db),
+) -> dict:
+    """Backfill historical benchmark prices from yfinance.
+
+    Query params:
+        from_date  — start date "YYYY-MM-DD" (default: 2026-05-21)
+        to_date    — end date "YYYY-MM-DD" (default: today UTC)
+        symbols    — comma-separated yfinance symbols (default: "^SET,QQQ")
+
+    Existing rows are overwritten so stale prices can be corrected.
+    """
+    from services.benchmark_service import backfill_benchmarks
+
+    sym_list = [s.strip() for s in symbols.split(",") if s.strip()]
+    results = await backfill_benchmarks(db, symbols=sym_list, from_date=from_date, to_date=to_date)
+    total_rows = sum(r.get("rows", 0) for r in results)
+    return {"results": results, "total_rows_written": total_rows}

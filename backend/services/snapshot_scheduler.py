@@ -256,6 +256,22 @@ async def _run_snapshots_core(triggered_by: str) -> None:
                     _fmt_ms(ws_ms),
                 )
 
+            # Fetch and store benchmark prices for today alongside portfolio snapshots.
+            bench_t0 = time.perf_counter()
+            try:
+                from services.benchmark_service import fetch_and_store_benchmarks
+                bench_results = await fetch_and_store_benchmarks(db, price_date=today.isoformat())
+                log.info(
+                    "snapshot_scheduler: benchmarks stored — elapsed=%s  results=%s",
+                    _fmt_ms(_elapsed_ms(bench_t0)),
+                    bench_results,
+                )
+            except Exception:
+                log.error(
+                    "snapshot_scheduler: benchmark fetch failed\n%s",
+                    traceback.format_exc().rstrip(),
+                )
+
         finally:
             db.close()
 
