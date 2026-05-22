@@ -4,12 +4,16 @@ const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken();
+  // Spread init first so caller options (method, body, etc.) are set, then
+  // override headers last so Authorization is never clobbered by init.headers.
+  const { headers: callerHeaders, ...restInit } = init ?? {};
   const res = await fetch(`${BASE_URL}${path}`, {
+    ...restInit,
     headers: {
       "Content-Type": "application/json",
+      ...(callerHeaders as Record<string, string> | undefined),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    ...init,
   });
   if (res.status === 401) {
     logout();

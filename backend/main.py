@@ -3203,7 +3203,7 @@ async def get_performance_comparison(
 async def admin_benchmark_backfill(
     from_date: str = "2026-05-21",
     to_date: str | None = None,
-    symbols: str = "^SET,QQQ",
+    symbols: str = "^SET.BK,QQQ",
     db: Session = Depends(get_db),
 ) -> dict:
     """Backfill historical benchmark prices from yfinance.
