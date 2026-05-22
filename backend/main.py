@@ -3064,7 +3064,7 @@ async def get_signal_history(
 @app.get("/analytics/performance-comparison")
 async def get_performance_comparison(
     portfolio_id: int,
-    benchmarks: str = "^SET,QQQ",
+    benchmarks: str = "^SET.BK,QQQ",
     db: Session = Depends(get_db),
 ) -> dict:
     """Return portfolio and benchmark performance normalised to base=100.

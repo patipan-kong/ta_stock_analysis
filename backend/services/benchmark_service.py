@@ -5,7 +5,7 @@ persists them in the benchmark_prices table for use in the
 performance-comparison analytics endpoint.
 
 Default benchmarks:
-  ^SET  — Thai SET Composite Index (Yahoo Finance ticker)
+  ^SET.BK  — Thai SET Composite Index (Yahoo Finance ticker)
   QQQ   — Invesco QQQ Trust (NASDAQ-100 ETF)
 """
 import asyncio
