@@ -303,6 +303,114 @@ export const analyzePortfolioAll = (portfolioId: number) =>
 export const analyzeWatchlistAll = () =>
   apiFetch<AnalyzeAllResult>(`/watchlist/analyze/all`, { method: "POST" });
 
+// ─── Job-based async analysis ─────────────────────────────────────────────────
+
+export interface JobStartResponse {
+  job_id: string;
+  status: "queued";
+  total: number;
+  stale: number;
+}
+
+export interface JobStatusResponse {
+  job_id: string;
+  status: "queued" | "running" | "done" | "failed";
+  total: number;
+  done: number;
+  skipped: number;
+  fallbacks: number;
+  progress_pct: number;
+  results: FullAnalysis[];
+}
+
+export const startWatchlistAnalysisJob = () =>
+  apiFetch<JobStartResponse>("/analyze/watchlist", { method: "POST" });
+
+export const getAnalysisJob = (jobId: string) =>
+  apiFetch<JobStatusResponse>(`/analyze/jobs/${jobId}`);
+
+export async function* streamAnalysisJob(jobId: string): AsyncGenerator<StreamEvent> {
+  const token = getToken();
+  const response = await fetch(`${BASE_URL}/analyze/jobs/${jobId}/stream`, {
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  });
+  if (response.status === 401) { logout(); throw new Error("Session expired"); }
+  if (!response.ok || !response.body) throw new Error(`API ${response.status}`);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // SSE format: split on double-newline event boundaries
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+    for (const event of events) {
+      const dataLine = event.trim();
+      if (dataLine.startsWith("data: ")) {
+        const json = dataLine.slice(6).trim();
+        if (json) yield JSON.parse(json) as StreamEvent;
+      }
+    }
+  }
+}
+
+// ─── Streaming analyze types ──────────────────────────────────────────────────
+
+export interface StreamStartEvent {
+  type: "start";
+  total: number;
+  stale: number;
+  skipped: number;
+}
+export interface StreamProgressEvent {
+  type: "progress";
+  done: number;
+  total: number;
+  result: FullAnalysis & { ai_fallback_used?: boolean };
+}
+export interface StreamCompleteEvent {
+  type: "complete";
+  total: number;
+  analyzed: number;
+  skipped: number;
+  fallbacks: number;
+}
+export type StreamEvent = StreamStartEvent | StreamProgressEvent | StreamCompleteEvent;
+
+export async function* analyzeWatchlistStream(): AsyncGenerator<StreamEvent> {
+  const token = getToken();
+  const response = await fetch(`${BASE_URL}/watchlist/analyze/all/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+  if (response.status === 401) { logout(); throw new Error("Session expired"); }
+  if (!response.ok || !response.body) throw new Error(`API ${response.status}`);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed) yield JSON.parse(trimmed) as StreamEvent;
+    }
+  }
+  if (buffer.trim()) yield JSON.parse(buffer.trim()) as StreamEvent;
+}
+
 // ─── Watchlist ───────────────────────────────────────────────────────────────
 
 export const getWatchlist = () => apiFetch<WatchlistItem[]>("/watchlist");
@@ -392,7 +500,19 @@ export interface SwapSuggestion {
   reason: string;
   score_improvement: number;
   sector: string;
-  type: "SELL" | "SWAP";
+  type: "SELL" | "SWAP" | "REDUCE";
+}
+
+export type AllocationAction = "BUY" | "ACCUMULATE" | "HOLD" | "REDUCE" | "SELL" | "WATCH";
+
+export interface TargetAllocation {
+  symbol: string;
+  current_weight: number;
+  target_weight: number;
+  action: AllocationAction;
+  allocation_change_percent: number;
+  estimated_amount: number;
+  reason: string;
 }
 
 export interface OptimizerLayerConfig {
@@ -408,6 +528,11 @@ export interface OptimizerLayers {
   layer3: OptimizerLayerConfig;
 }
 
+export interface OptimizerFallback {
+  provider: string;
+  model: string;
+}
+
 export interface RiskFlag {
   symbol: string;
   issue: string;
@@ -415,6 +540,10 @@ export interface RiskFlag {
 }
 
 export interface Layer1Result {
+  target_allocations?: TargetAllocation[];
+  target_cash_weight?: number;
+  portfolio_turnover_percent?: number;
+  summary?: string;
   swap_suggestions?: SwapSuggestion[];
   watchlist_ranking?: WatchlistRanking[];
   reasoning?: string;
@@ -430,6 +559,10 @@ export interface Layer1Result {
 export interface Layer2Result {
   agrees_with_layer1: boolean;
   disagreements?: string[];
+  target_allocations?: TargetAllocation[];
+  target_cash_weight?: number;
+  portfolio_turnover_percent?: number;
+  summary?: string;
   alternative_suggestions?: SwapSuggestion[];
   alternative_allocation?: Record<string, string> | null;
   provider?: string;
@@ -462,10 +595,44 @@ export interface SectorWarning {
   status: "OK" | "WARNING" | "EXCEEDS";
 }
 
+export interface BlockedOpportunity {
+  symbol: string;
+  signal: string;
+  reason: string;
+}
+
+export type OptimizerStatus = "REBALANCE" | "NO_ACTION";
+
+export type NoActionReason =
+  | "WELL_BALANCED"
+  | "LOW_CONFIDENCE"
+  | "HIGH_DISAGREEMENT"
+  | "CONSTRAINT_BLOCKED"
+  | "MARKET_UNCERTAINTY"
+  | "INSUFFICIENT_EDGE";
+
+export type ConsensusType =
+  | "STRONG_CONSENSUS"
+  | "REFINED_CONSENSUS"
+  | "PARTIAL_CONSENSUS"
+  | "WEAK_CONSENSUS"
+  | "RISK_CONFLICT"
+  | "STRATEGIC_CONFLICT"
+  | "NO_ACTION_CONSENSUS";
+
 export interface OptimizerConsensus {
+  // New Consensus Strength Matrix fields
+  consensus_type?: ConsensusType;
+  consensus_strength_score?: number;
+  strategist_alignment_score?: number;
+  risk_alignment_score?: number;
+  disagreement_reasons?: string[];
+  refinement_summary?: string | null;
+  // Legacy fields (preserved for backward compat with old history rows)
   agrees: boolean;
+  consensus_decision?: "REBALANCE" | "NO_ACTION" | "REVIEW";
   confidence: "high" | "medium" | "low";
-  recommended: "layer1" | "layer2" | "neither";
+  recommended: "layer1" | "layer2" | "neither" | "no_action" | "fallback";
   final_risk_level: "low" | "medium" | "high";
   risk_flag_count: number;
   recommended_action: string;
@@ -484,14 +651,25 @@ export interface WatchlistRanking {
 
 export interface OptimizerResult {
   portfolio_name: string;
+  status?: OptimizerStatus;
+  rebalance_opportunity_score?: number;
+  no_action_reason?: NoActionReason | null;
+  no_action_summary?: string | null;
+  blocked_opportunities?: BlockedOpportunity[];
   portfolio_assessment: string;
   optimization_notes: string;
+  target_allocations?: TargetAllocation[];
+  target_cash_weight?: number;
+  portfolio_turnover_percent?: number;
   swap_suggestions: SwapSuggestion[];
   watchlist_ranking: WatchlistRanking[];
   analyzed_at: string;
   history_id?: number;
   portfolio_count: number;
   max_reached: boolean;
+  max_stocks?: number;
+  cash_balance?: number;
+  total_value?: number;
   ai_provider?: string;
   ai_model?: string;
   layer1_result?: Layer1Result | null;
@@ -508,6 +686,9 @@ export interface OptimizerHistoryItem {
   portfolio_name: string;
   analyzed_at: string;
   swap_count: number;
+  optimizer_status?: OptimizerStatus;
+  rebalance_opportunity_score?: number | null;
+  no_action_reason?: NoActionReason | null;
 }
 
 export const runOptimizer = (portfolioId: number, provider?: string, model?: string) =>
@@ -662,6 +843,14 @@ export const updateOptimizerLayer = (layer: "layer1" | "layer2" | "layer3", prov
     body: JSON.stringify({ layer, provider, model }),
   });
 
+export const getOptimizerFallback = () => apiFetch<OptimizerFallback>("/settings/optimizer-fallback");
+
+export const updateOptimizerFallback = (provider: string, model: string) =>
+  apiFetch<OptimizerFallback>("/settings/optimizer-fallback", {
+    method: "PATCH",
+    body: JSON.stringify({ provider, model }),
+  });
+
 // ─── Transactions ─────────────────────────────────────────────────────────────
 
 export type TransactionType =
@@ -670,7 +859,8 @@ export type TransactionType =
   | "DEPOSIT"
   | "WITHDRAW"
   | "INITIAL_POSITION"
-  | "INITIAL_CASH";
+  | "INITIAL_CASH"
+  | "DIVIDEND";
 
 export interface TransactionRecord {
   id: number;
@@ -772,6 +962,15 @@ export interface InitialCashPayload {
   notes?: string;
 }
 
+export interface DividendPayload {
+  symbol?: string;
+  amount: number;
+  currency?: string;
+  exchange_rate?: number;
+  transaction_date?: string;
+  notes?: string;
+}
+
 export const buyTransaction = (portfolioId: number, payload: BuyPayload) =>
   apiFetch<TransactionResult>(`/portfolios/${portfolioId}/transactions/buy`, {
     method: "POST",
@@ -804,6 +1003,12 @@ export const initialPositionTransaction = (portfolioId: number, payload: Initial
 
 export const initialCashTransaction = (portfolioId: number, payload: InitialCashPayload) =>
   apiFetch<TransactionResult>(`/portfolios/${portfolioId}/transactions/initial-cash`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+export const dividendTransaction = (portfolioId: number, payload: DividendPayload) =>
+  apiFetch<TransactionResult>(`/portfolios/${portfolioId}/transactions/dividend`, {
     method: "POST",
     body: JSON.stringify(payload),
   });

@@ -9,8 +9,9 @@ import {
 import SignalBadge from "@/components/SignalBadge";
 import AIBadge from "@/components/AIBadge";
 import type {
-  OptimizerResult, OptimizerHistoryItem, SwapSuggestion, WatchlistRanking,
-  Layer2Result, Layer3Result, OptimizerConsensus, RiskFlag, SectorWarning,
+  OptimizerResult, OptimizerHistoryItem, TargetAllocation, AllocationAction,
+  WatchlistRanking, Layer2Result, Layer3Result, OptimizerConsensus, RiskFlag, SectorWarning,
+  BlockedOpportunity, NoActionReason, SwapSuggestion, ConsensusType,
 } from "@/lib/api";
 
 const TZ = "Asia/Bangkok";
@@ -37,73 +38,101 @@ function Spinner({ size = "sm" }: { size?: "sm" | "lg" }) {
   return <span className={`inline-block rounded-full animate-spin ${cls}`} />;
 }
 
+// ─── Action badge ─────────────────────────────────────────────────────────────
 
-// ─── Swap Card ────────────────────────────────────────────────────────────────
+const ACTION_CLS: Record<AllocationAction, string> = {
+  BUY:        "bg-green-600 text-white",
+  ACCUMULATE: "bg-teal-600 text-white",
+  HOLD:       "bg-gray-400 text-white",
+  WATCH:      "bg-blue-500 text-white",
+  REDUCE:     "bg-amber-500 text-white",
+  SELL:       "bg-red-600 text-white",
+};
 
-function SwapCard({ s }: { s: SwapSuggestion }) {
-  if (s.type === "SELL") {
-    const sym = s.sell_symbol ?? "";
-    return (
-      <div className="bg-red-50 border-2 border-red-300 rounded-xl p-4 shadow-sm">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="text-xs bg-red-600 text-white px-2 py-0.5 rounded-full font-semibold">🚨 SELL SIGNAL</span>
-          <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{s.sector}</span>
-        </div>
-        <div className="flex items-center gap-2 mb-2">
-          <SignalBadge signal="SELL" />
-          <p className="text-base font-bold text-gray-800">{sym.replace(".BK", "")}</p>
-          {sym.endsWith(".BK") && <span className="text-xs text-gray-400">.BK</span>}
-        </div>
-        <p className="text-xs text-gray-600">{s.reason}</p>
-      </div>
-    );
+function ActionBadge({ action }: { action: AllocationAction }) {
+  return (
+    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${ACTION_CLS[action] ?? "bg-gray-300 text-gray-700"}`}>
+      {action}
+    </span>
+  );
+}
+
+// ─── Allocation Table ─────────────────────────────────────────────────────────
+
+function AllocationTable({
+  allocations,
+  totalValue,
+  title,
+}: {
+  allocations: TargetAllocation[];
+  totalValue?: number;
+  title?: string;
+}) {
+  if (!allocations || allocations.length === 0) {
+    return <p className="text-sm text-gray-500">No allocation changes proposed.</p>;
   }
 
-  const sellSym = s.sell_symbol ?? "";
-  const buySym  = s.buy_symbol  ?? "";
-  const deltaCls = s.score_improvement >= 0
-    ? "bg-green-100 text-green-700"
-    : "bg-red-100 text-red-700";
+  const significant = allocations.filter(
+    (a) => a.action !== "HOLD" || Math.abs(a.allocation_change_percent) >= 2
+  );
+  const hold = allocations.filter(
+    (a) => a.action === "HOLD" && Math.abs(a.allocation_change_percent) < 2
+  );
+
   return (
-    <div className="bg-blue-50 border-2 border-blue-200 rounded-xl p-4 shadow-sm">
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <span className="inline-block text-xs bg-blue-600 text-white px-2 py-0.5 rounded-full font-semibold">
-          🔁 SWAP PLAN
-        </span>
-        <span className="inline-block text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
-          {s.sector}
-        </span>
-        {s.score_improvement !== 0 && (
-          <span className={`inline-block text-xs px-2 py-0.5 rounded-full font-semibold ${deltaCls}`}>
-            Δ {s.score_improvement >= 0 ? "+" : ""}{s.score_improvement.toFixed(1)}
-          </span>
-        )}
+    <div className="space-y-3">
+      {title && <p className="text-xs font-medium text-gray-500">{title}</p>}
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-xs">
+          <thead>
+            <tr className="border-b text-left text-gray-400">
+              <th className="pb-1.5 pr-3">Symbol</th>
+              <th className="pb-1.5 pr-3">Action</th>
+              <th className="pb-1.5 pr-3 text-right">Current%</th>
+              <th className="pb-1.5 pr-3 text-right">Target%</th>
+              <th className="pb-1.5 pr-3 text-right">Change%</th>
+              {totalValue && totalValue > 0 && <th className="pb-1.5 pr-3 text-right">Est. Amount</th>}
+              <th className="pb-1.5">Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            {significant.map((a) => {
+              const chg = a.allocation_change_percent;
+              const chgCls = chg > 0 ? "text-green-600 font-semibold" : chg < 0 ? "text-red-500 font-semibold" : "text-gray-400";
+              const amt = a.estimated_amount || (totalValue ? Math.round(totalValue * Math.abs(chg) / 100) : 0);
+              return (
+                <tr key={a.symbol} className="border-b hover:bg-gray-50">
+                  <td className="py-1.5 pr-3">
+                    <Link href={`/stock/${encodeURIComponent(a.symbol)}`} className="text-blue-600 hover:underline font-medium">
+                      {a.symbol.replace(".BK", "")}
+                      {a.symbol.endsWith(".BK") && <span className="text-gray-400 ml-0.5">.BK</span>}
+                    </Link>
+                  </td>
+                  <td className="py-1.5 pr-3"><ActionBadge action={a.action as AllocationAction} /></td>
+                  <td className="py-1.5 pr-3 text-right text-gray-500">{a.current_weight.toFixed(1)}%</td>
+                  <td className="py-1.5 pr-3 text-right font-medium">{a.target_weight.toFixed(1)}%</td>
+                  <td className={`py-1.5 pr-3 text-right ${chgCls}`}>
+                    {chg >= 0 ? "+" : ""}{chg.toFixed(1)}%
+                  </td>
+                  {totalValue && totalValue > 0 && (
+                    <td className="py-1.5 pr-3 text-right text-gray-600">
+                      {amt > 0 ? `฿${amt.toLocaleString("th-TH")}` : "—"}
+                    </td>
+                  )}
+                  <td className="py-1.5 text-gray-500 max-w-xs truncate" title={a.reason}>{a.reason}</td>
+                </tr>
+              );
+            })}
+            {hold.length > 0 && (
+              <tr className="text-gray-400">
+                <td colSpan={totalValue && totalValue > 0 ? 7 : 6} className="py-1.5 text-center text-xs italic">
+                  + {hold.length} position{hold.length !== 1 ? "s" : ""} held unchanged
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
-      <div className="flex items-center gap-3 mb-3">
-        {sellSym && (
-          <div className="flex-1 text-center">
-            <SignalBadge signal="SELL" />
-            <p className="text-base font-bold text-gray-800 mt-1">{sellSym.replace(".BK", "")}</p>
-            {sellSym.endsWith(".BK") && <span className="text-xs text-gray-400">.BK</span>}
-          </div>
-        )}
-        <div className="flex flex-col items-center gap-0.5 shrink-0 text-gray-400">
-          <span className="text-xl">{sellSym ? "→" : "＋"}</span>
-          {s.score_improvement !== 0 && (
-            <span className={`text-xs font-semibold ${s.score_improvement >= 0 ? "text-green-600" : "text-red-600"}`}>
-              {s.score_improvement >= 0 ? "+" : ""}{s.score_improvement.toFixed(1)}
-            </span>
-          )}
-        </div>
-        {buySym && (
-          <div className="flex-1 text-center">
-            <SignalBadge signal="BUY" />
-            <p className="text-base font-bold text-gray-800 mt-1">{buySym.replace(".BK", "")}</p>
-            {buySym.endsWith(".BK") && <span className="text-xs text-gray-400">.BK</span>}
-          </div>
-        )}
-      </div>
-      <p className="text-xs text-gray-500">{s.reason}</p>
     </div>
   );
 }
@@ -118,14 +147,14 @@ const RISK_BADGE: Record<string, string> = {
 };
 
 function RankingRow({
-  item, budget, riskMap,
+  item, totalValue, riskMap,
 }: {
   item: WatchlistRanking;
-  budget: number;
+  totalValue: number;
   riskMap: Record<string, string>;
 }) {
   const display = item.symbol.replace(".BK", "");
-  const thb = budget > 0 ? Math.round(budget * item.suggested_allocation_pct / 100) : null;
+  const thb = totalValue > 0 ? Math.round(totalValue * item.suggested_allocation_pct / 100) : null;
   const upside = item.upside_pct;
   const riskLevel = riskMap[item.symbol];
   return (
@@ -162,27 +191,69 @@ function RankingRow({
   );
 }
 
+// ─── Swap Table (Layer 1 output) ──────────────────────────────────────────────
+
+const SWAP_TYPE_CLS: Record<string, string> = {
+  SWAP:   "bg-blue-100 text-blue-800 border-blue-200",
+  SELL:   "bg-red-100 text-red-700 border-red-200",
+  REDUCE: "bg-amber-100 text-amber-800 border-amber-200",
+};
+
+function SwapTable({ swaps }: { swaps: SwapSuggestion[] }) {
+  if (!swaps || swaps.length === 0) {
+    return <p className="text-sm text-gray-500">No swap proposals from Strategist.</p>;
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-xs">
+        <thead>
+          <tr className="border-b text-left text-gray-400">
+            <th className="pb-1.5 pr-3">Type</th>
+            <th className="pb-1.5 pr-3">Sell</th>
+            <th className="pb-1.5 pr-3">Buy</th>
+            <th className="pb-1.5 pr-3 text-right">Score Δ</th>
+            <th className="pb-1.5">Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {swaps.map((s, i) => {
+            const typeCls = SWAP_TYPE_CLS[s.type] ?? SWAP_TYPE_CLS.SWAP;
+            const delta = s.score_improvement ?? 0;
+            return (
+              <tr key={i} className="border-b hover:bg-gray-50">
+                <td className="py-1.5 pr-3">
+                  <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${typeCls}`}>{s.type}</span>
+                </td>
+                <td className="py-1.5 pr-3">
+                  {s.sell_symbol
+                    ? <Link href={`/stock/${encodeURIComponent(s.sell_symbol)}`} className="text-red-600 hover:underline font-medium">
+                        {s.sell_symbol.replace(".BK", "")}{s.sell_symbol.endsWith(".BK") && <span className="text-gray-400 ml-0.5">.BK</span>}
+                      </Link>
+                    : <span className="text-gray-300">—</span>
+                  }
+                </td>
+                <td className="py-1.5 pr-3">
+                  {s.buy_symbol
+                    ? <Link href={`/stock/${encodeURIComponent(s.buy_symbol)}`} className="text-green-600 hover:underline font-medium">
+                        {s.buy_symbol.replace(".BK", "")}{s.buy_symbol.endsWith(".BK") && <span className="text-gray-400 ml-0.5">.BK</span>}
+                      </Link>
+                    : <span className="text-gray-300">—</span>
+                  }
+                </td>
+                <td className={`py-1.5 pr-3 text-right font-semibold ${delta >= 0 ? "text-green-600" : "text-red-500"}`}>
+                  {delta >= 0 ? "+" : ""}{delta.toFixed(1)}
+                </td>
+                <td className="py-1.5 text-gray-500 max-w-xs truncate" title={s.reason}>{s.reason}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ─── Layer sections ───────────────────────────────────────────────────────────
-
-function l1Direction(priority?: string): string {
-  if (priority === "growth")    return "Aggressive Growth";
-  if (priority === "balanced")  return "Balanced Allocation";
-  if (priority === "defensive") return "Defensive Positioning";
-  return "Strategic Allocation";
-}
-
-function l2Direction(agrees?: boolean): string {
-  if (agrees === true)  return "Confirms Strategist";
-  if (agrees === false) return "Conservative Rotation";
-  return "Independent Review";
-}
-
-function l3Direction(riskLevel?: string, saferChoice?: string): string {
-  if (saferChoice === "neither")     return "Caution — Review Manually";
-  if (riskLevel   === "high")        return "Defensive";
-  if (riskLevel   === "low")         return "Low Risk Confirmed";
-  return "Moderate Risk Profile";
-}
 
 const RISK_CLS: Record<string, string> = {
   CRITICAL: "text-red-900   bg-red-100   border-red-500",
@@ -215,48 +286,181 @@ function RiskFlagPill({ flag }: { flag: RiskFlag }) {
   );
 }
 
+
+// ─── NO_ACTION display helpers ────────────────────────────────────────────────
+
+const NO_ACTION_REASON_LABELS: Record<NoActionReason, string> = {
+  WELL_BALANCED:       "Well Balanced",
+  LOW_CONFIDENCE:      "Low Confidence",
+  HIGH_DISAGREEMENT:   "High Disagreement",
+  CONSTRAINT_BLOCKED:  "Constraint Blocked",
+  MARKET_UNCERTAINTY:  "Market Uncertainty",
+  INSUFFICIENT_EDGE:   "Insufficient Edge",
+};
+
+const BLOCKED_REASON_LABELS: Record<string, string> = {
+  sector_limit_exceeded: "Sector limit exceeded",
+  insufficient_cash:     "Insufficient cash balance",
+  portfolio_count_cap:   "Portfolio stock count cap reached",
+};
+
+function scoreZone(s: number): { label: string; fill: string; text: string } {
+  if (s <= 20) return { label: "Well Balanced",       fill: "bg-green-500",  text: "text-green-700" };
+  if (s <= 40) return { label: "Minor Opportunity",   fill: "bg-teal-500",   text: "text-teal-700"  };
+  if (s <= 70) return { label: "Moderate Opportunity",fill: "bg-amber-400",  text: "text-amber-700" };
+  return            { label: "Strong Opportunity",    fill: "bg-orange-500", text: "text-orange-600" };
+}
+
+function OpportunityScoreGauge({ score }: { score: number }) {
+  const s = Math.max(0, Math.min(100, score));
+  const { label, fill, text } = scoreZone(s);
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-gray-500 font-medium">Rebalance Opportunity Score</span>
+        <span className={`font-bold text-sm ${text}`}>
+          {s}<span className="text-xs font-normal text-gray-400"> / 100</span>
+        </span>
+      </div>
+      <div className="relative h-3 bg-gray-100 rounded-full overflow-hidden">
+        <div className="absolute inset-y-0 left-[20%] w-px bg-white/60 z-10" />
+        <div className="absolute inset-y-0 left-[40%] w-px bg-white/60 z-10" />
+        <div className="absolute inset-y-0 left-[70%] w-px bg-white/60 z-10" />
+        <div className={`h-full rounded-full transition-all duration-500 ${fill}`} style={{ width: `${s}%` }} />
+      </div>
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-gray-400">0</span>
+        <span className={`font-semibold ${text}`}>{label}</span>
+        <span className="text-gray-400">100</span>
+      </div>
+    </div>
+  );
+}
+
+function NoActionCard({ result }: { result: OptimizerResult }) {
+  const score  = result.rebalance_opportunity_score ?? 0;
+  const reason = result.no_action_reason ?? null;
+  const summary = result.no_action_summary ?? null;
+  const blocked: BlockedOpportunity[] = result.blocked_opportunities ?? [];
+
+  return (
+    <section className="bg-gradient-to-br from-green-50 to-teal-50 border border-green-200 rounded-xl p-6 shadow-sm space-y-5">
+      {/* Header */}
+      <div className="flex items-start gap-4">
+        <div className="shrink-0 w-12 h-12 rounded-full bg-green-100 border-2 border-green-300 flex items-center justify-center text-xl font-bold text-green-700">
+          ✓
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-lg font-bold text-green-900">Portfolio is Well-Balanced</h3>
+            {reason && (
+              <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-green-100 border border-green-300 text-green-700">
+                {NO_ACTION_REASON_LABELS[reason] ?? reason}
+              </span>
+            )}
+          </div>
+          {summary && (
+            <p className="text-sm text-green-800 mt-1.5 leading-relaxed">{summary}</p>
+          )}
+        </div>
+      </div>
+
+      {/* Score gauge */}
+      <div className="bg-white/70 rounded-xl border border-green-100 px-5 py-4">
+        <OpportunityScoreGauge score={score} />
+      </div>
+
+      {/* Blocked opportunities */}
+      {blocked.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Evaluated but blocked by constraints
+          </p>
+          <div className="space-y-1.5">
+            {blocked.map((b, i) => {
+              const sym = b.symbol.replace(".BK", "");
+              const reasonLabel = BLOCKED_REASON_LABELS[b.reason] ?? b.reason.replace(/_/g, " ");
+              return (
+                <div key={i} className="flex items-center gap-2.5 bg-white/60 border border-green-100 rounded-lg px-3 py-2 flex-wrap">
+                  <Link
+                    href={`/stock/${encodeURIComponent(b.symbol)}`}
+                    className="text-sm font-semibold text-blue-600 hover:underline shrink-0"
+                  >
+                    {sym}{b.symbol.endsWith(".BK") && <span className="text-xs text-gray-400 ml-0.5">.BK</span>}
+                  </Link>
+                  {b.signal && (
+                    <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full shrink-0 ${ACTION_CLS[b.signal as AllocationAction] ?? "bg-gray-200 text-gray-700"}`}>
+                      {b.signal}
+                    </span>
+                  )}
+                  <span className="text-xs text-gray-500 shrink-0">—</span>
+                  <span className="text-xs text-gray-600">{reasonLabel}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function Layer1Section({
   layer,
-  suggestions,
 }: {
   layer: OptimizerResult["layer1_result"];
-  suggestions: SwapSuggestion[];
+  totalValue?: number;
 }) {
   if (!layer) return null;
-  const strategistSuggestions = suggestions.slice(0, 4);
+  const swaps: SwapSuggestion[] = layer.swap_suggestions ?? [];
+  const topBuys: string[] = (layer as Record<string, unknown>).top_buys as string[] ?? [];
+  const sectorFlags: string[] = (layer as Record<string, unknown>).sector_flags as string[] ?? [];
+  const priority: string = (layer as Record<string, unknown>).priority as string ?? "";
+
   return (
-    <section className="bg-white border rounded-xl p-5 shadow-sm space-y-3">
+    <section className="bg-white border rounded-xl p-5 shadow-sm space-y-4">
       <div className="flex items-center gap-2 flex-wrap">
         <div>
           <h3 className="font-semibold text-gray-800">🟠 {layer.name ?? "Strategist"}</h3>
-          <p className="text-xs text-orange-600 mt-0.5">{l1Direction(layer.priority)}</p>
+          <p className="text-xs text-orange-600 mt-0.5">
+            Swap Proposals{priority ? ` — priority: ${priority}` : ""}
+          </p>
         </div>
         <AIBadge provider={layer.provider} model={layer.model} label="" />
       </div>
+
       {layer.error ? (
         <p className="text-xs text-red-500">{layer.error}</p>
       ) : (
         <>
-          {layer.reasoning && <p className="text-sm text-gray-700">{layer.reasoning}</p>}
-          {layer.portfolio_assessment && !layer.reasoning && (
-            <p className="text-sm text-gray-700">{layer.portfolio_assessment}</p>
+          {layer.summary && (
+            <div className="bg-orange-50 border border-orange-200 rounded-lg px-4 py-2">
+              <p className="text-sm text-orange-900">{layer.summary}</p>
+            </div>
           )}
 
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <p className="text-xs font-medium text-gray-500">Strategist Swap Suggestions</p>
-              <p className="text-xs text-gray-400">{strategistSuggestions.length} cards</p>
+          <SwapTable swaps={swaps} />
+
+          {topBuys.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-gray-400 font-medium">Top buys:</span>
+              {topBuys.map((sym) => (
+                <Link key={sym} href={`/stock/${encodeURIComponent(sym)}`}
+                  className="text-xs font-semibold text-green-700 bg-green-50 border border-green-200 px-2 py-0.5 rounded hover:bg-green-100">
+                  {sym.replace(".BK", "")}{sym.endsWith(".BK") ? <span className="text-gray-400">.BK</span> : ""}
+                </Link>
+              ))}
             </div>
-            {strategistSuggestions.length === 0 ? (
-              <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-sm text-green-700">
-                No swaps recommended by Strategist.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {strategistSuggestions.map((s, i) => <SwapCard key={i} s={s} />)}
-              </div>
-            )}
-          </div>
+          )}
+
+          {sectorFlags.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-gray-400 font-medium">Sector flags:</span>
+              {sectorFlags.map((f, i) => (
+                <span key={i} className="text-xs bg-amber-50 border border-amber-200 text-amber-800 px-2 py-0.5 rounded">{f}</span>
+              ))}
+            </div>
+          )}
         </>
       )}
     </section>
@@ -264,9 +468,10 @@ function Layer1Section({
 }
 
 function Layer2Section({
-  layer,
+  layer, totalValue,
 }: {
   layer: Layer2Result | null | undefined;
+  totalValue?: number;
 }) {
   if (!layer) return null;
   const agrees = layer.agrees_with_layer1;
@@ -277,19 +482,21 @@ function Layer2Section({
     setActiveTab(agrees ? "alternatives" : "disagreements");
   }, [agrees]);
   const disagreements = layer.disagreements ?? [];
-  const challengerSuggestions = (layer.alternative_suggestions ?? []).slice(0, 5);
+  const allocations = layer.target_allocations ?? [];
+
   return (
     <section className={`border rounded-xl p-5 shadow-sm space-y-3 ${agrees ? "bg-green-50 border-green-200" : "bg-amber-50 border-amber-200"}`}>
       <div className="flex items-center gap-2 flex-wrap">
         <div>
           <h3 className="font-semibold text-gray-800">🔵 {layer.name ?? "Challenger"}</h3>
-          <p className="text-xs text-blue-600 mt-0.5">{l2Direction(layer.agrees_with_layer1)}</p>
+          <p className="text-xs text-blue-600 mt-0.5">{agrees ? "Confirms Strategist" : "Alternative Allocation"}</p>
         </div>
         <AIBadge provider={layer.provider} model={layer.model} label="" />
         <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ml-auto ${agrees ? "bg-green-100 border-green-300 text-green-700" : "bg-amber-100 border-amber-300 text-amber-700"}`}>
           {agrees ? "✓ Agrees" : "⚠ Disagrees"}
         </span>
       </div>
+
       {!agrees && !layer.error && disagreements.length > 0 && (
         <div className="bg-yellow-50 border border-yellow-300 rounded-lg px-4 py-3 space-y-1.5">
           <p className="text-xs font-bold text-yellow-800 flex items-center gap-1.5">
@@ -305,6 +512,7 @@ function Layer2Section({
           </ul>
         </div>
       )}
+
       {layer.error ? (
         <p className="text-xs text-red-500">{layer.error}</p>
       ) : (
@@ -330,7 +538,7 @@ function Layer2Section({
                   : "bg-white/70 text-blue-700 hover:bg-blue-100"
               }`}
             >
-              Alternatives ({challengerSuggestions.length})
+              Allocation Plan ({allocations.length})
             </button>
           </div>
 
@@ -350,23 +558,19 @@ function Layer2Section({
 
           {activeTab === "alternatives" && (
             <div>
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-xs font-medium text-gray-500">Challenger Alternative Suggestions</p>
-                <p className="text-xs text-gray-400">{challengerSuggestions.length} cards</p>
-              </div>
-              {challengerSuggestions.length === 0 ? (
+              {allocations.length === 0 ? (
                 <div className="bg-white/70 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
-                  Challenger has no alternative swap suggestions.
+                  {agrees ? "Challenger confirms the Strategist plan." : "No alternative allocations provided."}
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {challengerSuggestions.map((s, i) => <SwapCard key={i} s={s} />)}
-                </div>
+                <AllocationTable allocations={allocations} totalValue={totalValue} />
               )}
             </div>
           )}
 
-          {agrees && <p className="text-sm text-green-700">Challenger confirms the Strategist&apos;s proposal.</p>}
+          {agrees && layer.summary && (
+            <p className="text-sm text-green-700">{layer.summary}</p>
+          )}
         </>
       )}
     </section>
@@ -385,7 +589,9 @@ function Layer3Section({ layer }: { layer: Layer3Result | null | undefined }) {
       <div className="flex items-center gap-2 flex-wrap">
         <div>
           <h3 className="font-semibold text-gray-800">🟣 {layer.name ?? "Risk Auditor"}</h3>
-          <p className="text-xs text-purple-600 mt-0.5">{l3Direction(layer.final_risk_level, layer.safer_choice)}</p>
+          <p className="text-xs text-purple-600 mt-0.5">
+            {layer.safer_choice === "neither" ? "Caution — Review Manually" : risk === "high" ? "Defensive" : risk === "low" ? "Low Risk Confirmed" : "Moderate Risk Profile"}
+          </p>
         </div>
         <AIBadge provider={layer.provider} model={layer.model} label="" />
         <span className={`text-xs font-semibold ml-auto ${riskColor}`}>
@@ -423,7 +629,7 @@ function SectorImpactSection({ warnings }: { warnings: SectorWarning[] }) {
       <div>
         <h3 className="font-semibold text-gray-800">Sector Impact</h3>
         <p className="text-xs text-gray-500 mt-0.5">
-          Before/after applying proposed swaps. Bars show % of sector limit used.
+          Before/after applying proposed allocation. Bars show % of sector limit used.
         </p>
       </div>
       <div className="space-y-4">
@@ -447,9 +653,7 @@ function SectorImpactSection({ warnings }: { warnings: SectorWarning[] }) {
               </div>
               <div className="flex-1 space-y-1.5">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-400 w-10 text-right shrink-0">
-                    {w.current_pct.toFixed(1)}%
-                  </span>
+                  <span className="text-xs text-gray-400 w-10 text-right shrink-0">{w.current_pct.toFixed(1)}%</span>
                   <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
                     <div className="h-2 bg-gray-300 rounded-full" style={{ width: `${beforeFill}%` }} />
                   </div>
@@ -467,9 +671,7 @@ function SectorImpactSection({ warnings }: { warnings: SectorWarning[] }) {
                 </div>
               </div>
               <div className="shrink-0 flex flex-col items-end gap-1 pt-0.5">
-                <span className={`text-xs font-semibold px-1.5 py-0.5 rounded border ${statusCls}`}>
-                  {w.status}
-                </span>
+                <span className={`text-xs font-semibold px-1.5 py-0.5 rounded border ${statusCls}`}>{w.status}</span>
                 <span className="text-xs text-gray-400">lim {w.limit_pct}%</span>
               </div>
             </div>
@@ -481,7 +683,7 @@ function SectorImpactSection({ warnings }: { warnings: SectorWarning[] }) {
           <span className="inline-block w-4 h-1.5 bg-gray-300 rounded" /> Now
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block w-4 h-1.5 bg-green-500 rounded" /> After swaps
+          <span className="inline-block w-4 h-1.5 bg-green-500 rounded" /> After rebalance
         </span>
         <span className="flex items-center gap-1.5 text-amber-500">
           <span className="inline-block w-0 h-3 border-l-2 border-dashed border-amber-400" /> 80% threshold
@@ -491,56 +693,239 @@ function SectorImpactSection({ warnings }: { warnings: SectorWarning[] }) {
   );
 }
 
-const CONF_COLOR: Record<string, string> = {
-  high: "text-green-600", medium: "text-amber-600", low: "text-red-500",
+const CONSENSUS_TYPE_CFG: Record<ConsensusType, {
+  label: string; icon: string;
+  section: string; border: string; badge: string; badgeText: string;
+  bar: string; summary: string; summaryText: string;
+}> = {
+  STRONG_CONSENSUS:    { label: "Strong Consensus",    icon: "✓✓", section: "bg-green-50 border-green-300",   border: "border-green-300",   badge: "bg-green-100 border-green-300 text-green-800",   badgeText: "text-green-800", bar: "bg-green-500",  summary: "bg-green-100 border-green-200",   summaryText: "text-green-900" },
+  REFINED_CONSENSUS:   { label: "Refined Consensus",   icon: "✓~", section: "bg-blue-50 border-blue-300",     border: "border-blue-300",    badge: "bg-blue-100 border-blue-300 text-blue-800",      badgeText: "text-blue-800",  bar: "bg-blue-500",   summary: "bg-blue-50 border-blue-200",     summaryText: "text-blue-900" },
+  PARTIAL_CONSENSUS:   { label: "Partial Consensus",   icon: "~",  section: "bg-amber-50 border-amber-300",   border: "border-amber-300",   badge: "bg-amber-100 border-amber-300 text-amber-800",   badgeText: "text-amber-800", bar: "bg-amber-400",  summary: "bg-amber-50 border-amber-200",   summaryText: "text-amber-900" },
+  WEAK_CONSENSUS:      { label: "Weak Consensus",      icon: "?",  section: "bg-gray-50 border-gray-300",     border: "border-gray-300",    badge: "bg-gray-100 border-gray-300 text-gray-700",      badgeText: "text-gray-700",  bar: "bg-gray-400",   summary: "bg-gray-100 border-gray-200",    summaryText: "text-gray-800" },
+  RISK_CONFLICT:       { label: "Risk Conflict",       icon: "⚠",  section: "bg-orange-50 border-orange-400", border: "border-orange-400",  badge: "bg-orange-100 border-orange-400 text-orange-800",badgeText: "text-orange-800",bar: "bg-orange-500", summary: "bg-orange-50 border-orange-300", summaryText: "text-orange-900" },
+  STRATEGIC_CONFLICT:  { label: "Strategic Conflict",  icon: "✗",  section: "bg-red-50 border-red-400",       border: "border-red-400",     badge: "bg-red-100 border-red-400 text-red-800",         badgeText: "text-red-800",   bar: "bg-red-500",    summary: "bg-red-50 border-red-300",       summaryText: "text-red-900" },
+  NO_ACTION_CONSENSUS: { label: "No Action Consensus", icon: "✓",  section: "bg-teal-50 border-teal-300",     border: "border-teal-300",    badge: "bg-teal-100 border-teal-300 text-teal-800",      badgeText: "text-teal-800",  bar: "bg-teal-500",   summary: "bg-teal-50 border-teal-200",     summaryText: "text-teal-900" },
 };
+
 const RISK_COLOR: Record<string, string> = {
   low: "text-green-600", medium: "text-amber-600", high: "text-red-600",
 };
+const CONF_COLOR: Record<string, string> = {
+  high: "text-green-600", medium: "text-amber-600", low: "text-red-500",
+};
+
+function AlignmentBar({ label, score, barColor }: { label: string; score: number; barColor: string }) {
+  const s = Math.max(0, Math.min(100, score));
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between text-xs">
+        <span className="text-gray-500">{label}</span>
+        <span className="font-semibold text-gray-700">{s}</span>
+      </div>
+      <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full ${barColor}`} style={{ width: `${s}%` }} />
+      </div>
+    </div>
+  );
+}
 
 function ConsensusSection({ consensus }: { consensus: OptimizerConsensus }) {
+  const ct = consensus.consensus_type;
+
+  // Legacy path: old history rows without consensus_type
+  if (!ct) {
+    const isNoAction = consensus.consensus_decision === "NO_ACTION" || consensus.recommended === "no_action";
+    const followLabel =
+      consensus.recommended === "no_action" ? "Stable"
+      : consensus.recommended === "layer1"  ? "Strategist"
+      : consensus.recommended === "layer2"  ? "Challenger"
+      : "Review";
+    return (
+      <section className={`border-2 rounded-xl p-5 shadow-sm space-y-3 ${isNoAction ? "bg-green-50 border-green-300" : "bg-white border-blue-200"}`}>
+        <div className="flex items-center gap-2 flex-wrap">
+          <h3 className="font-semibold text-gray-800">Consensus Engine</h3>
+          <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full border ${isNoAction ? "bg-green-100 border-green-300 text-green-700" : "bg-blue-100 border-blue-200 text-blue-700"}`}>
+            {isNoAction ? "No Action" : "Rebalance"}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+          <div className="bg-white/70 rounded-lg p-3">
+            <p className="text-xs text-gray-500 mb-1">L1 vs L2</p>
+            <p className={`text-sm font-semibold ${consensus.agrees ? "text-green-600" : "text-amber-600"}`}>
+              {consensus.agrees ? "✓ Agree" : "⚠ Disagree"}
+            </p>
+          </div>
+          <div className="bg-white/70 rounded-lg p-3">
+            <p className="text-xs text-gray-500 mb-1">Risk Level</p>
+            <p className={`text-sm font-semibold ${RISK_COLOR[consensus.final_risk_level ?? "medium"] ?? ""}`}>
+              {(consensus.final_risk_level ?? "medium").toUpperCase()}
+            </p>
+          </div>
+          <div className="bg-white/70 rounded-lg p-3">
+            <p className="text-xs text-gray-500 mb-1">Confidence</p>
+            <p className={`text-sm font-semibold ${CONF_COLOR[consensus.confidence] ?? ""}`}>
+              {consensus.confidence.toUpperCase()}
+            </p>
+          </div>
+          <div className="bg-white/70 rounded-lg p-3">
+            <p className="text-xs text-gray-500 mb-1">Decision</p>
+            <p className={`text-sm font-semibold ${isNoAction ? "text-green-700" : "text-blue-700"}`}>{followLabel}</p>
+          </div>
+        </div>
+        {consensus.recommended_action && (
+          <div className={`rounded-lg px-4 py-3 ${isNoAction ? "bg-green-100 border border-green-200" : "bg-blue-50 border border-blue-200"}`}>
+            <p className={`text-sm ${isNoAction ? "text-green-900" : "text-blue-900"}`}>{consensus.recommended_action}</p>
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  // New path: Consensus Strength Matrix
+  const cfg = CONSENSUS_TYPE_CFG[ct] ?? CONSENSUS_TYPE_CFG.WEAK_CONSENSUS;
+  const strength = consensus.consensus_strength_score ?? 0;
+  const stratAlign = consensus.strategist_alignment_score ?? 0;
+  const riskAlign = consensus.risk_alignment_score ?? 0;
+  const s = Math.max(0, Math.min(100, strength));
+
+  const followLabel =
+    consensus.recommended === "no_action" ? "Stable"
+    : consensus.recommended === "layer1"  ? "Strategist"
+    : consensus.recommended === "layer2"  ? "Challenger"
+    : consensus.recommended === "fallback"? "Fallback"
+    : "Review";
+
   return (
-    <section className="bg-white border-2 border-blue-200 rounded-xl p-5 shadow-sm space-y-3">
-      <h3 className="font-semibold text-gray-800">Consensus Engine</h3>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
-        <div className="bg-gray-50 rounded-lg p-3">
-          <p className="text-xs text-gray-500 mb-1">L1 vs L2</p>
-          <p className={`text-sm font-semibold ${consensus.agrees ? "text-green-600" : "text-amber-600"}`}>
-            {consensus.agrees ? "✓ Agree" : "⚠ Disagree"}
+    <section className={`border-2 rounded-xl p-5 shadow-sm space-y-4 ${cfg.section}`}>
+      {/* Header row */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <h3 className="font-semibold text-gray-800">Consensus Engine</h3>
+        <span className={`text-xs font-bold px-2.5 py-1 rounded-full border ${cfg.badge}`}>
+          {cfg.icon} {cfg.label}
+        </span>
+        <span className={`text-xs font-medium ml-auto ${CONF_COLOR[consensus.confidence]}`}>
+          {consensus.confidence.toUpperCase()} confidence
+        </span>
+      </div>
+
+      {/* Consensus Strength gauge */}
+      <div className="bg-white/70 rounded-xl border border-white/80 px-4 py-3 space-y-2">
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-gray-500 font-medium">Consensus Strength</span>
+          <span className={`font-bold text-sm ${cfg.badgeText}`}>{s}<span className="text-xs font-normal text-gray-400"> / 100</span></span>
+        </div>
+        <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full transition-all duration-500 ${cfg.bar}`} style={{ width: `${s}%` }} />
+        </div>
+        {/* Alignment sub-scores */}
+        <div className="grid grid-cols-2 gap-3 pt-1">
+          <AlignmentBar label="Strategist alignment" score={stratAlign} barColor={cfg.bar} />
+          <AlignmentBar label="Risk alignment" score={riskAlign} barColor={cfg.bar} />
+        </div>
+      </div>
+
+      {/* Refinement summary */}
+      {consensus.refinement_summary && (
+        <div className={`rounded-lg px-4 py-3 border ${cfg.summary}`}>
+          <p className={`text-sm leading-relaxed ${cfg.summaryText}`}>{consensus.refinement_summary}</p>
+        </div>
+      )}
+
+      {/* Disagreement reasons */}
+      {consensus.disagreement_reasons && consensus.disagreement_reasons.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Challenger disagreements</p>
+          <ul className="space-y-1">
+            {consensus.disagreement_reasons.map((d, i) => (
+              <li key={i} className="flex items-start gap-1.5 text-xs text-gray-700">
+                <span className="mt-0.5 shrink-0 text-gray-400">•</span>
+                <span>{d}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Stats grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+        <div className="bg-white/60 rounded-lg p-2.5">
+          <p className="text-xs text-gray-400 mb-0.5">Risk Level</p>
+          <p className={`text-sm font-semibold ${RISK_COLOR[consensus.final_risk_level ?? "medium"] ?? ""}`}>
+            {(consensus.final_risk_level ?? "medium").toUpperCase()}
           </p>
         </div>
-        <div className="bg-gray-50 rounded-lg p-3">
-          <p className="text-xs text-gray-500 mb-1">Risk Level</p>
-          <p className={`text-sm font-semibold ${RISK_COLOR[consensus.final_risk_level] ?? ""}`}>
-            {consensus.final_risk_level.toUpperCase()}
+        <div className="bg-white/60 rounded-lg p-2.5">
+          <p className="text-xs text-gray-400 mb-0.5">Risk Flags</p>
+          <p className={`text-sm font-semibold ${(consensus.risk_flag_count ?? 0) > 0 ? "text-amber-600" : "text-green-600"}`}>
+            {consensus.risk_flag_count ?? 0}
           </p>
         </div>
-        <div className="bg-gray-50 rounded-lg p-3">
-          <p className="text-xs text-gray-500 mb-1">Confidence</p>
-          <p className={`text-sm font-semibold ${CONF_COLOR[consensus.confidence] ?? ""}`}>
-            {consensus.confidence.toUpperCase()}
-          </p>
+        <div className="bg-white/60 rounded-lg p-2.5">
+          <p className="text-xs text-gray-400 mb-0.5">Follow</p>
+          <p className={`text-sm font-semibold ${cfg.badgeText}`}>{followLabel}</p>
         </div>
-        <div className="bg-gray-50 rounded-lg p-3">
-          <p className="text-xs text-gray-500 mb-1">Follow</p>
-          <p className="text-sm font-semibold text-gray-700">
-            {consensus.recommended === "layer1" ? "Strategist" : consensus.recommended === "layer2" ? "Challenger" : "Neither"}
+        <div className="bg-white/60 rounded-lg p-2.5">
+          <p className="text-xs text-gray-400 mb-0.5">Decision</p>
+          <p className={`text-sm font-semibold ${cfg.badgeText}`}>
+            {consensus.consensus_decision ?? "—"}
           </p>
         </div>
       </div>
+
+      {/* Recommended action */}
       {consensus.recommended_action && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3">
-          <p className="text-xs font-medium text-blue-700 mb-0.5">Recommended action</p>
-          <p className="text-sm text-blue-900">{consensus.recommended_action}</p>
+        <div className="border-t border-white/50 pt-3">
+          <p className="text-xs font-medium text-gray-500 mb-1">Recommended action</p>
+          <p className={`text-sm ${cfg.summaryText}`}>{consensus.recommended_action}</p>
         </div>
       )}
     </section>
   );
 }
 
+// ─── Portfolio Metrics Bar ────────────────────────────────────────────────────
+
+function PortfolioMetricsBar({ result }: { result: OptimizerResult }) {
+  const cash = result.cash_balance ?? 0;
+  const total = result.total_value ?? 0;
+  const equity = total - cash;
+  const cashPct = total > 0 ? (cash / total * 100).toFixed(1) : "0.0";
+  const turnover = result.portfolio_turnover_percent;
+  const targetCashPct = result.target_cash_weight;
+
+  return (
+    <div className="bg-white border rounded-xl p-4 shadow-sm flex flex-wrap gap-4 text-sm">
+      <div>
+        <span className="text-xs text-gray-500">Portfolio Value</span>
+        <p className="font-semibold text-gray-800">฿{total.toLocaleString("th-TH")}</p>
+      </div>
+      <div>
+        <span className="text-xs text-gray-500">Equity</span>
+        <p className="font-semibold text-gray-800">฿{equity.toLocaleString("th-TH")}</p>
+      </div>
+      <div>
+        <span className="text-xs text-gray-500">Cash</span>
+        <p className="font-semibold text-blue-700">฿{cash.toLocaleString("th-TH")} ({cashPct}%)</p>
+      </div>
+      {targetCashPct !== undefined && (
+        <div>
+          <span className="text-xs text-gray-500">Target Cash</span>
+          <p className={`font-semibold ${targetCashPct > 20 ? "text-amber-600" : "text-green-600"}`}>{targetCashPct.toFixed(1)}%</p>
+        </div>
+      )}
+      {turnover !== undefined && (
+        <div>
+          <span className="text-xs text-gray-500">Est. Turnover</span>
+          <p className={`font-semibold ${turnover > 30 ? "text-amber-600" : "text-gray-700"}`}>{turnover.toFixed(1)}%</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Result Panel ─────────────────────────────────────────────────────────────
 
-function ResultPanel({ result, budget, loading }: { result: OptimizerResult | null; budget: number; loading: boolean }) {
+function ResultPanel({ result, loading }: { result: OptimizerResult | null; loading: boolean }) {
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center py-20 gap-3 text-gray-400 text-sm">
@@ -559,6 +944,16 @@ function ResultPanel({ result, budget, loading }: { result: OptimizerResult | nu
     );
   }
 
+  const totalValue = result.total_value ?? 0;
+  const riskMap: Record<string, string> = {};
+  for (const flag of result.layer3_result?.risk_flags ?? []) {
+    const key = flag.severity?.toUpperCase();
+    const cur = riskMap[flag.symbol];
+    if (!cur || (SEVERITY_ORDER[key] ?? 99) < (SEVERITY_ORDER[cur] ?? 99)) {
+      riskMap[flag.symbol] = key;
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4 flex-wrap">
@@ -566,94 +961,72 @@ function ResultPanel({ result, budget, loading }: { result: OptimizerResult | nu
         <span className="text-xs text-gray-400">Portfolio: {result.portfolio_count ?? "?"}/12 stocks</span>
         {result.max_reached && (
           <span className="text-xs bg-amber-100 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full font-medium">
-            ⚠ AT LIMIT — only SWAPs suggested
+            ⚠ AT LIMIT — only reductions/swaps suggested
           </span>
         )}
       </div>
 
-      <section className="bg-white border rounded-xl p-3 shadow-sm">
-        <div className="flex items-center gap-2 flex-wrap text-xs">
-          <span className="text-gray-500 font-medium">Card Legend:</span>
-          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-red-50 text-red-700 border border-red-200">
-            🚨 SELL SIGNAL
-          </span>
-          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-            🔁 SWAP PLAN
-          </span>
-          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-green-50 text-green-700 border border-green-200">
-            Δ positive = expected improvement
-          </span>
-        </div>
-      </section>
+      {/* Portfolio metrics */}
+      {(result.total_value !== undefined) && <PortfolioMetricsBar result={result} />}
+
+      {/* NO_ACTION — calm informative card, shown prominently before layer details */}
+      {result.status === "NO_ACTION" && <NoActionCard result={result} />}
 
       {/* Single-model header (shown when no layer data) */}
       {!result.layer1_result && (
         <section className="bg-white border rounded-xl p-5 shadow-sm">
           <div className="flex items-center gap-3 mb-2">
             <h3 className="font-semibold">Portfolio Assessment — {result.portfolio_name}</h3>
-            <AIBadge
-              provider={result.ai_provider ?? ""}
-              model={result.ai_model ?? ""}
-              label="optimized by"
-            />
+            <AIBadge provider={result.ai_provider ?? ""} model={result.ai_model ?? ""} label="optimized by" />
           </div>
           <p className="text-sm text-gray-800 mb-1">{result.portfolio_assessment}</p>
           <p className="text-xs text-gray-500">{result.optimization_notes}</p>
+          {result.target_allocations && result.target_allocations.length > 0 && (
+            <div className="mt-4">
+              <AllocationTable allocations={result.target_allocations} totalValue={totalValue} />
+            </div>
+          )}
         </section>
       )}
 
       {/* 3-layer sections */}
-      {result.layer1_result && <Layer1Section layer={result.layer1_result} suggestions={result.swap_suggestions} />}
-      {result.layer2_result && <Layer2Section layer={result.layer2_result} />}
+      {result.layer1_result && <Layer1Section layer={result.layer1_result} totalValue={totalValue} />}
+      {result.layer2_result && <Layer2Section layer={result.layer2_result} totalValue={totalValue} />}
       {result.layer3_result && <Layer3Section layer={result.layer3_result} />}
       {result.consensus && <ConsensusSection consensus={result.consensus} />}
       {result.sector_warnings && result.sector_warnings.length > 0 && (
         <SectorImpactSection warnings={result.sector_warnings} />
       )}
 
-      {(() => {
-        // Build per-symbol risk map from Layer 3 risk_flags (highest severity wins)
-        const severityOrder: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
-        const riskMap: Record<string, string> = {};
-        for (const flag of result.layer3_result?.risk_flags ?? []) {
-          const key = flag.severity?.toUpperCase();
-          const cur = riskMap[flag.symbol];
-          if (!cur || (severityOrder[key] ?? 99) < (severityOrder[cur] ?? 99)) {
-            riskMap[flag.symbol] = key;
-          }
-        }
-        return (
-          <section>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-semibold">Watchlist Ranking</h3>
-              {budget > 0 && <span className="text-xs text-gray-500">Budget: ฿{budget.toLocaleString("th-TH")}</span>}
-            </div>
-            <div className="bg-white border rounded-xl overflow-x-auto shadow-sm">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left text-xs text-gray-500">
-                    <th className="py-2 pl-4 pr-3">#</th>
-                    <th className="py-2 pr-3">Symbol</th>
-                    <th className="py-2 pr-3">Signal</th>
-                    <th className="py-2 pr-3">Score</th>
-                    <th className="py-2 pr-3 hidden sm:table-cell">Sector</th>
-                    <th className="py-2 pr-3">Alloc%</th>
-                    {budget > 0 && <th className="py-2 pr-3">THB</th>}
-                    <th className="py-2 pr-3">Upside</th>
-                    <th className="py-2 pr-3">Risk</th>
-                    <th className="py-2 hidden lg:table-cell">Reasoning</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.watchlist_ranking.map((item) => (
-                    <RankingRow key={item.symbol} item={item} budget={budget} riskMap={riskMap} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        );
-      })()}
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold">Watchlist Ranking</h3>
+          {totalValue > 0 && <span className="text-xs text-gray-500">Total: ฿{totalValue.toLocaleString("th-TH")}</span>}
+        </div>
+        <div className="bg-white border rounded-xl overflow-x-auto shadow-sm">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-xs text-gray-500">
+                <th className="py-2 pl-4 pr-3">#</th>
+                <th className="py-2 pr-3">Symbol</th>
+                <th className="py-2 pr-3">Signal</th>
+                <th className="py-2 pr-3">Score</th>
+                <th className="py-2 pr-3 hidden sm:table-cell">Sector</th>
+                <th className="py-2 pr-3">Alloc%</th>
+                {totalValue > 0 && <th className="py-2 pr-3">THB</th>}
+                <th className="py-2 pr-3">Upside</th>
+                <th className="py-2 pr-3">Risk</th>
+                <th className="py-2 hidden lg:table-cell">Reasoning</th>
+              </tr>
+            </thead>
+            <tbody>
+              {result.watchlist_ranking.map((item) => (
+                <RankingRow key={item.symbol} item={item} totalValue={totalValue} riskMap={riskMap} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 }
@@ -677,23 +1050,41 @@ function HistoryList({
         <p className="text-xs text-gray-400 px-1 py-2">No history yet.</p>
       ) : (
         <ul className="space-y-1">
-          {items.map((item) => (
-            <li key={item.id}>
-              <button
-                onClick={() => onSelect(item)}
-                className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors text-sm ${
-                  selectedId === item.id ? "bg-blue-50 border border-blue-200" : "hover:bg-gray-50"
-                }`}
-              >
-                <p className={`text-xs font-medium ${selectedId === item.id ? "text-blue-700" : "text-gray-700"}`}>
-                  {formatDate(item.analyzed_at)}
-                </p>
-                <p className="text-xs text-gray-400 mt-0.5">
-                  {item.swap_count} swap{item.swap_count !== 1 ? "s" : ""} suggested
-                </p>
-              </button>
-            </li>
-          ))}
+          {items.map((item) => {
+            const isNoAction = item.optimizer_status === "NO_ACTION";
+            const score = item.rebalance_opportunity_score;
+            const { fill } = score != null ? scoreZone(score) : { fill: "bg-gray-300" };
+            const activeCls = selectedId === item.id
+              ? isNoAction ? "bg-green-50 border border-green-200" : "bg-blue-50 border border-blue-200"
+              : "hover:bg-gray-50";
+            return (
+              <li key={item.id}>
+                <button onClick={() => onSelect(item)} className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors ${activeCls}`}>
+                  <div className="flex items-center gap-1.5">
+                    <p className={`text-xs font-medium truncate flex-1 ${selectedId === item.id ? (isNoAction ? "text-green-800" : "text-blue-700") : "text-gray-700"}`}>
+                      {formatDate(item.analyzed_at)}
+                    </p>
+                    <span className={`shrink-0 text-xs font-bold px-1.5 py-0.5 rounded-full ${isNoAction ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600"}`}>
+                      {isNoAction ? "✓" : "⚡"}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {isNoAction
+                      ? (item.no_action_reason ? NO_ACTION_REASON_LABELS[item.no_action_reason] : "No action needed")
+                      : `${item.swap_count} action${item.swap_count !== 1 ? "s" : ""} suggested`}
+                  </p>
+                  {score != null && (
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                      <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
+                        <div className={`h-1 rounded-full ${fill}`} style={{ width: `${score}%` }} />
+                      </div>
+                      <span className="text-xs text-gray-400 shrink-0 w-5 text-right">{score}</span>
+                    </div>
+                  )}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>
@@ -705,7 +1096,6 @@ function HistoryList({
 export default function OptimizerPage() {
   const { portfolios, activeId } = usePortfolio();
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | null>(null);
-  const [budget, setBudget] = useState("");
   const [result, setResult] = useState<OptimizerResult | null>(null);
   const [history, setHistory] = useState<OptimizerHistoryItem[]>([]);
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
@@ -713,7 +1103,6 @@ export default function OptimizerPage() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [error, setError] = useState("");
-
 
   const portfolioId = selectedPortfolioId ?? activeId;
 
@@ -763,14 +1152,14 @@ export default function OptimizerPage() {
     }
   }
 
-  const budgetNum = parseFloat(budget) || 0;
+  const activePortfolio = portfolios.find((p) => p.id === portfolioId);
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold mb-1">Portfolio Optimizer</h1>
         <p className="text-sm text-gray-500">
-          Compare your portfolio vs watchlist — find swap opportunities and rank candidates.
+          Dynamic capital allocation — position sizing, rebalancing, cash deployment.
         </p>
       </div>
 
@@ -789,16 +1178,14 @@ export default function OptimizerPage() {
           </select>
         </div>
 
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Budget (THB, optional)</label>
-          <input
-            type="number" min="0" step="1000"
-            value={budget}
-            onChange={(e) => setBudget(e.target.value)}
-            placeholder="e.g. 500000"
-            className="border rounded px-3 py-1.5 text-sm w-40"
-          />
-        </div>
+        {activePortfolio && (
+          <div>
+            <span className="block text-xs text-gray-500 mb-1">Cash Balance</span>
+            <span className="text-sm font-semibold text-blue-700">
+              ฿{(activePortfolio.cash_balance ?? 0).toLocaleString("th-TH")}
+            </span>
+          </div>
+        )}
 
         <button
           onClick={handleRun}
@@ -814,7 +1201,7 @@ export default function OptimizerPage() {
       {running && (
         <div className="text-center py-10 text-gray-400 text-sm space-y-3">
           <Spinner size="lg" />
-          <p className="mt-2 font-medium">Running 3-layer analysis…</p>
+          <p className="mt-2 font-medium">Running 3-layer allocation analysis…</p>
           <div className="flex items-center justify-center gap-2 text-xs">
             <span className="bg-orange-100 text-orange-700 px-2 py-0.5 rounded font-semibold">L1 Strategist</span>
             <span>→</span>
@@ -837,7 +1224,7 @@ export default function OptimizerPage() {
             />
           </div>
           <div className="flex-1 min-w-0">
-            <ResultPanel result={result} budget={budgetNum} loading={loadingDetail} />
+            <ResultPanel result={result} loading={loadingDetail} />
           </div>
         </div>
       )}

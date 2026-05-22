@@ -8,16 +8,22 @@ call_ai() returns a dict: {"text": str, "latency_ms": int, "input_tokens": int,
                             "output_tokens": int, "provider": str, "model": str}
 """
 
+import logging
 import os
 import json
 import time
 from functools import lru_cache
 from dotenv import load_dotenv
 from pydantic import BaseModel
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential, before_sleep_log
 from models.database import SessionLocal, UserUsage
 
+logger = logging.getLogger(__name__)
 
-# Pydantic schema for Gemini structured-output (Layer 1 optimizer)
+
+# Pydantic schema for Gemini structured-output — Layer 1 compact swap format.
+# Layer 1 is intentionally narrow: fast swap candidates only.
+# Prose / allocation reasoning is delegated to Layer 2 (Claude).
 class _SwapItem(BaseModel):
     sell: str | None = None
     buy: str | None = None
@@ -31,6 +37,22 @@ class _Layer1Response(BaseModel):
     top_buys: list[str] = []
     sector_flags: list[str] = []
     priority: str = "balanced"
+
+
+class _BlockedOpportunity(BaseModel):
+    symbol: str = ""
+    signal: str = ""
+    reason: str = ""
+
+
+class _XAIOptimizerMeta(BaseModel):
+    """Schema reference for L2 XAI metadata fields (not used as Gemini response_schema)."""
+    status: str = "REBALANCE"
+    rebalance_opportunity_score: int = 50
+    no_action_reason: str | None = None
+    no_action_summary: str | None = None
+    blocked_opportunities: list[_BlockedOpportunity] = []
+
 
 load_dotenv()
 
@@ -91,6 +113,27 @@ def _record_usage(
         db.close()
 
 
+def _is_anthropic_overloaded(exc: BaseException) -> bool:
+    import anthropic
+    return isinstance(exc, anthropic.APIStatusError) and exc.status_code == 529
+
+
+@retry(
+    retry=retry_if_exception(_is_anthropic_overloaded),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+def _anthropic_create(client, model: str, max_tokens: int, prompt: str):
+    import anthropic
+    return client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+
 def call_ai(
     prompt: str,
     provider: str,
@@ -116,11 +159,7 @@ def call_ai(
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
         start = time.perf_counter()
-        message = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        message = _anthropic_create(client, model, max_tokens, prompt)
         latency_ms = round((time.perf_counter() - start) * 1000)
         usage = getattr(message, "usage", None)
         in_tokens = int(getattr(usage, "input_tokens", 0) or 0)
@@ -151,7 +190,7 @@ def call_ai(
                 response_mime_type="application/json",
                 response_schema=_Layer1Response,
                 temperature=0.1,
-                max_output_tokens=1024,
+                max_output_tokens=max_tokens,
             )
         else:
             gen_config = genai_types.GenerateContentConfig(

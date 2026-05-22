@@ -1,6 +1,7 @@
 """APScheduler-based daily portfolio snapshot scheduler.
 
-Schedule:  Monday–Friday at 17:00 Asia/Bangkok (after Thai market close).
+Schedule:  Monday–Friday at 17:45 Asia/Bangkok (after Thai market close + 15 min
+           yfinance lag buffer — ensures ATC settlement prices are fully published).
            The job also checks is_thai_trading_day() at runtime and exits
            immediately on public holidays, so the cron day-of-week filter and
            the holiday guard work together as two independent safety layers.
@@ -282,11 +283,20 @@ async def _run_snapshots_core(triggered_by: str) -> None:
             _fmt_ms(job_ms),
         )
 
+        if final_status == "completed":
+            log.info(
+                "Daily Snapshot successfully generated at 17:45 with stable EOD prices."
+            )
+
 
 # ── Public-facing entry points ────────────────────────────────────────────────
 
 async def run_snapshot_job() -> None:
-    """Entry point called by APScheduler (Mon–Fri 17:00 Asia/Bangkok).
+    """Entry point called by APScheduler (Mon–Fri 17:45 Asia/Bangkok).
+
+    Fires at 17:45 ICT — 15 minutes after the official SET close — to allow
+    Yahoo Finance ATC settlement prices to fully propagate before the snapshot
+    is written to the database.
 
     Applies the trading-day guard before delegating to _run_snapshots_core().
     """
@@ -358,8 +368,9 @@ def setup_scheduler() -> AsyncIOScheduler:
 
     Idempotent — returns the existing instance if already running.
 
-    Trigger: CronTrigger  day_of_week=mon-fri  hour=17  minute=0
-             timezone=Asia/Bangkok  (17:00 ICT — after Thai market close)
+    Trigger: CronTrigger  day_of_week=mon-fri  hour=17  minute=45
+             timezone=Asia/Bangkok  (17:45 ICT — 15 min after SET close,
+             allowing Yahoo Finance ATC prices to fully propagate)
 
     misfire_grace_time=3600 s: if the server restarts within 1 h of the
     scheduled fire time the job still executes once.
@@ -374,11 +385,11 @@ def setup_scheduler() -> AsyncIOScheduler:
         trigger=CronTrigger(
             day_of_week="mon-fri",
             hour=17,
-            minute=0,
+            minute=45,
             timezone=_TIMEZONE,
         ),
         id="daily_portfolio_snapshot",
-        name=f"Daily portfolio snapshot (17:00 {_TIMEZONE})",
+        name=f"Daily portfolio snapshot (17:45 {_TIMEZONE})",
         replace_existing=True,
         misfire_grace_time=3600,
     )
@@ -386,7 +397,7 @@ def setup_scheduler() -> AsyncIOScheduler:
 
     next_run = _scheduler.get_job("daily_portfolio_snapshot").next_run_time
     log.info(
-        "snapshot_scheduler: started — cron Mon–Fri 17:00 %s  next_run=%s",
+        "snapshot_scheduler: started — cron Mon–Fri 17:45 %s  next_run=%s",
         _TIMEZONE,
         next_run.strftime("%Y-%m-%d %H:%M:%S %Z") if next_run else "unknown",
     )

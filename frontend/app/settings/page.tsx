@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { getAIModels, getAISettings, updateAISettings, getAnalysisSources, updateAnalysisSource, getOptimizerLayers, updateOptimizerLayer, getPortfolioSettings, updatePortfolioSettings, getSectorLimits, updateSectorLimits, backfillSectors } from "@/lib/api";
-import type { AIModelsConfig, AISettings, AIModelEntry, AnalysisSources, OptimizerLayers, PortfolioSettings, SectorLimits, BackfillSectorsResult } from "@/lib/api";
+import { getAIModels, getAISettings, updateAISettings, getAnalysisSources, updateAnalysisSource, getOptimizerLayers, updateOptimizerLayer, getOptimizerFallback, updateOptimizerFallback, getPortfolioSettings, updatePortfolioSettings, getSectorLimits, updateSectorLimits, backfillSectors } from "@/lib/api";
+import type { AIModelsConfig, AISettings, AIModelEntry, AnalysisSources, OptimizerLayers, OptimizerFallback, PortfolioSettings, SectorLimits, BackfillSectorsResult } from "@/lib/api";
 
 const PROVIDER_BADGE: Record<string, { label: string; cls: string }> = {
   anthropic: { label: "ANTHROPIC", cls: "bg-orange-100 text-orange-700" },
@@ -509,6 +509,85 @@ function OptimizerLayersSection({ config }: { config: AIModelsConfig }) {
   );
 }
 
+function OptimizerFallbackSection({ config }: { config: AIModelsConfig }) {
+  const [fallback, setFallback] = useState<OptimizerFallback | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    getOptimizerFallback().then(setFallback).catch(() => {});
+  }, []);
+
+  async function handleChange(provider: string, model: string) {
+    if (!fallback) return;
+    const optimistic = { provider, model };
+    setFallback(optimistic);
+    setSaving(true);
+    try {
+      const updated = await updateOptimizerFallback(provider, model);
+      setFallback(updated);
+    } catch {
+      setFallback(fallback);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!fallback) return null;
+
+  const filteredModels = config.models.filter((m) => m.provider === fallback.provider);
+  const selectedModel = fallback.model;
+
+  return (
+    <div className="bg-white border border-amber-200 rounded-xl p-5 shadow-sm space-y-4">
+      <div>
+        <h3 className="font-semibold text-gray-800">Global Fallback Model</h3>
+        <p className="text-xs text-gray-500 mt-0.5">
+          If all 3 optimizer layers fail, this model runs a single-shot emergency analysis to avoid blank results.
+        </p>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {[...new Set(config.models.map((m) => m.provider))].map((p) => {
+          const b = PROVIDER_BADGE[p] ?? { label: p.toUpperCase(), cls: "bg-gray-100 text-gray-600" };
+          return (
+            <button
+              key={p}
+              disabled={saving}
+              onClick={() => {
+                const first = config.models.find((m) => m.provider === p);
+                if (first) handleChange(p, first.apiModel ?? first.id);
+              }}
+              className={`text-xs px-2.5 py-1 rounded-lg border transition-colors disabled:opacity-50 ${
+                fallback.provider === p
+                  ? "border-amber-400 bg-amber-50 text-amber-700 font-semibold"
+                  : "border-gray-200 hover:border-gray-300"
+              }`}
+            >
+              <ProviderBadge provider={p} />
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex items-center gap-2">
+        <select
+          value={selectedModel}
+          disabled={saving}
+          onChange={(e) => handleChange(fallback.provider, e.target.value)}
+          className="flex-1 border rounded-lg px-2.5 py-1.5 text-sm bg-white disabled:opacity-50"
+        >
+          {filteredModels.map((m) => (
+            <option key={m.id} value={m.apiModel ?? m.id}>{m.label}</option>
+          ))}
+        </select>
+        {saving && <span className="text-xs text-gray-400">saving…</span>}
+      </div>
+      <CostInfo model={config.models.find((m) => (m.apiModel ?? m.id) === selectedModel)} />
+      <p className="text-xs text-amber-600">
+        Fallback activates only when the full pipeline fails — normal runs are unaffected.
+      </p>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
@@ -572,6 +651,9 @@ export default function SettingsPage() {
 
       {/* Optimizer Layers — auto-save on change */}
       {config && <OptimizerLayersSection config={config} />}
+
+      {/* Global Fallback Model — auto-save on change */}
+      {config && <OptimizerFallbackSection config={config} />}
 
       {/* Data Management */}
       <DataManagementSection />

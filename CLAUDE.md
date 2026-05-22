@@ -316,6 +316,24 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 - Sector for DR/US stocks requires FA analysis to have run at least once; shows "Other" until then (use backfill endpoint)
 - PostgreSQL GroupBy: ORDER BY must use `func.sum()` not bare column — already fixed in model cost report
 
+## Data Pipeline & Integration Notes
+
+### Yahoo Finance Price Lag — Thai SET Stocks
+
+**Issue:** Yahoo Finance has an inherent **~15–20 minute delay** for Thai SET prices (`.BK` symbols) after the official exchange close. Prices retrieved immediately at or just after 16:30 ICT (market close) may still reflect the last automated auction price rather than the final ATC (At-The-Close) price published by the SET.
+
+**Observed example:** `KBANK.BK` retrieved at 16:35 ICT showed `196.5` via yfinance while the official ATC settled at `197.0` — a 0.25% discrepancy that compounds across a portfolio snapshot.
+
+**Impact:** Portfolio snapshots, P&L calculations, and optimizer weight inputs that are triggered immediately at market close will contain stale prices, causing incorrect allocation percentages and estimated amounts.
+
+**Operational fix (implemented):** The APScheduler cron job in `backend/services/snapshot_scheduler.py` is configured to fire at **17:45 ICT** (Mon–Fri) — 15 minutes after the SET closes at 16:30 — giving Yahoo Finance time to publish final ATC settlement prices before the snapshot is written. This timing must not be moved earlier. Applies to:
+- The automated daily snapshot job (APScheduler `daily_portfolio_snapshot`)
+- Manual "Analyze All" runs on the portfolio/watchlist pages
+- Optimizer runs that read `current_price` for weight calculations
+- Any ad-hoc or backfill snapshot scripts
+
+**Long-term solution (backlog):** Replace yfinance `.BK` close prices with a direct SET data feed or a delayed official price source that guarantees ATC settlement prices before the snapshot is taken.
+
 ## Claude Code Session Tips
 - Run /compact when context exceeds 20%
 - Always read CLAUDE.MD at start of new session
@@ -323,3 +341,139 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 - DB migrations: add columns to both `migrate_legacy_data()` in `models/database.py` AND a new Alembic migration file
 - Sector source of truth: `PortfolioItem.sector` / `Watchlist.sector` DB columns — populated at add-time
 - When adding a new signal level: update `_VALID_SIGNALS` in summary.py, `SignalBadge.tsx`, api.ts union type, and all AI prompts
+
+---
+
+## CURRENT ARCHITECTURE STATE
+_Last updated: 2026-05-22. Update this section at the start of each new session._
+
+### Watchlist Analysis Pipeline — Optimized (as-built)
+
+The `POST /watchlist/analyze/all` and `POST /portfolios/{id}/analyze/all` endpoints were fully overhauled from sequential to concurrent execution.
+
+**Before:** sequential `for` loop + `asyncio.sleep(random.uniform(1.0, 2.0))` between stocks → ~4 minutes for 68 stocks (avg 3.8 s/stock, max 62.6 s).
+
+**After:** `asyncio.gather()` across all stale symbols, concurrency capped by `asyncio.Semaphore(10)`, each AI call wrapped in `asyncio.wait_for(timeout=10.0)` → **~32 seconds for 68 stocks**.
+
+**Key implementation details (`backend/main.py`):**
+- `_ANALYZE_SEMAPHORE = asyncio.Semaphore(10)` — initialized in `lifespan`, shared across all requests
+- `_analyze_one_concurrent(ws, sym, s, src)` — per-stock worker: opens its own `SessionLocal()`, fetches agents, calls AI with 10 s timeout, falls back gracefully on `TimeoutError` or any exception
+- `_build_fallback_result(...)` — deterministic fallback using `determine_signal(ta_short, ta_long, fa_score)`; sets `ai_fallback_used: True` in the response; does NOT write to `AnalysisCache` (next run will retry AI)
+- `_ndjson(obj)` — serializes a dict to a newline-terminated JSON string for the streaming endpoint
+- `POST /watchlist/analyze/all/stream` — `StreamingResponse(application/x-ndjson)` endpoint; emits `start` → N×`progress` → `complete` events via `asyncio.Queue` as stocks finish in completion order
+- `AnalyzeAllButton.tsx` — watchlist path streams via `analyzeWatchlistStream()` async generator, showing live `"17/68 analyzed…"` progress; done message includes fallback count when applicable
+
+### Optimizer Layer Architecture (as-built) ✅ FULLY FIXED 2026-05-22
+
+The optimizer has been refactored from a "swap engine" into a **3-layer Capital Allocation Engine**. Each layer has a distinct role and output schema:
+
+| Layer | Role | Provider | Output Schema |
+|---|---|---|---|
+| L1 — Strategist | Swap targets + sector flags | Gemini Flash (configurable) | `{swaps[], top_buys[], sector_flags[], priority}` |
+| L2 — Challenger | Full allocation plan + critique | Claude (configurable) | `{agrees_with_layer1, disagreements, portfolio_assessment, cash_balance_target, allocations[]}` |
+| L3 — Risk Auditor | Concentration risk audit | Claude (configurable) | `{risk_flags[], safer_choice, final_risk_level, auditor_notes}` |
+| Consensus | Pure Python — no AI call | — | `{consensus_type, consensus_strength_score, strategist_alignment_score, risk_alignment_score, disagreement_reasons, refinement_summary, …legacy fields}` |
+
+**L1 output fields** (`swaps` array items): `sell`, `buy`, `score_delta`, `sector`, `type`
+**L2 output fields** (`allocations` array items): `symbol`, `current_weight`, `target_weight`, `action`, `allocation_change_percent`, `reason`
+
+**L1 Strategist prompt — active mandate (2026-05-22):**
+- Signature: `_layer1_prompt(c_pc, c_wc, sell_forced, swap_eligible, max_sector_pct, sector_limits, max_stocks, current_count)`
+- Role framing changed from passive "DIRECTOR" to active "STRATEGIST" — biased toward finding improvements
+- **5-point evaluation mandate**: before deciding, must check (1) sector concentration, (2) watchlist BUY/ACCUMULATE candidates, (3) overweight positions >25%, (4) low-score swap-eligible holdings, (5) 2–5% shift opportunities
+- **Prefers incremental actions**: REDUCE/ACCUMULATE over full SELL/BUY; explicitly instructs that small shifts (2–5%) are meaningful
+- `priority="no_action"` is only valid when **all 5 checks** show no meaningful improvement
+- Schema type enum extended: `"SELL|SWAP|REDUCE"` — one-sided partial actions (sell=null or buy=null) are encouraged
+- `_normalize_l1_swaps()` converts raw L1 compact-key dicts (`sell`/`buy`) to full `swap_suggestions` format (`sell_symbol`/`buy_symbol`)
+
+**Mathematical alignment — fully verified:**
+- `allocation_change_percent` always computed by Python (`target_weight - current_weight`), never from AI
+- `estimated_amount` always computed by Python (`change_pct / 100 * total_value`), never from AI
+- `pc_map` (real portfolio weights from DB) always overrides AI-reported `current_weight`
+
+### Consensus Strength Matrix ✅ SHIPPED 2026-05-22
+
+The binary `agrees: bool` consensus has been replaced with a **7-type Consensus Strength Matrix** implemented in `_consensus_engine(l1, l2, l3)` (`agents/optimizer.py`).
+
+**The 7 Consensus Types:**
+
+| Type | Trigger | UI Color |
+|---|---|---|
+| `STRONG_CONSENSUS` | stratAlign ≥ 70 + riskAlign ≥ 65 | Green |
+| `REFINED_CONSENSUS` | L2 agrees + stratAlign ≥ 50 | Blue |
+| `PARTIAL_CONSENSUS` | stratAlign ≥ 35 | Amber |
+| `WEAK_CONSENSUS` | stratAlign < 35 | Gray |
+| `RISK_CONFLICT` | CRITICAL flags OR (high risk + ≥2 HIGH flags) | Orange/Red |
+| `STRATEGIC_CONFLICT` | L2 disagrees + stratAlign < 40 | Red |
+| `NO_ACTION_CONSENSUS` | L2 status=NO_ACTION + score < 40 + no critical risk | Teal |
+
+**Alignment scoring:**
+- `strategist_alignment_score` (0–100): base (80 if agrees, 30 if not) − disagreement penalty (12× count) + overlap bonus (±10 from buy/sell symbol Jaccard)
+- `risk_alignment_score` (0–100): 92 (no flags) → 55–30 (HIGH) → 12 (CRITICAL)
+- `consensus_strength_score` (0–100): weighted composite (65% strategist + 35% risk)
+
+**New output fields in consensus dict:**
+```python
+{
+    "consensus_type":             "STRONG_CONSENSUS|REFINED_CONSENSUS|…",
+    "consensus_strength_score":   0-100,
+    "strategist_alignment_score": 0-100,
+    "risk_alignment_score":       0-100,
+    "disagreement_reasons":       ["…"],   # forwarded from L2
+    "refinement_summary":         "…",     # human-readable explainability sentence
+    # Legacy fields preserved:
+    "agrees": bool, "consensus_decision": "REBALANCE|NO_ACTION|REVIEW",
+    "confidence": "high|medium|low", "recommended": "layer1|layer2|neither|no_action|fallback",
+    "final_risk_level": "low|medium|high", "risk_flag_count": int, "recommended_action": str,
+}
+```
+
+**Backward compatibility:** old history rows without `consensus_type` are detected in `ConsensusSection` (`optimizer/page.tsx`) and fall back to the legacy 4-cell agree/disagree grid — no data migration needed.
+
+**Frontend `ConsensusSection` (as-built):**
+- New path: colored type badge + `consensus_strength_score` gauge + two alignment sub-bars (`strategist_alignment_score`, `risk_alignment_score`) + tinted `refinement_summary` block + `disagreement_reasons` list + stats grid + recommended action footer
+- Legacy path: old 4-cell grid (agree/disagree, risk, confidence, decision) — triggered when `consensus.consensus_type` is absent
+
+**TypeScript types** (`frontend/lib/api.ts`):
+- `ConsensusType` union type exported
+- `OptimizerConsensus` extended with 6 new optional fields; all legacy fields preserved
+
+---
+
+## FUTURE ARCHITECTURAL EVOLUTION (BACKLOG)
+_Conceptual designs approved for future sprints. Do not implement until prerequisites are complete._
+
+### ⚠ NEXT HIGH-PRIORITY: Background Job Queue Architecture
+
+The 32-second watchlist analysis block still lives inside the HTTP request cycle — the client must hold the connection open for the full duration. The next phase moves execution entirely out of the request into **FastAPI `BackgroundTasks` with in-process job tracking**.
+
+**Core decision:** `POST /analyze/watchlist` returns a `job_id` immediately (< 5 ms). Actual analysis runs in a background task. The client polls or streams for results independently of the initiating request.
+
+**Target endpoint contract:**
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `POST /analyze/watchlist` | — | Enqueues job, returns `{job_id, status: "queued", total: N, stale: M}` immediately |
+| `GET /analyze/jobs/{job_id}` | polling | Returns current job state: `{status, done, total, results[], errors[], fallbacks}` |
+| `GET /analyze/jobs/{job_id}/stream` | SSE | Real-time push — emits `progress` events as each stock finishes; closes with `complete` |
+
+**Job state machine:** `queued → running → done | failed`
+
+**In-process job store (no new DB table needed for v1):**
+```python
+_JOBS: dict[str, dict] = {}  # job_id → {status, done, total, results, errors, fallbacks, created_at}
+```
+Jobs expire from memory after 10 minutes. Use `uuid.uuid4()` for `job_id`.
+
+**SSE stream format:**
+```
+data: {"type":"progress","done":17,"total":68,"symbol":"AAPL","signal":"BUY"}\n\n
+data: {"type":"complete","done":68,"total":68,"fallbacks":2}\n\n
+```
+
+**Implementation split:**
+1. **Job initialization** — validate inputs, build `stale_syms` list, create job record, enqueue `BackgroundTask`, return `job_id`
+2. **Execution logic** — `_run_analysis_job(job_id, stale_syms, …)` async function that calls `_analyze_one_concurrent` in gather, writes each result into `_JOBS[job_id]` as it completes
+
+### XAI Opportunity Score _(after Background Job Queue)_
+Surface the `rebalance_opportunity_score` (0–100) more prominently: animated gauge on the optimizer run page, trend sparkline in history list, threshold-based push notification when a new run crosses 70+.

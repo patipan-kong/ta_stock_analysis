@@ -147,6 +147,11 @@ class OptimizerHistory(Base):
     layer2_latency_ms = Column(Integer, nullable=True)
     layer3_latency_ms = Column(Integer, nullable=True)
     total_latency_ms = Column(Integer, nullable=True)
+    optimizer_status = Column(String, nullable=True)          # REBALANCE | NO_ACTION
+    rebalance_opportunity_score = Column(Integer, nullable=True)  # 0-100
+    no_action_reason = Column(String, nullable=True)          # enum: WELL_BALANCED | LOW_CONFIDENCE | …
+    no_action_summary = Column(Text, nullable=True)
+    blocked_opportunities_json = Column(Text, nullable=True)  # JSON array
 
     workspace = relationship("Workspace", back_populates="optimizer_history_items")
 
@@ -395,6 +400,11 @@ def migrate_legacy_data() -> None:
                     for col in ("layer1_latency_ms", "layer2_latency_ms", "layer3_latency_ms", "total_latency_ms"):
                         if col not in oh_cols:
                             conn.execute(text(f"ALTER TABLE optimizer_history ADD COLUMN {col} INTEGER"))
+                    for col in ("optimizer_status", "no_action_reason", "no_action_summary", "blocked_opportunities_json"):
+                        if col not in oh_cols:
+                            conn.execute(text(f"ALTER TABLE optimizer_history ADD COLUMN {col} TEXT"))
+                    if "rebalance_opportunity_score" not in oh_cols:
+                        conn.execute(text("ALTER TABLE optimizer_history ADD COLUMN rebalance_opportunity_score INTEGER"))
 
             if "user_usage" in tables:
                 with engine.begin() as conn:

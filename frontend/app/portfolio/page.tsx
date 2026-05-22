@@ -12,12 +12,12 @@ import {
   getHoldings, removeHolding, analyzeSymbol, updateSwapPermission,
   getPortfolioPrices, getSectorBreakdown,
   buyTransaction, sellTransaction, depositTransaction, withdrawTransaction,
-  initialPositionTransaction,
+  initialPositionTransaction, dividendTransaction,
 } from "@/lib/api";
 import type {
   PortfolioItem, AnalyzeAllResult, SectorBreakdown,
   BuyPayload, SellPayload, DepositPayload, WithdrawPayload,
-  InitialPositionPayload, TransactionResult,
+  InitialPositionPayload, DividendPayload, TransactionResult,
 } from "@/lib/api";
 
 const PortfolioPieChart = dynamic(
@@ -201,7 +201,7 @@ export default function PortfolioPage() {
   // ─── Transaction handlers ──────────────────────────────────────────────────
 
   async function handleTransactionConfirm(
-    payload: BuyPayload | SellPayload | DepositPayload | WithdrawPayload | InitialPositionPayload
+    payload: BuyPayload | SellPayload | DepositPayload | WithdrawPayload | InitialPositionPayload | DividendPayload
   ): Promise<TransactionResult> {
     if (activeId == null) throw new Error("No active portfolio");
     if (!modal) throw new Error("No active modal");
@@ -222,6 +222,9 @@ export default function PortfolioPage() {
         break;
       case "initial_position":
         result = await initialPositionTransaction(activeId, payload as InitialPositionPayload);
+        break;
+      case "dividend":
+        result = await dividendTransaction(activeId, payload as DividendPayload);
         break;
     }
 
@@ -426,6 +429,13 @@ export default function PortfolioPage() {
           className="px-4 py-1.5 rounded text-sm font-semibold text-white bg-[#791F1F] hover:bg-[#611919] disabled:opacity-40 transition-colors"
         >
           Withdraw
+        </button>
+        <button
+          disabled={activeId == null}
+          onClick={() => setModal({ mode: "dividend" })}
+          className="px-4 py-1.5 rounded text-sm font-semibold text-white bg-[#0F6E56] hover:bg-[#0b5844] disabled:opacity-40 transition-colors"
+        >
+          💰 Dividend
         </button>
         <button
           disabled={activeId == null}

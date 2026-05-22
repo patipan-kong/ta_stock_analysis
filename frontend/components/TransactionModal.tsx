@@ -7,12 +7,13 @@ import type {
   DepositPayload,
   WithdrawPayload,
   InitialPositionPayload,
+  DividendPayload,
   TransactionResult,
 } from "@/lib/api";
 
-export type TransactionMode = "buy" | "sell" | "deposit" | "withdraw" | "initial_position";
+export type TransactionMode = "buy" | "sell" | "deposit" | "withdraw" | "initial_position" | "dividend";
 
-type Payload = BuyPayload | SellPayload | DepositPayload | WithdrawPayload | InitialPositionPayload;
+type Payload = BuyPayload | SellPayload | DepositPayload | WithdrawPayload | InitialPositionPayload | DividendPayload;
 
 interface Props {
   mode: TransactionMode;
@@ -40,6 +41,7 @@ const MODE_CONFIG: Record<
   deposit:          { label: "Deposit",          accent: "#0C447C", accentLight: "#0C447C20", submitLabel: "Confirm Deposit"  },
   withdraw:         { label: "Withdraw",         accent: "#791F1F", accentLight: "#791F1F20", submitLabel: "Confirm Withdraw" },
   initial_position: { label: "Import Position",  accent: "#444441", accentLight: "#44444120", submitLabel: "Import"          },
+  dividend:         { label: "Dividend",         accent: "#0F6E56", accentLight: "#0F6E5620", submitLabel: "Record Dividend"  },
 };
 
 export default function TransactionModal({
@@ -54,6 +56,7 @@ export default function TransactionModal({
   const isCash = mode === "deposit" || mode === "withdraw";
   const isEquity = mode === "buy" || mode === "sell" || mode === "initial_position";
   const isImport = mode === "initial_position";
+  const isDividend = mode === "dividend";
 
   // Symbol is user-editable for "buy" and "initial_position" if not pre-provided
   const [symbolInput, setSymbolInput] = useState(symbolProp ?? "");
@@ -89,7 +92,7 @@ export default function TransactionModal({
   const feesNum   = parseFloat(fees)    || 0;
 
   const total = (() => {
-    if (isCash) return amountNum;
+    if (isCash || isDividend) return amountNum;
     if (isImport) return sharesNum * avgNum;
     return sharesNum * priceNum + (mode === "buy" ? feesNum : -feesNum);
   })();
@@ -99,6 +102,7 @@ export default function TransactionModal({
   const canSubmit = (() => {
     if (submitting || result) return false;
     if (isCash) return amountNum > 0;
+    if (isDividend) return amountNum > 0;
     if (isImport) return effectiveSymbol.length > 0 && sharesNum > 0 && avgNum > 0;
     // buy / sell
     if (!effectiveSymbol) return false;
@@ -148,6 +152,13 @@ export default function TransactionModal({
           transaction_date: txDate,
           notes: txNotes,
         } satisfies WithdrawPayload;
+      } else if (mode === "dividend") {
+        payload = {
+          symbol: symbolInput.trim().toUpperCase() || undefined,
+          amount: amountNum,
+          transaction_date: txDate,
+          notes: txNotes,
+        } satisfies DividendPayload;
       } else {
         payload = {
           symbol: effectiveSymbol,
@@ -184,7 +195,7 @@ export default function TransactionModal({
             <span className="text-xs font-bold uppercase tracking-widest" style={{ color: cfg.accent }}>
               {cfg.label}
             </span>
-            {isEquity && (
+            {(isEquity || (isDividend && symbolProp)) && (
               <h2 className="text-lg font-bold text-gray-900 leading-tight">
                 {symbolDisplay.replace(".BK", "")}
                 {symbolDisplay.endsWith(".BK") && (
@@ -295,6 +306,38 @@ export default function TransactionModal({
                   required
                 />
               </div>
+            )}
+
+            {/* Dividend fields */}
+            {isDividend && (
+              <>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1">
+                    Symbol <span className="font-normal text-gray-400">(optional)</span>
+                  </label>
+                  <input
+                    ref={firstInputRef}
+                    type="text"
+                    value={symbolInput}
+                    onChange={(e) => setSymbolInput(e.target.value.toUpperCase())}
+                    placeholder="e.g. SCB.BK"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1">Dividend Amount (THB)</label>
+                  <input
+                    type="number"
+                    step="any"
+                    min="0.01"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+                    required
+                  />
+                </div>
+              </>
             )}
 
             {/* Cash amount field (deposit / withdraw) */}
@@ -419,9 +462,10 @@ export default function TransactionModal({
                 style={{ backgroundColor: cfg.accentLight }}
               >
                 <span className="text-gray-500">
-                  {mode === "buy"    ? "Total cost"    :
-                   mode === "sell"   ? "Net proceeds"  :
-                   mode === "deposit" || mode === "initial_position" ? "Amount" : "Withdrawn"}
+                  {mode === "buy"      ? "Total cost"   :
+                   mode === "sell"     ? "Net proceeds" :
+                   mode === "withdraw" ? "Withdrawn"    :
+                   mode === "dividend" ? "Dividend"     : "Amount"}
                 </span>
                 <span className="font-semibold" style={{ color: cfg.accent }}>
                   {Math.abs(total).toFixed(2)}

@@ -57,7 +57,7 @@ function SectorBadge({ sector }: { sector?: string | null }) {
   );
 }
 
-type SortKey = "symbol" | "signal" | "upside_pct" | "risk_level" | "analyzed_at";
+type SortKey = "symbol" | "sector" | "signal" | "upside_pct" | "risk_level" | "analyzed_at";
 type SortDir = "asc" | "desc";
 
 const DEFAULT_SORT: SortKey = "signal";
@@ -78,6 +78,9 @@ function compare(a: WatchlistItem, b: WatchlistItem, key: SortKey, dir: SortDir)
     }
     case "upside_pct":
       v = (a.upside_pct ?? -Infinity) - (b.upside_pct ?? -Infinity);
+      break;
+    case "sector":
+      v = (a.sector ?? "Other").localeCompare(b.sector ?? "Other");
       break;
     case "risk_level": {
       const ra = RISK_PRIORITY[a.risk_level as RiskLevel] ?? -1;
@@ -273,7 +276,7 @@ export default function WatchlistPage() {
             <thead>
               <tr className="border-b text-left text-xs">
                 <Th col="symbol"      label="Symbol"   className="pl-4" />
-                <th className="py-2 pr-3 font-medium text-gray-400 whitespace-nowrap">Sector</th>
+                <Th col="sector" label="Sector" />
                 <Th col="signal"      label="Signal" />
                 <Th col="upside_pct"  label="Upside" />
                 <Th col="risk_level"  label="Risk" />

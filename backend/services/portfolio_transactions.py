@@ -351,6 +351,64 @@ def execute_withdraw(
     }
 
 
+# ─── DIVIDEND ─────────────────────────────────────────────────────────────────
+
+def execute_dividend(
+    db: Session,
+    ws_id: int,
+    portfolio_id: int,
+    symbol: str | None,
+    amount: float,
+    currency: str = "THB",
+    exchange_rate: float = 1.0,
+    transaction_date: datetime | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Record a dividend received from a holding. Increases cash balance."""
+    if amount <= 0:
+        raise ValueError("Dividend amount must be positive")
+
+    d_amount = _d(amount)
+    tx_date = transaction_date or datetime.utcnow()
+
+    portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
+    if not portfolio:
+        raise ValueError("Portfolio not found")
+
+    portfolio.cash_balance = _f(_d(portfolio.cash_balance) + d_amount)
+
+    tx = Transaction(
+        workspace_id=ws_id,
+        portfolio_id=portfolio_id,
+        symbol=symbol,
+        transaction_type="DIVIDEND",
+        shares=None,
+        price_per_share=None,
+        total_amount=_f(d_amount),
+        fees=0.0,
+        taxes=0.0,
+        currency=currency,
+        exchange_rate=exchange_rate,
+        transaction_date=tx_date,
+        notes=notes,
+    )
+    db.add(tx)
+    db.commit()
+    db.refresh(tx)
+
+    return {
+        "transaction_id": tx.id,
+        "type": "DIVIDEND",
+        "symbol": symbol,
+        "amount": tx.total_amount,
+        "total_amount": tx.total_amount,
+        "transaction_date": tx.transaction_date.isoformat() + "Z",
+        "notes": tx.notes,
+        "cash_balance": portfolio.cash_balance,
+        "holding": None,
+    }
+
+
 # ─── INITIAL_POSITION ─────────────────────────────────────────────────────────
 
 def execute_initial_position(

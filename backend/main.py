@@ -1,18 +1,22 @@
 import asyncio
+import logging
 import random
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
+_log = logging.getLogger(__name__)
+
 import os
 import json as _json
+import uuid as _uuid
 from models.database import (
-    init_db, migrate_legacy_data, get_db,
+    init_db, migrate_legacy_data, get_db, SessionLocal,
     Workspace, get_default_workspace,
     Portfolio, PortfolioItem, Watchlist,
     AgentCache, AnalysisCache, AnalysisHistory, OptimizerHistory,
@@ -21,7 +25,7 @@ from models.database import (
 from agents.technical import analyze_technical
 from agents.fundamental import analyze_fundamental
 from agents.news import analyze_news
-from agents.summary import analyze_summary
+from agents.summary import analyze_summary, determine_signal
 from agents.optimizer import run_optimizer, run_layered_optimizer, _DEFAULT_LAYERS
 from agents.chart_data import fetch_chart_data
 from services.data_fetcher import fetch_price_info, fetch_info, normalize_dr_symbol, is_dr_symbol
@@ -32,6 +36,7 @@ from services.portfolio_transactions import (
     execute_buy, execute_sell,
     execute_deposit, execute_withdraw,
     execute_initial_position, execute_initial_cash,
+    execute_dividend,
 )
 from services.portfolio_snapshots import generate_daily_snapshot
 from services.snapshot_scheduler import setup_scheduler, shutdown_scheduler
@@ -45,8 +50,19 @@ try:
 except ImportError:
     pass
 
+_ANALYZE_CONCURRENCY = 10
+_ANALYZE_SEMAPHORE: asyncio.Semaphore | None = None
+
+# In-process job store: job_id → job state dict.
+# Jobs expire after _JOB_TTL_SECONDS (10 min) and are pruned lazily on new job creation.
+_JOBS: dict[str, dict] = {}
+_JOB_TTL_SECONDS = 600
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global _ANALYZE_SEMAPHORE
+    _ANALYZE_SEMAPHORE = asyncio.Semaphore(_ANALYZE_CONCURRENCY)
     init_db()
     migrate_legacy_data()
     setup_scheduler()
@@ -325,6 +341,27 @@ THAI_SECTOR_MAP: dict[str, str] = {
     "ORI.BK": "Real Estate", "QH.BK": "Real Estate", "LALIN.BK": "Real Estate",
 }
 
+# Canonical sector keys must match frontend/lib/sectors.ts SECTOR_COLORS
+_CANONICAL_SECTORS = frozenset({
+    "Technology", "Financial", "Energy", "Healthcare",
+    "Consumer", "Industrial", "Real Estate", "Utilities", "Other",
+})
+
+
+def normalize_sector(raw: str | None) -> str:
+    """Map raw yfinance/FA sector strings to canonical frontend sector keys."""
+    s = (raw or "").strip()
+    if s in _CANONICAL_SECTORS:
+        return s
+    if "Financial" in s:   # "Financial Services" → "Financial"
+        return "Financial"
+    if "Consumer" in s:    # "Consumer Cyclical", "Consumer Defensive", "Consumer Staples" → "Consumer"
+        return "Consumer"
+    if "Industrial" in s:  # "Industrials" → "Industrial"
+        return "Industrial"
+    # "Services", "Basic Materials", "Communication Services", or any unmapped → "Other"
+    return "Other"
+
 
 def _get_sector(symbol: str, fa_cache: dict | None) -> str:
     """Resolve sector with three-way branching:
@@ -336,7 +373,7 @@ def _get_sector(symbol: str, fa_cache: dict | None) -> str:
         if fa_cache:
             s = fa_cache.get("sector")
             if s and s not in ("N/A", "Other", ""):
-                return s
+                return normalize_sector(s)
         return None
 
     base = normalize_dr_symbol(symbol)
@@ -588,7 +625,7 @@ async def get_sector_breakdown(portfolio_id: int, db: Session = Depends(get_db))
     prices_list = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, i.symbol) for i in items])
     price_map = {item.symbol: p for item, p in zip(items, prices_list)}
 
-    sector_map: dict[str, str] = {item.symbol: item.sector or "Other" for item in items}
+    sector_map: dict[str, str] = {item.symbol: normalize_sector(item.sector) for item in items}
 
     sector_limits = _get_sector_limits(db, ws)
     default_limit: int = int(sector_limits.get("default") or _get_portfolio_settings(db, ws).get("max_sector_pct", 40))
@@ -875,6 +912,157 @@ def _build_cached_result(symbol: str, cache: AnalysisCache, tech: dict, fund: di
     }
 
 
+def _ndjson(obj: dict) -> str:
+    return _json.dumps(obj, ensure_ascii=False) + "\n"
+
+
+def _build_fallback_result(
+    symbol: str,
+    tech: dict | None,
+    fund: dict | None,
+    news_r: dict | None,
+    scores: dict,
+    sources_used: dict,
+    elapsed_ms: int,
+    reason: str,
+) -> dict:
+    """Deterministic signal result used when AI call times out or errors."""
+    ta_short = (tech or {}).get("short_term", {}).get("score") if tech and "error" not in tech else None
+    ta_long  = (tech or {}).get("long_term",  {}).get("score") if tech and "error" not in tech else None
+    fa_score = (fund or {}).get("fa_score")                    if fund and "error" not in fund else None
+    signal, confidence = determine_signal(ta_short, ta_long, fa_score)
+    return {
+        "symbol": symbol,
+        "technical": tech,
+        "fundamental": fund,
+        "news": news_r,
+        "summary": {
+            "symbol": symbol,
+            "signal": signal,
+            "confidence": confidence,
+            "reasoning": f"Deterministic fallback — {reason}",
+            "risks": "AI analysis unavailable",
+            "ai_fallback_used": True,
+            "latency_ms": 0,
+        },
+        "sources_used": sources_used,
+        "scores": scores,
+        "total_latency_ms": elapsed_ms,
+        "ai_fallback_used": True,
+    }
+
+
+def _cleanup_jobs() -> None:
+    """Prune jobs older than _JOB_TTL_SECONDS from the in-process store."""
+    now = datetime.utcnow()
+    expired = [
+        jid for jid, j in _JOBS.items()
+        if (now - j["created_at"]).total_seconds() > _JOB_TTL_SECONDS
+    ]
+    for jid in expired:
+        del _JOBS[jid]
+
+
+async def _run_analysis_job(job_id: str, ws: int, stale_syms: list[str], s: dict, src: dict) -> None:
+    """Background task: runs concurrent analysis for all stale symbols, updating _JOBS as each finishes."""
+    job = _JOBS.get(job_id)
+    if not job:
+        return
+    total = len(stale_syms)
+    job["status"] = "running"
+    if total == 0:
+        job["status"] = "done"
+        return
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def _worker(sym: str) -> None:
+        result = await _analyze_one_concurrent(ws, sym, s, src)
+        await queue.put(result)
+
+    for sym in stale_syms:
+        asyncio.create_task(_worker(sym))
+
+    fallbacks = 0
+    for _ in range(total):
+        result = await queue.get()
+        if result.get("ai_fallback_used"):
+            fallbacks += 1
+        job["done"] += 1
+        job["fallbacks"] = fallbacks
+        job["results"].append(result)
+
+    job["status"] = "done"
+    _log.info("[job:%s] done — %d analyzed, %d fallbacks", job_id, total, fallbacks)
+
+
+async def _analyze_one_concurrent(ws: int, sym: str, s: dict, src: dict) -> dict:
+    """
+    Analyze a single symbol with its own DB session.
+    Concurrency is capped by _ANALYZE_SEMAPHORE (10 max).
+    AI call is wrapped in a 10 s timeout; on expiry returns a deterministic fallback.
+    """
+    import time as _time
+    t0 = _time.perf_counter()
+    su = {
+        "ta":   bool(src.get("use_ta",   True)),
+        "fa":   bool(src.get("use_fa",   True)),
+        "news": bool(src.get("use_news", True)),
+    }
+
+    assert _ANALYZE_SEMAPHORE is not None
+    async with _ANALYZE_SEMAPHORE:
+        db = SessionLocal()
+        try:
+            tech, fund, news_r = await _fetch_agents(db, sym, src)
+            scores = compute_scores(tech, fund, news_r)
+
+            try:
+                summary = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        analyze_summary, sym, tech, fund, news_r,
+                        s["analyze_provider"], s["analyze_model"], scores,
+                    ),
+                    timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                elapsed_ms = round((_time.perf_counter() - t0) * 1000)
+                _log.warning("[analyze_concurrent] %s AI timeout after %d ms", sym, elapsed_ms)
+                return _build_fallback_result(sym, tech, fund, news_r, scores, su, elapsed_ms, "AI timeout")
+
+            total_latency_ms = round((_time.perf_counter() - t0) * 1000)
+            _log.debug("[analyze_concurrent] %s done in %d ms", sym, total_latency_ms)
+
+            _sm = summary
+            _save_analysis_cache(db, ws, sym, _sm, tech, fund, su)
+            _save_analysis_history(
+                db, ws, sym, _sm, tech, fund, su, scores,
+                latency_ms=_sm.get("latency_ms") if isinstance(_sm, dict) else None,
+                total_latency_ms=total_latency_ms,
+            )
+            if isinstance(_sm, dict) and "error" not in _sm:
+                summary = {**_sm, "analyzed_at": datetime.utcnow().isoformat() + "Z", "from_cache": False}
+
+            return {
+                "symbol": sym,
+                "technical": tech,
+                "fundamental": fund,
+                "news": news_r,
+                "summary": summary,
+                "sources_used": su,
+                "scores": scores,
+                "total_latency_ms": total_latency_ms,
+            }
+
+        except Exception as exc:
+            elapsed_ms = round((_time.perf_counter() - t0) * 1000)
+            _log.warning("[analyze_concurrent] %s error after %d ms: %s", sym, elapsed_ms, exc)
+            return _build_fallback_result(sym, None, None, None, {}, su, elapsed_ms, str(exc))
+
+        finally:
+            db.close()
+
+
 async def _fetch_agents(
     db: Session,
     symbol: str,
@@ -1053,42 +1241,6 @@ async def analyze_portfolio_holdings(portfolio_id: int, db: Session = Depends(ge
     return results
 
 
-@app.post("/analyze/watchlist")
-async def analyze_watchlist_all(db: Session = Depends(get_db)) -> list[dict]:
-    ws = _ws_id(db)
-    items = db.query(Watchlist).filter(Watchlist.workspace_id == ws).all()
-    symbols = [i.symbol for i in items]
-    cache_map = {
-        c.symbol: c
-        for c in db.query(AnalysisCache).filter(
-            AnalysisCache.workspace_id == ws,
-            AnalysisCache.symbol.in_(symbols),
-        ).all()
-    }
-    s = _get_ai_settings(db, ws)
-    src = _get_analysis_sources(db, ws)
-    results = []
-    for item in items:
-        cache = cache_map.get(item.symbol)
-        if _is_stale(cache):
-            result = await _run_full_analysis_async(db, item.symbol, s["analyze_provider"], s["analyze_model"], src)
-            su = result.get("sources_used")
-            sc = result.get("scores")
-            _sm = result.get("summary", {})
-            _save_analysis_cache(db, ws, item.symbol, _sm, result.get("technical"), result.get("fundamental"), su)
-            _save_analysis_history(db, ws, item.symbol, _sm, result.get("technical"), result.get("fundamental"), su, sc,
-                                   latency_ms=_sm.get("latency_ms") if isinstance(_sm, dict) else None,
-                                   total_latency_ms=result.get("total_latency_ms"))
-            if isinstance(_sm, dict) and "error" not in _sm:
-                result["summary"] = {**_sm, "analyzed_at": datetime.utcnow().isoformat() + "Z", "from_cache": False}
-            results.append(result)
-            await asyncio.sleep(random.uniform(1.0, 2.0))
-        else:
-            tech_r, fund_r, news_r = await _fetch_agents(db, item.symbol, src)
-            results.append(_build_cached_result(item.symbol, cache, tech_r, fund_r, news_r))
-    return results
-
-
 # ─── Analyze All (60-min cache) ───────────────────────────────────────────────
 
 _ANALYZE_ALL_TTL = timedelta(hours=1)
@@ -1100,23 +1252,9 @@ def _is_stale_60m(cache: AnalysisCache | None) -> bool:
     return (datetime.utcnow() - cache.analyzed_at) > _ANALYZE_ALL_TTL
 
 
-async def _analyze_symbol_and_save(db: Session, ws: int, sym: str, s: dict, src: dict) -> dict:
-    result = await _run_full_analysis_async(db, sym, s["analyze_provider"], s["analyze_model"], src)
-    su = result.get("sources_used")
-    sc = result.get("scores")
-    _sm = result.get("summary", {})
-    _save_analysis_cache(db, ws, sym, _sm, result.get("technical"), result.get("fundamental"), su)
-    _save_analysis_history(db, ws, sym, _sm, result.get("technical"), result.get("fundamental"), su, sc,
-                           latency_ms=_sm.get("latency_ms") if isinstance(_sm, dict) else None,
-                           total_latency_ms=result.get("total_latency_ms"))
-    if isinstance(_sm, dict) and "error" not in _sm:
-        result["summary"] = {**_sm, "analyzed_at": datetime.utcnow().isoformat() + "Z", "from_cache": False}
-    return result
-
-
 @app.post("/portfolios/{portfolio_id}/analyze/all")
 async def analyze_portfolio_all(portfolio_id: int, db: Session = Depends(get_db)) -> dict:
-    """Analyze only stale holdings (> 60 min since last analysis). Returns summary counts."""
+    """Analyze only stale holdings (> 60 min). Runs up to 10 concurrently with timeout protection."""
     ws = _ws_id(db)
     p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
     if not p:
@@ -1130,28 +1268,30 @@ async def analyze_portfolio_all(portfolio_id: int, db: Session = Depends(get_db)
             AnalysisCache.symbol.in_(symbols),
         ).all()
     }
-    s = _get_ai_settings(db, ws)
+    s   = _get_ai_settings(db, ws)
     src = _get_analysis_sources(db, ws)
+
+    stale_syms   = [sym for sym in symbols if _is_stale_60m(cache_map.get(sym))]
+    skipped_syms = [sym for sym in symbols if not _is_stale_60m(cache_map.get(sym))]
+
     results: list[dict] = []
-    skipped_symbols: list[str] = []
-    for sym in symbols:
-        if _is_stale_60m(cache_map.get(sym)):
-            results.append(await _analyze_symbol_and_save(db, ws, sym, s, src))
-            await asyncio.sleep(random.uniform(1.0, 2.0))
-        else:
-            skipped_symbols.append(sym)
+    if stale_syms:
+        results = list(await asyncio.gather(
+            *[_analyze_one_concurrent(ws, sym, s, src) for sym in stale_syms]
+        ))
+
     return {
-        "total": len(symbols),
+        "total":    len(symbols),
         "analyzed": len(results),
-        "skipped": len(skipped_symbols),
-        "results": results,
-        "skipped_symbols": skipped_symbols,
+        "skipped":  len(skipped_syms),
+        "results":  results,
+        "skipped_symbols": skipped_syms,
     }
 
 
 @app.post("/watchlist/analyze/all")
 async def analyze_watchlist_60m(db: Session = Depends(get_db)) -> dict:
-    """Analyze only stale watchlist symbols (> 60 min since last analysis)."""
+    """Analyze only stale watchlist symbols (> 60 min). Runs up to 10 concurrently with timeout protection."""
     ws = _ws_id(db)
     items = db.query(Watchlist).filter(Watchlist.workspace_id == ws).order_by(Watchlist.symbol).all()
     symbols = [i.symbol for i in items]
@@ -1162,23 +1302,203 @@ async def analyze_watchlist_60m(db: Session = Depends(get_db)) -> dict:
             AnalysisCache.symbol.in_(symbols),
         ).all()
     }
-    s = _get_ai_settings(db, ws)
+    s   = _get_ai_settings(db, ws)
     src = _get_analysis_sources(db, ws)
+
+    stale_syms   = [sym for sym in symbols if _is_stale_60m(cache_map.get(sym))]
+    skipped_syms = [sym for sym in symbols if not _is_stale_60m(cache_map.get(sym))]
+
     results: list[dict] = []
-    skipped_symbols: list[str] = []
-    for sym in symbols:
-        if _is_stale_60m(cache_map.get(sym)):
-            results.append(await _analyze_symbol_and_save(db, ws, sym, s, src))
-            await asyncio.sleep(random.uniform(1.0, 2.0))
-        else:
-            skipped_symbols.append(sym)
+    if stale_syms:
+        results = list(await asyncio.gather(
+            *[_analyze_one_concurrent(ws, sym, s, src) for sym in stale_syms]
+        ))
+
     return {
-        "total": len(symbols),
+        "total":    len(symbols),
         "analyzed": len(results),
-        "skipped": len(skipped_symbols),
-        "results": results,
-        "skipped_symbols": skipped_symbols,
+        "skipped":  len(skipped_syms),
+        "results":  results,
+        "skipped_symbols": skipped_syms,
     }
+
+
+@app.post("/watchlist/analyze/all/stream")
+async def analyze_watchlist_stream(db: Session = Depends(get_db)) -> StreamingResponse:
+    """
+    Streaming version of watchlist analyze/all.
+    Emits newline-delimited JSON events as each stock completes:
+      {"type":"start",    "total":N, "stale":M, "skipped":K}
+      {"type":"progress", "done":k,  "total":M, "result":{...}}
+      {"type":"complete", "total":N, "analyzed":M, "skipped":K, "fallbacks":F}
+    """
+    ws = _ws_id(db)
+    items = db.query(Watchlist).filter(Watchlist.workspace_id == ws).order_by(Watchlist.symbol).all()
+    symbols = [i.symbol for i in items]
+    cache_map = {
+        c.symbol: c
+        for c in db.query(AnalysisCache).filter(
+            AnalysisCache.workspace_id == ws,
+            AnalysisCache.symbol.in_(symbols),
+        ).all()
+    }
+    s   = _get_ai_settings(db, ws)
+    src = _get_analysis_sources(db, ws)
+
+    stale_syms   = [sym for sym in symbols if _is_stale_60m(cache_map.get(sym))]
+    skipped_syms = [sym for sym in symbols if not _is_stale_60m(cache_map.get(sym))]
+
+    async def generate():
+        total_stale = len(stale_syms)
+        yield _ndjson({"type": "start", "total": len(symbols), "stale": total_stale, "skipped": len(skipped_syms)})
+
+        if total_stale == 0:
+            yield _ndjson({"type": "complete", "total": len(symbols), "analyzed": 0, "skipped": len(skipped_syms), "fallbacks": 0})
+            return
+
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def _work(sym: str) -> None:
+            result = await _analyze_one_concurrent(ws, sym, s, src)
+            await queue.put(result)
+
+        for sym in stale_syms:
+            asyncio.create_task(_work(sym))
+
+        done_count = 0
+        fallback_count = 0
+        for _ in range(total_stale):
+            result = await queue.get()
+            done_count += 1
+            if result.get("ai_fallback_used"):
+                fallback_count += 1
+            yield _ndjson({"type": "progress", "done": done_count, "total": total_stale, "result": result})
+
+        yield _ndjson({
+            "type":      "complete",
+            "total":     len(symbols),
+            "analyzed":  done_count,
+            "skipped":   len(skipped_syms),
+            "fallbacks": fallback_count,
+        })
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+
+# ─── Async Job-based Watchlist Analysis ───────────────────────────────────────
+
+@app.post("/analyze/watchlist", status_code=202)
+async def start_watchlist_job(background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> dict:
+    """
+    Enqueue a watchlist analysis job and return immediately with a job_id.
+    Client polls GET /analyze/jobs/{job_id} or streams GET /analyze/jobs/{job_id}/stream.
+    """
+    _cleanup_jobs()
+    ws = _ws_id(db)
+    items = db.query(Watchlist).filter(Watchlist.workspace_id == ws).order_by(Watchlist.symbol).all()
+    symbols = [i.symbol for i in items]
+    cache_map = {
+        c.symbol: c
+        for c in db.query(AnalysisCache).filter(
+            AnalysisCache.workspace_id == ws,
+            AnalysisCache.symbol.in_(symbols),
+        ).all()
+    }
+    s   = _get_ai_settings(db, ws)
+    src = _get_analysis_sources(db, ws)
+    stale_syms = [sym for sym in symbols if _is_stale_60m(cache_map.get(sym))]
+
+    job_id = str(_uuid.uuid4())
+    _JOBS[job_id] = {
+        "status":     "queued",
+        "total":      len(stale_syms),
+        "done":       0,
+        "fallbacks":  0,
+        "results":    [],
+        "skipped":    len(symbols) - len(stale_syms),
+        "created_at": datetime.utcnow(),
+    }
+    background_tasks.add_task(_run_analysis_job, job_id, ws, stale_syms, s, src)
+    _log.info("[job:%s] queued — %d stale, %d skipped", job_id, len(stale_syms), len(symbols) - len(stale_syms))
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "total":  len(symbols),
+        "stale":  len(stale_syms),
+    }
+
+
+@app.get("/analyze/jobs/{job_id}")
+async def get_job_status(job_id: str) -> dict:
+    """Poll the current state of an analysis job."""
+    job = _JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found or expired")
+    total = job["total"]
+    done  = job["done"]
+    return {
+        "job_id":       job_id,
+        "status":       job["status"],
+        "total":        total,
+        "done":         done,
+        "skipped":      job["skipped"],
+        "fallbacks":    job["fallbacks"],
+        "progress_pct": round(done / total * 100) if total > 0 else 100,
+        "results":      job["results"],
+    }
+
+
+@app.get("/analyze/jobs/{job_id}/stream")
+async def stream_job(job_id: str) -> StreamingResponse:
+    """
+    SSE stream for a running analysis job. Emits:
+      data: {"type":"start",    "total":N, "stale":N, "skipped":K}
+      data: {"type":"progress", "done":k,  "total":N, "symbol":"...", "signal":"...", "ai_fallback_used":bool}
+      data: {"type":"complete", "done":N,  "total":N, "skipped":K, "fallbacks":F}
+    """
+    job = _JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found or expired")
+
+    async def generate():
+        total   = job["total"]
+        skipped = job["skipped"]
+        yield f"data: {_json.dumps({'type': 'start', 'total': total, 'stale': total, 'skipped': skipped})}\n\n"
+
+        if total == 0:
+            yield f"data: {_json.dumps({'type': 'complete', 'done': 0, 'total': 0, 'skipped': skipped, 'fallbacks': 0})}\n\n"
+            return
+
+        idx = 0
+        while True:
+            results = job["results"]
+            while idx < len(results):
+                r = results[idx]
+                idx += 1
+                payload = {
+                    "type":            "progress",
+                    "done":            idx,
+                    "total":           total,
+                    "symbol":          r.get("symbol", ""),
+                    "signal":          (r.get("summary") or {}).get("signal", ""),
+                    "ai_fallback_used": r.get("ai_fallback_used", False),
+                }
+                yield f"data: {_json.dumps(payload)}\n\n"
+
+            if job["status"] in ("done", "failed"):
+                break
+            await asyncio.sleep(0.2)
+
+        complete = {
+            "type":      "complete",
+            "done":      job["done"],
+            "total":     total,
+            "skipped":   skipped,
+            "fallbacks": job["fallbacks"],
+        }
+        yield f"data: {_json.dumps(complete)}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 # ─── Analysis History ─────────────────────────────────────────────────────────
@@ -1487,9 +1807,12 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         layers["layer1"]["provider"] = body.provider
     if body.model:
         layers["layer1"]["model"] = body.model
+    fallback_cfg = _get_optimizer_fallback(db, ws)
     result = await asyncio.to_thread(
         run_layered_optimizer, portfolio_data, watchlist_data, portfolio.name,
         portfolio_count, max_reached, layers, max_stocks, max_sector_pct, sector_limits,
+        portfolio.cash_balance or 0.0,
+        fallback_cfg["provider"], fallback_cfg["model"],
     )
     result["portfolio_name"] = portfolio.name
     result["analyzed_at"] = datetime.utcnow().isoformat() + "Z"
@@ -1532,6 +1855,11 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         layer2_latency_ms=result.get("layer2_latency_ms"),
         layer3_latency_ms=result.get("layer3_latency_ms"),
         total_latency_ms=result.get("total_latency_ms"),
+        optimizer_status=result.get("status", "REBALANCE"),
+        rebalance_opportunity_score=result.get("rebalance_opportunity_score"),
+        no_action_reason=result.get("no_action_reason"),
+        no_action_summary=result.get("no_action_summary"),
+        blocked_opportunities_json=_json.dumps(result.get("blocked_opportunities", [])),
     )
     db.add(entry)
     db.commit()
@@ -1556,6 +1884,9 @@ async def list_optimizer_history(portfolio_id: int, db: Session = Depends(get_db
             "portfolio_name": r.portfolio_name,
             "analyzed_at": r.analyzed_at.isoformat() + "Z",
             "swap_count": r.swap_count,
+            "optimizer_status": r.optimizer_status or "REBALANCE",
+            "rebalance_opportunity_score": r.rebalance_opportunity_score,
+            "no_action_reason": r.no_action_reason,
         }
         for r in rows
     ]
@@ -1706,6 +2037,42 @@ async def update_optimizer_layer(body: OptimizerLayerUpdate, db: Session = Depen
     _upsert_setting(db, ws, "optimizer_layers", _json.dumps(layers))
     db.commit()
     return layers
+
+
+_DEFAULT_FALLBACK: dict = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+
+
+def _get_optimizer_fallback(db: Session, ws: int) -> dict:
+    row = db.query(Settings).filter(
+        Settings.workspace_id == ws,
+        Settings.key == "optimizer_fallback",
+    ).first()
+    if not row:
+        return dict(_DEFAULT_FALLBACK)
+    try:
+        saved = _json.loads(row.value)
+        return {k: saved.get(k, v) for k, v in _DEFAULT_FALLBACK.items()}
+    except Exception:
+        return dict(_DEFAULT_FALLBACK)
+
+
+@app.get("/settings/optimizer-fallback")
+async def get_optimizer_fallback(db: Session = Depends(get_db)) -> dict:
+    return _get_optimizer_fallback(db, _ws_id(db))
+
+
+class OptimizerFallbackBody(BaseModel):
+    provider: str
+    model: str
+
+
+@app.patch("/settings/optimizer-fallback")
+async def update_optimizer_fallback(body: OptimizerFallbackBody, db: Session = Depends(get_db)) -> dict:
+    ws = _ws_id(db)
+    updated = {"provider": body.provider, "model": body.model}
+    _upsert_setting(db, ws, "optimizer_fallback", _json.dumps(updated))
+    db.commit()
+    return updated
 
 
 @app.get("/ai-models")
@@ -2213,6 +2580,15 @@ class TransactionInitialCashBody(BaseModel):
     notes: str | None = None
 
 
+class TransactionDividendBody(BaseModel):
+    symbol: str | None = None
+    amount: float
+    currency: str = "THB"
+    exchange_rate: float = 1.0
+    transaction_date: str | None = None
+    notes: str | None = None
+
+
 def _parse_tx_date(raw: str | None) -> datetime | None:
     if not raw:
         return None
@@ -2466,6 +2842,37 @@ async def transaction_initial_cash(
             portfolio_id=portfolio_id,
             amount=body.amount,
             currency=body.currency,
+            transaction_date=tx_date,
+            notes=body.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/portfolios/{portfolio_id}/transactions/dividend", status_code=201)
+async def transaction_dividend(
+    portfolio_id: int,
+    body: TransactionDividendBody,
+    db: Session = Depends(get_db),
+) -> dict:
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    if body.amount <= 0:
+        raise HTTPException(status_code=422, detail="amount must be positive")
+
+    symbol = _resolve_symbol(body.symbol) if body.symbol else None
+    tx_date = _parse_tx_date(body.transaction_date)
+    try:
+        return execute_dividend(
+            db=db,
+            ws_id=ws,
+            portfolio_id=portfolio_id,
+            symbol=symbol,
+            amount=body.amount,
+            currency=body.currency,
+            exchange_rate=body.exchange_rate,
             transaction_date=tx_date,
             notes=body.notes,
         )
