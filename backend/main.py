@@ -44,6 +44,14 @@ from services.portfolio_transactions import (
 )
 from services.portfolio_snapshots import generate_daily_snapshot
 from services.snapshot_scheduler import setup_scheduler, shutdown_scheduler
+from services.analytics.quant_engine import (
+    build_portfolio_metrics, build_benchmark_metrics,
+    build_signal_metrics, build_allocation_metrics,
+    build_equity_curve, build_rolling_returns, build_sector_evolution,
+    get_cached as _analytics_get_cached,
+    set_cached as _analytics_set_cached,
+    invalidate_cache as _analytics_invalidate,
+)
 from auth import router as auth_router, verify_token
 from routers.scheduler import router as scheduler_router
 
@@ -2758,6 +2766,7 @@ async def transaction_buy(
         notes=body.notes,
         sector=sector,
     )
+    _analytics_invalidate(portfolio_id)
     return result
 
 
@@ -2802,6 +2811,7 @@ async def transaction_sell(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    _analytics_invalidate(portfolio_id)
     return result
 
 
@@ -3027,7 +3037,7 @@ async def snapshot_generate(
     """
     ws = _ws_id(db)
     try:
-        return await generate_daily_snapshot(
+        result = await generate_daily_snapshot(
             db=db,
             portfolio_id=body.portfolio_id,
             workspace_id=ws,
@@ -3035,6 +3045,8 @@ async def snapshot_generate(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    _analytics_invalidate(body.portfolio_id)
+    return result
 
 
 @app.get("/portfolios/{portfolio_id}/snapshots")
@@ -3362,3 +3374,118 @@ async def admin_cache_purge(
     deleted = q.delete(synchronize_session=False)
     db.commit()
     return {"deleted": deleted, "symbol": symbol, "cache_type": cache_type, "expired_only": expired_only}
+
+
+# ─── Phase 3A — Core Historical Analytics ────────────────────────────────────
+
+@app.get("/analytics/performance-stats")
+async def get_performance_stats(
+    portfolio_id: int,
+    benchmark: str = "^SET.BK,QQQ",
+    include_equity_curve: bool = True,
+    include_rolling_returns: bool = False,
+    include_sector_evolution: bool = True,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Comprehensive portfolio analytics: return metrics, benchmark comparison,
+    signal analytics, and allocation analytics.
+
+    Query params:
+        portfolio_id            — required; target portfolio
+        benchmark               — comma-separated benchmark symbols (default: "^SET.BK,QQQ")
+        include_equity_curve    — daily equity curve with drawdown (default: true)
+        include_rolling_returns — 30-day rolling returns series (default: false)
+        include_sector_evolution — sector allocation over time (default: true)
+
+    Response shape:
+        {
+          portfolio_id, portfolio_name, generated_at,
+          portfolio_metrics:  { cumulative_return_pct, annualized_return_pct,
+                                volatility_pct, sharpe_ratio, max_drawdown,
+                                monthly_win_rate, snapshot_count, date_range },
+          benchmark_metrics:  { benchmarks: [{symbol, alpha, beta, r_squared,
+                                              correlation, tracking_error_pct,
+                                              information_ratio, aligned_days}] },
+          signal_metrics:     { buy_win_rate, sell_accuracy,
+                                average_holding_return, signal_decay,
+                                total_signals, signals_by_action },
+          allocation_metrics: { sector_contribution, top_contributors,
+                                cash_utilization, concentration_risk },
+          equity_curve?:      [{date, total_value, cumulative_return_pct,
+                                drawdown_pct, daily_return_pct}],
+          rolling_returns?:   [{date, rolling_return_pct, window_days}],
+          sector_evolution?:  [{date, sector: weight_pct, ...}],
+        }
+    """
+    ws = _ws_id(db)
+
+    portfolio = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id,
+        Portfolio.workspace_id == ws,
+    ).first()
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    # ── Cache check ────────────────────────────────────────────────────────────
+    cached = _analytics_get_cached(portfolio_id, "full")
+    if cached:
+        return cached
+
+    # ── Load snapshots (oldest first) ─────────────────────────────────────────
+    snapshots = (
+        db.query(PortfolioSnapshot)
+        .filter(
+            PortfolioSnapshot.portfolio_id == portfolio_id,
+            PortfolioSnapshot.workspace_id == ws,
+        )
+        .order_by(PortfolioSnapshot.snapshot_date.asc())
+        .all()
+    )
+
+    # ── Load benchmark prices aligned to snapshot date range ──────────────────
+    benchmark_prices: dict[str, dict[str, float]] = {}
+    if snapshots:
+        bench_symbols = [s.strip() for s in benchmark.split(",") if s.strip()]
+        from_date = snapshots[0].snapshot_date
+        for sym in bench_symbols:
+            rows = (
+                db.query(BenchmarkPrice)
+                .filter(
+                    BenchmarkPrice.symbol == sym,
+                    BenchmarkPrice.price_date >= from_date,
+                )
+                .order_by(BenchmarkPrice.price_date.asc())
+                .all()
+            )
+            if rows:
+                benchmark_prices[sym] = {r.price_date: r.close_price for r in rows}
+
+    # ── Load signal history for this workspace ────────────────────────────────
+    signals = (
+        db.query(SignalHistory)
+        .filter(SignalHistory.workspace_id == ws)
+        .order_by(SignalHistory.recorded_at.asc())
+        .all()
+    )
+
+    # ── Compute all metrics ───────────────────────────────────────────────────
+    result: dict = {
+        "portfolio_id": portfolio_id,
+        "portfolio_name": portfolio.name,
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "portfolio_metrics": build_portfolio_metrics(snapshots),
+        "benchmark_metrics": build_benchmark_metrics(snapshots, benchmark_prices),
+        "signal_metrics": build_signal_metrics(signals, snapshots),
+        "allocation_metrics": build_allocation_metrics(snapshots),
+    }
+
+    # ── Optional chart-data blobs ─────────────────────────────────────────────
+    if include_equity_curve:
+        result["equity_curve"] = build_equity_curve(snapshots)
+    if include_rolling_returns:
+        result["rolling_returns"] = build_rolling_returns(snapshots, window=30)
+    if include_sector_evolution:
+        result["sector_evolution"] = build_sector_evolution(snapshots)
+
+    _analytics_set_cached(portfolio_id, "full", result)
+    return result

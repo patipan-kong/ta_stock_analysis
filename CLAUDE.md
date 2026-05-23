@@ -346,7 +346,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 ---
 
 ## CURRENT ARCHITECTURE STATE
-_Last updated: 2026-05-22. Update this section at the start of each new session._
+_Last updated: 2026-05-23. Update this section at the start of each new session._
 
 ### Watchlist Analysis Pipeline — Optimized (as-built)
 
@@ -394,50 +394,62 @@ The optimizer has been refactored from a "swap engine" into a **3-layer Capital 
 
 ### Consensus Strength Matrix ✅ SHIPPED 2026-05-22
 
-The binary `agrees: bool` consensus has been replaced with a **7-type Consensus Strength Matrix** implemented in `_consensus_engine(l1, l2, l3)` (`agents/optimizer.py`).
+Replaces the old binary `agrees: bool` with a **7-type Consensus Strength Matrix** computed in pure Python by `_consensus_engine(l1, l2, l3)` in `agents/optimizer.py` — no extra AI call.
 
-**The 7 Consensus Types:**
+#### How the scores are computed first
 
-| Type | Trigger | UI Color |
+Three intermediate scores feed the type classification:
+
+| Score | Range | How it's calculated |
 |---|---|---|
-| `STRONG_CONSENSUS` | stratAlign ≥ 70 + riskAlign ≥ 65 | Green |
-| `REFINED_CONSENSUS` | L2 agrees + stratAlign ≥ 50 | Blue |
-| `PARTIAL_CONSENSUS` | stratAlign ≥ 35 | Amber |
-| `WEAK_CONSENSUS` | stratAlign < 35 | Gray |
-| `RISK_CONFLICT` | CRITICAL flags OR (high risk + ≥2 HIGH flags) | Orange/Red |
-| `STRATEGIC_CONFLICT` | L2 disagrees + stratAlign < 40 | Red |
-| `NO_ACTION_CONSENSUS` | L2 status=NO_ACTION + score < 40 + no critical risk | Teal |
+| `strategist_alignment_score` | 0–100 | Base 80 (L2 agrees) or 30 (disagrees) − 12 per disagreement + ±10 Jaccard overlap of buy/sell symbols |
+| `risk_alignment_score` | 0–100 | 92 → clean; 55–30 → HIGH flags present; 12 → CRITICAL flag |
+| `consensus_strength_score` | 0–100 | 65% × strategist + 35% × risk |
 
-**Alignment scoring:**
-- `strategist_alignment_score` (0–100): base (80 if agrees, 30 if not) − disagreement penalty (12× count) + overlap bonus (±10 from buy/sell symbol Jaccard)
-- `risk_alignment_score` (0–100): 92 (no flags) → 55–30 (HIGH) → 12 (CRITICAL)
-- `consensus_strength_score` (0–100): weighted composite (65% strategist + 35% risk)
+#### The 7 types — evaluated top to bottom, first match wins
 
-**New output fields in consensus dict:**
+| # | Type | What it means | Trigger condition | UI color |
+|---|---|---|---|---|
+| 1 | `RISK_CONFLICT` | L3 found a serious concentration risk — act with caution | CRITICAL risk flag OR (final_risk=HIGH + ≥2 HIGH flags) | Orange/Red |
+| 2 | `STRATEGIC_CONFLICT` | L1 and L2 fundamentally disagree on what to do | L2 disagrees **and** stratAlign < 40 | Red |
+| 3 | `NO_ACTION_CONSENSUS` | All three layers agree: portfolio is fine, no trade needed | L2 status=NO\_ACTION **and** score < 40 **and** no critical risk | Teal |
+| 4 | `STRONG_CONSENSUS` | All layers aligned — high confidence signal | stratAlign ≥ 70 **and** riskAlign ≥ 65 | Green |
+| 5 | `REFINED_CONSENSUS` | L2 agrees with L1 but adds nuance/refinement | L2 agrees **and** stratAlign ≥ 50 | Blue |
+| 6 | `PARTIAL_CONSENSUS` | Moderate agreement — consider the recommendations but stay alert | stratAlign ≥ 35 | Amber |
+| 7 | `WEAK_CONSENSUS` | Layers diverge — treat output as exploratory only | stratAlign < 35 (fallback) | Gray |
+
+> Risk conflicts (1) and strategic conflicts (2) are checked before positive consensus types so dangerous signals are never buried under a "STRONG" label.
+
+#### Output fields added to the consensus dict
+
 ```python
 {
-    "consensus_type":             "STRONG_CONSENSUS|REFINED_CONSENSUS|…",
-    "consensus_strength_score":   0-100,
-    "strategist_alignment_score": 0-100,
-    "risk_alignment_score":       0-100,
-    "disagreement_reasons":       ["…"],   # forwarded from L2
-    "refinement_summary":         "…",     # human-readable explainability sentence
-    # Legacy fields preserved:
-    "agrees": bool, "consensus_decision": "REBALANCE|NO_ACTION|REVIEW",
-    "confidence": "high|medium|low", "recommended": "layer1|layer2|neither|no_action|fallback",
-    "final_risk_level": "low|medium|high", "risk_flag_count": int, "recommended_action": str,
+    # New fields
+    "consensus_type":             "STRONG_CONSENSUS|REFINED_CONSENSUS|PARTIAL_CONSENSUS|"
+                                  "WEAK_CONSENSUS|RISK_CONFLICT|STRATEGIC_CONFLICT|NO_ACTION_CONSENSUS",
+    "consensus_strength_score":   0-100,          # overall confidence gauge
+    "strategist_alignment_score": 0-100,          # L1 vs L2 plan agreement
+    "risk_alignment_score":       0-100,          # L3 risk severity
+    "disagreement_reasons":       ["…"],          # forwarded from L2.disagreements
+    "refinement_summary":         "…",            # one human-readable explainability sentence
+
+    # Legacy fields — preserved for backward compatibility
+    "agrees": bool,
+    "consensus_decision": "REBALANCE|NO_ACTION|REVIEW",
+    "confidence": "high|medium|low",
+    "recommended": "layer1|layer2|neither|no_action|fallback",
+    "final_risk_level": "low|medium|high",
+    "risk_flag_count": int,
+    "recommended_action": str,
 }
 ```
 
-**Backward compatibility:** old history rows without `consensus_type` are detected in `ConsensusSection` (`optimizer/page.tsx`) and fall back to the legacy 4-cell agree/disagree grid — no data migration needed.
+**Backward compatibility:** `ConsensusSection` in `optimizer/page.tsx` detects missing `consensus_type` and renders the old 4-cell agree/disagree grid for historical rows — no data migration needed.
 
-**Frontend `ConsensusSection` (as-built):**
-- New path: colored type badge + `consensus_strength_score` gauge + two alignment sub-bars (`strategist_alignment_score`, `risk_alignment_score`) + tinted `refinement_summary` block + `disagreement_reasons` list + stats grid + recommended action footer
-- Legacy path: old 4-cell grid (agree/disagree, risk, confidence, decision) — triggered when `consensus.consensus_type` is absent
+**Frontend `ConsensusSection` (new path):**
+colored type badge → `consensus_strength_score` gauge → `strategist_alignment_score` + `risk_alignment_score` sub-bars → tinted `refinement_summary` → `disagreement_reasons` list → stats grid → recommended action footer.
 
-**TypeScript types** (`frontend/lib/api.ts`):
-- `ConsensusType` union type exported
-- `OptimizerConsensus` extended with 6 new optional fields; all legacy fields preserved
+**TypeScript (`frontend/lib/api.ts`):** `ConsensusType` union exported; `OptimizerConsensus` extended with 6 new optional fields.
 
 ### Signal History Pipeline ✅ SHIPPED 2026-05-22
 

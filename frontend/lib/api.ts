@@ -1155,3 +1155,195 @@ export const benchmarkBackfill = (
     `/admin/benchmark-backfill?from_date=${fromDate}&symbols=${encodeURIComponent(symbols)}`,
     { method: "POST" },
   );
+
+// ─── Analytics / Performance Stats ───────────────────────────────────────────
+
+export interface MaxDrawdown {
+  max_drawdown_pct: number;
+  peak_date: string | null;
+  trough_date: string | null;
+  recovery_date: string | null;
+  duration_days: number | null;
+}
+
+export interface MonthlyReturn {
+  month: string;       // "2026-05"
+  return_pct: number;
+}
+
+export interface MonthlyWinRate {
+  win_rate: number;
+  wins: number;
+  losses: number;
+  total_months: number;
+  monthly_returns: MonthlyReturn[];
+}
+
+export interface PortfolioAnalyticsMetrics {
+  cumulative_return_pct: number;
+  annualized_return_pct: number;
+  volatility_pct: number;
+  sharpe_ratio: number;
+  max_drawdown: MaxDrawdown;
+  monthly_win_rate: MonthlyWinRate;
+  snapshot_count: number;
+  date_range: { from: string; to: string };
+}
+
+export type BenchmarkDataQuality = "INSUFFICIENT" | "LOW" | "MODERATE" | "GOOD";
+export type BenchmarkStatisticalConfidence = "UNRELIABLE" | "LOW" | "MODERATE" | "HIGH";
+
+export interface BenchmarkStat {
+  symbol: string;
+  alpha: number | null;
+  beta: number | null;
+  r_squared: number | null;
+  correlation: number | null;
+  tracking_error_pct: number | null;
+  information_ratio: number | null;
+  aligned_days: number;
+  // Data quality fields (present for aligned_days >= 5)
+  data_quality?: BenchmarkDataQuality;
+  statistical_confidence?: BenchmarkStatisticalConfidence;
+  sample_size?: number;
+  warnings?: string[];
+}
+
+export interface BenchmarkAnalyticsMetrics {
+  benchmarks: BenchmarkStat[];
+}
+
+export interface SignalWinRate {
+  win_rate: number;
+  wins: number;
+  losses: number;
+  total: number;
+  n_days: number;
+  details?: Array<{ symbol: string; signal_date: string; action: string; return_pct: number | null; win: boolean }>;
+}
+
+export interface SignalAccuracy {
+  accuracy: number;
+  accurate: number;
+  inaccurate: number;
+  total: number;
+  n_days: number;
+}
+
+export interface HoldingReturn {
+  avg_return_pct: number;
+  median_return_pct: number;
+  std_return_pct: number;
+  sample_size: number;
+}
+
+export interface DecayBucket {
+  days: number;
+  avg_return_pct: number;
+  sample_size: number;
+}
+
+export interface SignalDecay {
+  buckets: DecayBucket[];
+  by_action: Record<string, Record<string, { avg_return_pct: number; sample_size: number }>>;
+}
+
+export interface SignalAnalyticsMetrics {
+  buy_win_rate: SignalWinRate;
+  sell_accuracy: SignalAccuracy;
+  average_holding_return: HoldingReturn;
+  signal_decay: SignalDecay;
+  total_signals: number;
+  signals_by_action: Record<string, number>;
+}
+
+export interface SectorContributionItem {
+  sector: string;
+  avg_weight_pct: number;
+  contribution_pct: number;
+}
+
+export interface ContributorItem {
+  symbol: string;
+  unrealized_pnl_pct: number;
+  unrealized_pnl: number;
+  market_value: number;
+  sector: string;
+}
+
+export interface TopContributorsResult {
+  top_contributors: ContributorItem[];
+  worst_contributors: ContributorItem[];
+  snapshot_date: string;
+}
+
+export interface CashUtilization {
+  avg_cash_pct: number;
+  min_cash_pct: number;
+  max_cash_pct: number;
+  current_cash_pct: number;
+}
+
+export interface ConcentrationRisk {
+  hhi: number;
+  hhi_label: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  top_holding_weight_pct: number;
+}
+
+export interface AllocationAnalyticsMetrics {
+  sector_contribution: SectorContributionItem[];
+  top_contributors: TopContributorsResult;
+  cash_utilization: CashUtilization;
+  concentration_risk: ConcentrationRisk;
+}
+
+export interface EquityCurvePoint {
+  date: string;
+  total_value: number;
+  cumulative_return_pct: number;
+  drawdown_pct: number;
+  daily_return_pct: number | null;
+}
+
+export interface SectorEvolutionPoint {
+  date: string;
+  [sector: string]: number | string;
+}
+
+export interface PerformanceStatsResult {
+  portfolio_id: number;
+  portfolio_name: string;
+  generated_at: string;
+  portfolio_metrics: PortfolioAnalyticsMetrics;
+  benchmark_metrics: BenchmarkAnalyticsMetrics;
+  signal_metrics: SignalAnalyticsMetrics;
+  allocation_metrics: AllocationAnalyticsMetrics;
+  equity_curve?: EquityCurvePoint[];
+  rolling_returns?: Array<{ date: string; rolling_return_pct: number }>;
+  sector_evolution?: SectorEvolutionPoint[];
+}
+
+export const getPerformanceStats = (
+  portfolioId: number,
+  options: {
+    benchmark?: string;
+    includeEquityCurve?: boolean;
+    includeRollingReturns?: boolean;
+    includeSectorEvolution?: boolean;
+  } = {},
+) => {
+  const {
+    benchmark = "^SET.BK,QQQ",
+    includeEquityCurve = true,
+    includeRollingReturns = false,
+    includeSectorEvolution = true,
+  } = options;
+  const params = new URLSearchParams({
+    portfolio_id: String(portfolioId),
+    benchmark,
+    include_equity_curve: String(includeEquityCurve),
+    include_rolling_returns: String(includeRollingReturns),
+    include_sector_evolution: String(includeSectorEvolution),
+  });
+  return apiFetch<PerformanceStatsResult>(`/analytics/performance-stats?${params}`);
+};

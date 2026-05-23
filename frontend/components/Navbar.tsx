@@ -10,6 +10,7 @@ const NAV_MAIN = [
   { label: "Dashboard",   href: "/" },
   { label: "Portfolio",   href: "/portfolio" },
   { label: "Performance", href: "/performance" },
+  { label: "Analytics",   href: "/analytics" },
   { label: "Watchlist",   href: "/watchlist" },
   { label: "Optimizer",   href: "/optimizer" },
   { label: "📚 Guide",    href: "/system-guide" },

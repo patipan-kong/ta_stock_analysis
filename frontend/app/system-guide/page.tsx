@@ -278,20 +278,109 @@ function OptimizerTab() {
 
       <div className="bg-green-50 border border-green-200 rounded-lg p-6 shadow">
         <h3 className="text-2xl font-bold mb-2 text-green-700">
-          Consensus Matrix
+          Consensus Strength Matrix
         </h3>
-        <p className="text-gray-700 mb-4">
-          A pure-Python engine scores alignment and risk to classify outcomes into seven types:
+        <p className="text-gray-700 mb-2">
+          A pure-Python engine (no AI call) computes three scores, then classifies the run into
+          one of seven types evaluated top-to-bottom — <strong>first match wins</strong>.
         </p>
-        <div className="grid md:grid-cols-2 gap-3 text-sm text-gray-700">
-          <div className="bg-white border border-green-200 rounded p-3">STRONG_CONSENSUS</div>
-          <div className="bg-white border border-green-200 rounded p-3">REFINED_CONSENSUS</div>
-          <div className="bg-white border border-green-200 rounded p-3">PARTIAL_CONSENSUS</div>
-          <div className="bg-white border border-green-200 rounded p-3">WEAK_CONSENSUS</div>
-          <div className="bg-white border border-green-200 rounded p-3">RISK_CONFLICT</div>
-          <div className="bg-white border border-green-200 rounded p-3">STRATEGIC_CONFLICT</div>
-          <div className="bg-white border border-green-200 rounded p-3 md:col-span-2">NO_ACTION_CONSENSUS</div>
+
+        {/* Score inputs */}
+        <div className="grid md:grid-cols-3 gap-3 mb-5 text-sm">
+          <div className="bg-white border border-green-200 rounded p-3">
+            <p className="font-semibold text-gray-800 mb-1">Strategist Alignment (0–100)</p>
+            <p className="text-gray-600">Base 80 (L2 agrees) or 30 (disagrees) − 12 per disagreement ± Jaccard symbol overlap bonus</p>
+          </div>
+          <div className="bg-white border border-green-200 rounded p-3">
+            <p className="font-semibold text-gray-800 mb-1">Risk Alignment (0–100)</p>
+            <p className="text-gray-600">92 clean → 55–30 HIGH flags → 12 CRITICAL flag</p>
+          </div>
+          <div className="bg-white border border-green-200 rounded p-3">
+            <p className="font-semibold text-gray-800 mb-1">Strength Score (0–100)</p>
+            <p className="text-gray-600">65% × Strategist + 35% × Risk — the main confidence gauge shown in the UI</p>
+          </div>
         </div>
+
+        {/* Type table */}
+        <div className="space-y-2 text-sm">
+          {[
+            {
+              priority: "1",
+              type: "RISK_CONFLICT",
+              meaning: "L3 found a serious concentration risk — act with caution",
+              trigger: "CRITICAL flag OR (risk=HIGH + ≥2 HIGH flags)",
+              color: "bg-orange-100 border-orange-400 text-orange-900",
+              dot: "bg-orange-500",
+            },
+            {
+              priority: "2",
+              type: "STRATEGIC_CONFLICT",
+              meaning: "L1 and L2 fundamentally disagree on what to do",
+              trigger: "L2 disagrees AND stratAlign < 40",
+              color: "bg-red-100 border-red-400 text-red-900",
+              dot: "bg-red-500",
+            },
+            {
+              priority: "3",
+              type: "NO_ACTION_CONSENSUS",
+              meaning: "All three layers agree: portfolio is fine, no trade needed",
+              trigger: "L2 status = NO_ACTION AND score < 40 AND no critical risk",
+              color: "bg-teal-100 border-teal-400 text-teal-900",
+              dot: "bg-teal-500",
+            },
+            {
+              priority: "4",
+              type: "STRONG_CONSENSUS",
+              meaning: "All layers aligned — high confidence signal",
+              trigger: "stratAlign ≥ 70 AND riskAlign ≥ 65",
+              color: "bg-green-100 border-green-400 text-green-900",
+              dot: "bg-green-500",
+            },
+            {
+              priority: "5",
+              type: "REFINED_CONSENSUS",
+              meaning: "L2 agrees with L1 but adds nuance or refinement",
+              trigger: "L2 agrees AND stratAlign ≥ 50",
+              color: "bg-blue-100 border-blue-400 text-blue-900",
+              dot: "bg-blue-500",
+            },
+            {
+              priority: "6",
+              type: "PARTIAL_CONSENSUS",
+              meaning: "Moderate agreement — consider recommendations but stay alert",
+              trigger: "stratAlign ≥ 35",
+              color: "bg-amber-100 border-amber-400 text-amber-900",
+              dot: "bg-amber-500",
+            },
+            {
+              priority: "7",
+              type: "WEAK_CONSENSUS",
+              meaning: "Layers diverge — treat output as exploratory only",
+              trigger: "stratAlign < 35 (fallback)",
+              color: "bg-gray-100 border-gray-400 text-gray-700",
+              dot: "bg-gray-400",
+            },
+          ].map((row) => (
+            <div
+              key={row.type}
+              className={`${row.color} border rounded-lg p-3 flex items-start gap-3`}
+            >
+              <span className="font-mono font-bold text-lg w-5 shrink-0 mt-0.5">{row.priority}</span>
+              <span className={`w-3 h-3 rounded-full mt-1.5 shrink-0 ${row.dot}`} />
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-wrap items-baseline gap-2 mb-0.5">
+                  <span className="font-bold font-mono">{row.type}</span>
+                  <span className="text-xs opacity-75">{row.meaning}</span>
+                </div>
+                <p className="text-xs opacity-70"><strong>Trigger:</strong> {row.trigger}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <p className="text-xs text-gray-500 mt-3">
+          Risk and strategic conflicts are checked first so dangerous signals are never buried under a positive consensus label.
+        </p>
       </div>
 
       <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
