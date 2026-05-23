@@ -1074,6 +1074,87 @@ export const getModelCostReport = (year?: number, month?: number) => {
   return apiFetch<ModelCostReport>(`/usage/model-cost-report${qs ? `?${qs}` : ""}`);
 };
 
+// ─── Factor Exposure Analytics ────────────────────────────────────────────────
+
+export interface FactorDetail {
+  score: number | null;
+  label: string;
+  description: string;
+}
+
+export interface StyleClassification {
+  primary: string;
+  secondary: string | null;
+  confidence: "high" | "medium" | "low";
+  dominant_factors: string[];
+  rationale: string;
+}
+
+export interface PerStockFactorScore {
+  symbol: string;
+  sector: string | null;
+  weight: number;
+  scores: {
+    growth: number | null;
+    value: number | null;
+    dividend: number | null;
+    momentum: number | null;
+    quality: number | null;
+  };
+  data_coverage: number;
+}
+
+export interface RawMetricsSummary {
+  avg_pe: number | null;
+  avg_price_to_book: number | null;
+  avg_revenue_growth: number | null;
+  avg_earnings_growth: number | null;
+  avg_roe: number | null;
+  avg_net_margin: number | null;
+  avg_debt_equity: number | null;
+  avg_dividend_yield: number | null;
+  avg_return_30d: number | null;
+}
+
+export interface FactorSectorConcentration {
+  sector_weights: Record<string, number>;
+  top_sector: string | null;
+  top_sector_weight: number | null;
+  diversification_score: number | null;
+  hhi: number | null;
+  hhi_label: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" | null;
+  concentration_flags: string[];
+}
+
+export interface FactorExposureMetadata {
+  universe_size: number;
+  data_quality_flags: string[];
+  normalization_method: string;
+  computed_at: string;
+}
+
+export interface FactorExposureResult {
+  portfolio_id: number;
+  portfolio_name: string;
+  generated_at: string;
+  factor_exposures: {
+    growth: FactorDetail;
+    value: FactorDetail;
+    dividend: FactorDetail;
+    momentum: FactorDetail;
+    quality: FactorDetail;
+  };
+  style_classification: StyleClassification;
+  per_stock_scores: PerStockFactorScore[];
+  raw_metrics_summary: RawMetricsSummary;
+  sector_concentration: FactorSectorConcentration;
+  metadata: FactorExposureMetadata;
+  error?: string;
+}
+
+export const getFactorExposure = (portfolioId: number) =>
+  apiFetch<FactorExposureResult>(`/analytics/factor-exposure?portfolio_id=${portfolioId}`);
+
 // ─── Portfolio Snapshots ──────────────────────────────────────────────────────
 
 export interface SnapshotHolding {

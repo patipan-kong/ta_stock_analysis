@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import PortfolioTable from "@/components/PortfolioTable";
 import PortfolioSummary from "@/components/PortfolioSummary";
 import { usePortfolio } from "@/lib/PortfolioContext";
@@ -393,7 +394,17 @@ export default function PortfolioPage() {
 
       {/* ── Header + action buttons ── */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold">Portfolio</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-bold">Portfolio</h1>
+          {activeId != null && (
+            <Link
+              href={`/portfolio/${activeId}/factors`}
+              className="flex items-center gap-1.5 text-xs font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg px-3 py-1.5 transition-colors"
+            >
+              <span>◈</span> DNA Analysis
+            </Link>
+          )}
+        </div>
         <div className="flex items-center gap-3 flex-wrap">
           {hasData && activeId != null && (
             <AnalyzeAllButton

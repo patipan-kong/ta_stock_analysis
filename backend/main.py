@@ -3489,3 +3489,68 @@ async def get_performance_stats(
 
     _analytics_set_cached(portfolio_id, "full", result)
     return result
+
+
+# ─── Factor Exposure Analysis ─────────────────────────────────────────────────
+
+@app.get("/analytics/factor-exposure")
+async def get_factor_exposure(
+    portfolio_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Institutional-grade factor exposure analysis for a portfolio.
+
+    Computes 5 weighted factor exposures using percentile-rank normalization
+    within the current portfolio universe.  Cross-market bias between Thai SET
+    and US stocks is eliminated because all ranking is relative.
+
+    Query params:
+        portfolio_id — required; must belong to the authenticated workspace
+
+    Response shape:
+        {
+          portfolio_id, portfolio_name, generated_at,
+          factor_exposures: {
+            growth:   {score, label, description},
+            value:    {score, label, description},
+            dividend: {score, label, description},
+            momentum: {score, label, description},
+            quality:  {score, label, description},
+          },
+          style_classification: {
+            primary, secondary, confidence, dominant_factors, rationale
+          },
+          per_stock_scores: [
+            {symbol, sector, weight, scores: {growth,value,dividend,momentum,quality},
+             data_coverage}
+          ],
+          raw_metrics_summary: {avg_pe, avg_roe, avg_revenue_growth, ...},
+          sector_concentration: {
+            sector_weights, top_sector, top_sector_weight,
+            diversification_score, hhi, hhi_label, concentration_flags
+          },
+          metadata: {universe_size, data_quality_flags, normalization_method, computed_at},
+        }
+
+    Result is cached for 15 minutes; invalidated automatically when holdings change.
+    """
+    from services.analytics.factor_engine import compute_portfolio_factor_exposure
+
+    ws = _ws_id(db)
+
+    # Verify portfolio ownership before computing
+    portfolio = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id,
+        Portfolio.workspace_id == ws,
+    ).first()
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    result = await asyncio.to_thread(
+        compute_portfolio_factor_exposure, db, portfolio_id, ws
+    )
+
+    if result.get("error") == "portfolio_not_found":
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    return result
