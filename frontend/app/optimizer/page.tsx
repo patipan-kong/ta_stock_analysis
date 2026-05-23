@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import {
   runOptimizer, listOptimizerHistory, getOptimizerHistory,
+  listStrategyProfiles, getPortfolioPersona, updatePortfolioPersona,
 } from "@/lib/api";
 import SignalBadge from "@/components/SignalBadge";
 import AIBadge from "@/components/AIBadge";
@@ -12,9 +13,241 @@ import type {
   OptimizerResult, OptimizerHistoryItem, TargetAllocation, AllocationAction,
   WatchlistRanking, Layer2Result, Layer3Result, OptimizerConsensus, RiskFlag, SectorWarning,
   BlockedOpportunity, NoActionReason, SwapSuggestion, ConsensusType,
+  StrategyPersona, StrategyProfile, PortfolioDNA, DriftSeverity,
 } from "@/lib/api";
 
 const TZ = "Asia/Bangkok";
+
+// ─── Persona config ───────────────────────────────────────────────────────────
+
+const PERSONA_CFG: Record<StrategyPersona, { icon: string; color: string; badge: string }> = {
+  BALANCED:  { icon: "⚖",  color: "text-blue-700",   badge: "bg-blue-50 border-blue-300 text-blue-800" },
+  GROWTH:    { icon: "🚀", color: "text-green-700",  badge: "bg-green-50 border-green-300 text-green-800" },
+  VALUE:     { icon: "💎", color: "text-purple-700", badge: "bg-purple-50 border-purple-300 text-purple-800" },
+  DIVIDEND:  { icon: "💰", color: "text-amber-700",  badge: "bg-amber-50 border-amber-300 text-amber-800" },
+  MOMENTUM:  { icon: "⚡", color: "text-orange-700", badge: "bg-orange-50 border-orange-300 text-orange-800" },
+  PASSIVE:   { icon: "🌿", color: "text-teal-700",   badge: "bg-teal-50 border-teal-300 text-teal-800" },
+};
+
+const DRIFT_CFG: Record<DriftSeverity, { bar: string; text: string; bg: string }> = {
+  LOW:      { bar: "bg-green-500",  text: "text-green-700",  bg: "bg-green-50 border-green-200" },
+  MEDIUM:   { bar: "bg-blue-500",   text: "text-blue-700",   bg: "bg-blue-50 border-blue-200" },
+  HIGH:     { bar: "bg-amber-500",  text: "text-amber-700",  bg: "bg-amber-50 border-amber-200" },
+  CRITICAL: { bar: "bg-red-500",    text: "text-red-700",    bg: "bg-red-50 border-red-200" },
+};
+
+const FACTOR_COLORS: Record<string, string> = {
+  growth:   "bg-green-500",
+  value:    "bg-purple-500",
+  momentum: "bg-orange-500",
+  quality:  "bg-blue-500",
+  dividend: "bg-amber-500",
+};
+
+const FACTOR_ORDER = ["growth", "value", "momentum", "quality", "dividend"] as const;
+
+// ─── Persona Selector ─────────────────────────────────────────────────────────
+
+function PersonaSelector({
+  portfolioId,
+  persona,
+  profiles,
+  saving,
+  onSave,
+}: {
+  portfolioId: number | null;
+  persona: StrategyPersona;
+  profiles: StrategyProfile[];
+  saving: boolean;
+  onSave: (p: StrategyPersona) => void;
+}) {
+  if (!portfolioId || profiles.length === 0) return null;
+  const cfg = PERSONA_CFG[persona] ?? PERSONA_CFG.BALANCED;
+  return (
+    <div>
+      <label className="block text-xs text-gray-500 mb-1">Strategy Persona</label>
+      <div className="flex items-center gap-2">
+        <span className={`text-base ${cfg.color}`}>{cfg.icon}</span>
+        <select
+          value={persona}
+          disabled={saving}
+          onChange={(e) => onSave(e.target.value as StrategyPersona)}
+          className="border rounded px-2 py-1.5 text-sm bg-white min-w-[160px]"
+        >
+          {profiles.map((p) => (
+            <option key={p.id} value={p.id}>{p.label}</option>
+          ))}
+        </select>
+        {saving && <span className="text-xs text-gray-400">Saving…</span>}
+      </div>
+    </div>
+  );
+}
+
+// ─── Portfolio DNA Card ───────────────────────────────────────────────────────
+
+function PortfolioDNACard({
+  dna,
+  targetPersona,
+  profiles,
+}: {
+  dna: PortfolioDNA;
+  targetPersona: StrategyPersona;
+  profiles: StrategyProfile[];
+}) {
+  const profile = profiles.find((p) => p.id === targetPersona);
+  const cfg = PERSONA_CFG[targetPersona] ?? PERSONA_CFG.BALANCED;
+
+  return (
+    <section className="bg-white border rounded-xl p-5 shadow-sm space-y-4">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className={`text-lg ${cfg.color}`}>{cfg.icon}</span>
+        <div>
+          <h3 className="font-semibold text-gray-800">Portfolio DNA</h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Current factor exposure vs {profile?.label ?? targetPersona} target
+          </p>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {FACTOR_ORDER.map((factor) => {
+          const current = dna[factor] ?? 50;
+          const target = profile ? (profile.factor_weights[factor] ?? 0) * 100 : 20;
+          const barColor = FACTOR_COLORS[factor] ?? "bg-gray-400";
+          const delta = current - target;
+          const deltaText = delta >= 0.5 ? `+${delta.toFixed(0)}` : delta <= -0.5 ? `${delta.toFixed(0)}` : "~";
+          const deltaColor = delta > 10 ? "text-green-600" : delta < -10 ? "text-red-500" : "text-gray-400";
+          return (
+            <div key={factor} className="space-y-1">
+              <div className="flex items-center justify-between text-xs">
+                <span className="capitalize font-medium text-gray-600 w-20">{factor}</span>
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-gray-400">target {target.toFixed(0)}</span>
+                  <span className={`font-semibold ${deltaColor}`}>{deltaText}</span>
+                  <span className="font-semibold text-gray-700 w-8 text-right">{current.toFixed(0)}</span>
+                </div>
+              </div>
+              <div className="relative h-2 bg-gray-100 rounded-full overflow-visible">
+                {/* target marker */}
+                <div
+                  className="absolute top-0 bottom-0 w-0.5 bg-gray-400 opacity-60 z-10 rounded"
+                  style={{ left: `${Math.min(100, target)}%` }}
+                />
+                {/* current bar */}
+                <div
+                  className={`h-full rounded-full ${barColor} opacity-75`}
+                  style={{ width: `${Math.min(100, current)}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-xs text-gray-400">Gray marker = persona target. Bar = current portfolio.</p>
+    </section>
+  );
+}
+
+// ─── Style Drift Card ─────────────────────────────────────────────────────────
+
+function StyleDriftCard({
+  result,
+  profiles,
+}: {
+  result: OptimizerResult;
+  profiles: StrategyProfile[];
+}) {
+  const severity = (result.style_drift_severity ?? "LOW") as DriftSeverity;
+  const driftScore = result.style_drift_score ?? 0;
+  const alignScore = result.factor_alignment_score ?? 100;
+  const urgency = result.rebalance_urgency ?? "LOW";
+  const persona = result.target_persona as StrategyPersona | undefined;
+  const profile = profiles.find((p) => p.id === persona);
+  const cfg = DRIFT_CFG[severity] ?? DRIFT_CFG.LOW;
+  const personaCfg = persona ? (PERSONA_CFG[persona] ?? PERSONA_CFG.BALANCED) : null;
+
+  const urgencyColor: Record<string, string> = {
+    LOW:      "text-green-600",
+    MODERATE: "text-blue-600",
+    HIGH:     "text-amber-600",
+    CRITICAL: "text-red-600",
+  };
+
+  const dominant = result.factor_drift
+    ? Object.entries(result.factor_drift).sort(([, a], [, b]) => Math.abs(b) - Math.abs(a)).slice(0, 2)
+    : [];
+
+  return (
+    <section className={`border rounded-xl p-5 shadow-sm space-y-4 ${cfg.bg}`}>
+      <div className="flex items-center gap-3 flex-wrap">
+        {personaCfg && <span className={`text-lg ${personaCfg.color}`}>{personaCfg.icon}</span>}
+        <div>
+          <h3 className="font-semibold text-gray-800">Style Alignment</h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {profile?.label ?? persona ?? "Balanced"} target vs current portfolio DNA
+          </p>
+        </div>
+        <span className={`ml-auto text-xs font-bold px-2.5 py-1 rounded-full border ${cfg.bg} ${cfg.text}`}>
+          {severity} DRIFT
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+        <div className="bg-white/70 rounded-lg p-3">
+          <p className="text-xs text-gray-400 mb-0.5">Drift Score</p>
+          <p className={`text-sm font-bold ${cfg.text}`}>{driftScore.toFixed(0)}<span className="text-xs font-normal text-gray-400"> / 100</span></p>
+        </div>
+        <div className="bg-white/70 rounded-lg p-3">
+          <p className="text-xs text-gray-400 mb-0.5">Alignment</p>
+          <p className="text-sm font-bold text-gray-700">{alignScore.toFixed(0)}<span className="text-xs font-normal text-gray-400"> / 100</span></p>
+        </div>
+        <div className="bg-white/70 rounded-lg p-3">
+          <p className="text-xs text-gray-400 mb-0.5">Urgency</p>
+          <p className={`text-sm font-bold ${urgencyColor[urgency] ?? ""}`}>{urgency}</p>
+        </div>
+        <div className="bg-white/70 rounded-lg p-3">
+          <p className="text-xs text-gray-400 mb-0.5">Severity</p>
+          <p className={`text-sm font-bold ${cfg.text}`}>{severity}</p>
+        </div>
+      </div>
+
+      {/* Drift gauge */}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-gray-500">Alignment Score</span>
+          <span className={`font-semibold ${cfg.text}`}>{alignScore.toFixed(0)} / 100</span>
+        </div>
+        <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full ${cfg.bar}`} style={{ width: `${alignScore}%` }} />
+        </div>
+      </div>
+
+      {/* Top misaligned factors */}
+      {dominant.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs font-medium text-gray-500">Factor gaps (current vs target)</p>
+          {dominant.map(([factor, delta]) => {
+            const isOver = delta > 0;
+            const barColor = FACTOR_COLORS[factor] ?? "bg-gray-400";
+            const absDelta = Math.abs(delta) * 100;
+            return (
+              <div key={factor} className="flex items-center gap-2 text-xs">
+                <span className="capitalize text-gray-600 w-20">{factor}</span>
+                <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                  <div className={`h-full ${barColor} opacity-60`} style={{ width: `${Math.min(100, absDelta * 3)}%` }} />
+                </div>
+                <span className={`font-semibold w-14 text-right ${isOver ? "text-green-600" : "text-red-500"}`}>
+                  {isOver ? "+" : ""}{(delta * 100).toFixed(1)}pp
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
@@ -925,7 +1158,11 @@ function PortfolioMetricsBar({ result }: { result: OptimizerResult }) {
 
 // ─── Result Panel ─────────────────────────────────────────────────────────────
 
-function ResultPanel({ result, loading }: { result: OptimizerResult | null; loading: boolean }) {
+function ResultPanel({ result, loading, profiles }: {
+  result: OptimizerResult | null;
+  loading: boolean;
+  profiles: StrategyProfile[];
+}) {
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center py-20 gap-3 text-gray-400 text-sm">
@@ -968,6 +1205,18 @@ function ResultPanel({ result, loading }: { result: OptimizerResult | null; load
 
       {/* Portfolio metrics */}
       {(result.total_value !== undefined) && <PortfolioMetricsBar result={result} />}
+
+      {/* Strategy Persona — DNA + Drift cards */}
+      {result.current_portfolio_dna && result.target_persona && profiles.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <PortfolioDNACard
+            dna={result.current_portfolio_dna}
+            targetPersona={result.target_persona}
+            profiles={profiles}
+          />
+          <StyleDriftCard result={result} profiles={profiles} />
+        </div>
+      )}
 
       {/* NO_ACTION — calm informative card, shown prominently before layer details */}
       {result.status === "NO_ACTION" && <NoActionCard result={result} />}
@@ -1104,6 +1353,10 @@ export default function OptimizerPage() {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [error, setError] = useState("");
 
+  const [profiles, setProfiles] = useState<StrategyProfile[]>([]);
+  const [persona, setPersona] = useState<StrategyPersona>("BALANCED");
+  const [savingPersona, setSavingPersona] = useState(false);
+
   const portfolioId = selectedPortfolioId ?? activeId;
 
   const loadHistory = useCallback(async (pid: number) => {
@@ -1115,12 +1368,34 @@ export default function OptimizerPage() {
     }
   }, []);
 
+  // Load strategy profiles once on mount
+  useEffect(() => {
+    listStrategyProfiles().then((d) => setProfiles(d.profiles)).catch(() => {});
+  }, []);
+
+  // Load portfolio persona when portfolio changes
+  useEffect(() => {
+    if (portfolioId == null) return;
+    getPortfolioPersona(portfolioId).then((d) => setPersona(d.persona)).catch(() => {});
+  }, [portfolioId]);
+
   useEffect(() => {
     if (portfolioId == null) return;
     setResult(null);
     setSelectedHistoryId(null);
     loadHistory(portfolioId);
   }, [portfolioId, loadHistory]);
+
+  async function handlePersonaSave(p: StrategyPersona) {
+    if (portfolioId == null) return;
+    setPersona(p);
+    setSavingPersona(true);
+    try {
+      await updatePortfolioPersona(portfolioId, p);
+    } finally {
+      setSavingPersona(false);
+    }
+  }
 
   async function handleRun() {
     if (portfolioId == null) return;
@@ -1178,6 +1453,14 @@ export default function OptimizerPage() {
           </select>
         </div>
 
+        <PersonaSelector
+          portfolioId={portfolioId}
+          persona={persona}
+          profiles={profiles}
+          saving={savingPersona}
+          onSave={handlePersonaSave}
+        />
+
         {activePortfolio && (
           <div>
             <span className="block text-xs text-gray-500 mb-1">Cash Balance</span>
@@ -1224,7 +1507,7 @@ export default function OptimizerPage() {
             />
           </div>
           <div className="flex-1 min-w-0">
-            <ResultPanel result={result} loading={loadingDetail} />
+            <ResultPanel result={result} loading={loadingDetail} profiles={profiles} />
           </div>
         </div>
       )}

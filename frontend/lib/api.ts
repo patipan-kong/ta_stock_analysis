@@ -654,6 +654,32 @@ export interface WatchlistRanking {
   upside_pct?: number | null;
 }
 
+// ─── Strategy Persona ─────────────────────────────────────────────────────────
+
+export type StrategyPersona = "BALANCED" | "GROWTH" | "VALUE" | "DIVIDEND" | "MOMENTUM" | "PASSIVE";
+export type DriftSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type RebalanceUrgency = "LOW" | "MODERATE" | "HIGH" | "CRITICAL";
+
+export interface StrategyProfile {
+  id: StrategyPersona;
+  label: string;
+  description: string;
+  factor_weights: Record<string, number>;
+  turnover_tolerance: number;
+  max_cash_preference: number;
+  volatility_tolerance: number;
+  sector_concentration_tolerance: number;
+  rebalance_aggressiveness: number;
+}
+
+export interface PortfolioDNA {
+  growth: number;
+  value: number;
+  momentum: number;
+  quality: number;
+  dividend: number;
+}
+
 export interface OptimizerResult {
   portfolio_name: string;
   status?: OptimizerStatus;
@@ -684,6 +710,15 @@ export interface OptimizerResult {
   current_sector_weights?: Record<string, SectorWeight>;
   projected_sector_weights?: Record<string, SectorWeight>;
   sector_warnings?: SectorWarning[];
+  // Strategy persona & portfolio DNA fields
+  target_persona?: StrategyPersona | null;
+  persona_label?: string | null;
+  current_portfolio_dna?: PortfolioDNA | null;
+  style_drift_score?: number | null;
+  style_drift_severity?: DriftSeverity | null;
+  factor_alignment_score?: number | null;
+  factor_drift?: Record<string, number> | null;
+  rebalance_urgency?: RebalanceUrgency | null;
 }
 
 export interface OptimizerHistoryItem {
@@ -711,6 +746,18 @@ export const listOptimizerHistory = (portfolioId: number) =>
 
 export const getOptimizerHistory = (historyId: number) =>
   apiFetch<OptimizerResult>(`/optimizer/history/${historyId}`);
+
+export const listStrategyProfiles = () =>
+  apiFetch<{ profiles: StrategyProfile[] }>("/strategy-profiles");
+
+export const getPortfolioPersona = (portfolioId: number) =>
+  apiFetch<{ persona: StrategyPersona; profile: StrategyProfile }>(`/portfolios/${portfolioId}/persona`);
+
+export const updatePortfolioPersona = (portfolioId: number, persona: StrategyPersona) =>
+  apiFetch<{ persona: StrategyPersona; ok: boolean }>(`/portfolios/${portfolioId}/persona`, {
+    method: "PATCH",
+    body: JSON.stringify({ persona }),
+  });
 
 export interface AnalysisLatencyStat {
   provider: string;

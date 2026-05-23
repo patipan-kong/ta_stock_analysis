@@ -2,6 +2,7 @@ import json
 import logging
 from services.ai_client import call_ai
 from services.json_utils import safe_parse_json
+from services.optimizer.strategy_profiles import build_persona_context, get_profile  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -630,9 +631,45 @@ def _layer1_prompt(
     sector_limits: dict | None = None,
     max_stocks: int = 12,
     current_count: int = 0,
+    persona_context: dict | None = None,
 ) -> str:
     sl = sector_limits or {"default": max_sector_pct}
-    return f"""You are a STRATEGIST. Output swap targets in JSON only.
+
+    strategy_block = ""
+    if persona_context:
+        p_label      = persona_context.get("persona_label", "Balanced").upper()
+        p_dna        = persona_context.get("dna_display", "")
+        p_drift_sev  = persona_context.get("drift_severity", "LOW")
+        p_drift_sc   = persona_context.get("drift_score", 0)
+        p_dominant   = persona_context.get("dominant_factor_label", "")
+        p_top        = persona_context.get("top_target_factor", "")
+        p_priority   = persona_context.get("priority_order", "")
+        p_turn_lbl   = persona_context.get("turnover_label", "MODERATE")
+        p_urgency    = persona_context.get("rebalance_urgency", "MODERATE")
+        p_misaligned = persona_context.get("misaligned_display", "none")
+        p_turn       = persona_context.get("turnover_tolerance", 0.5)
+
+        low_turn_note  = "PREFER incremental DCA; avoid large single-step replacements." if p_turn < 0.30 else ""
+        high_turn_note = "High turnover is ACCEPTABLE — act decisively on factor misalignment." if p_turn > 0.70 else ""
+
+        strategy_block = f"""[STRATEGY CONTEXT — MANDATORY]
+Target Persona: {p_label}
+Current Portfolio DNA: {p_dna}
+Dominant Style: {p_dominant} → target dominant is {p_top}
+Style Drift: {p_drift_sev} ({p_drift_sc}/100) | Rebalance Urgency: {p_urgency}
+Factor Priority: {p_priority}
+Most Misaligned: {p_misaligned}
+Turnover Tolerance: {p_turn_lbl} ({int(p_turn * 100)}%)
+
+[STRATEGY MANDATE]
+All swap proposals MUST increase {p_top} factor alignment.
+{low_turn_note}{high_turn_note}
+Stocks selected for BUY/ACCUMULATE must support the {p_label} factor profile.
+Stocks proposed for REDUCE/SELL must be misaligned with {p_label} or overweight.
+
+"""
+
+    return f"""{strategy_block}You are a STRATEGIST. Output swap targets in JSON only.
 No explanation. No prose. Only valid JSON output.
 
 Portfolio: {json.dumps(c_pc)}
@@ -673,14 +710,47 @@ def _layer2_prompt(
     role: str = "",
     cash_balance: float = 0.0,
     total_value: float = 0.0,
+    persona_context: dict | None = None,
 ) -> str:
     role_line = f"Your role: {role}\n\n" if role else ""
     l1_swaps    = l1.get("swap_suggestions", l1.get("swaps", []))
     l1_top_buys = l1.get("top_buys", [])
     l1_flags    = l1.get("sector_flags", [])
     l1_priority = l1.get("priority", "balanced")
+
+    strategy_block = ""
+    if persona_context:
+        p_label     = persona_context.get("persona_label", "Balanced")
+        p_dna       = persona_context.get("dna_display", "")
+        p_drift_sev = persona_context.get("drift_severity", "LOW")
+        p_drift_sc  = persona_context.get("drift_score", 0)
+        p_priority  = persona_context.get("priority_order", "")
+        p_turn_lbl  = persona_context.get("turnover_label", "MODERATE")
+        p_urgency   = persona_context.get("rebalance_urgency", "MODERATE")
+        p_desc      = persona_context.get("persona_description", "")
+        p_turn      = persona_context.get("turnover_tolerance", 0.5)
+        p_max_cash  = persona_context.get("max_cash_preference", 0.05)
+        p_vol       = persona_context.get("volatility_tolerance", 0.5)
+
+        strategy_block = f"""[STRATEGY CONTEXT — MANDATORY INVESTMENT POLICY]
+Target Persona: {p_label.upper()} — {p_desc}
+Current Portfolio DNA: {p_dna}
+Style Drift: {p_drift_sev} ({p_drift_sc}/100) | Urgency: {p_urgency}
+Factor Priority: {p_priority}
+Turnover Tolerance: {p_turn_lbl} ({int(p_turn * 100)}%)
+Max Cash Preference: {int(p_max_cash * 100)}% of portfolio
+Volatility Tolerance: {int(p_vol * 100)}% (0%=very defensive, 100%=aggressive)
+
+[ALLOCATION POLICY]
+Your allocation plan MUST align with the {p_label.upper()} investment philosophy.
+Factor weighting, position sizing, and stock selection must all reflect this persona.
+{"Prefer gradual position changes; high turnover is discouraged for this persona." if p_turn < 0.30 else ""}
+{"Active rebalancing is consistent with this persona; larger position changes are appropriate." if p_turn > 0.70 else ""}
+
+"""
+
     return f"""You are an independent portfolio reviewer.
-{role_line}The Strategist (Layer 1) proposed:
+{strategy_block}{role_line}The Strategist (Layer 1) proposed:
 - Priority: {l1_priority}
 - Swaps: {json.dumps(l1_swaps, indent=2)}
 - Top watchlist picks: {l1_top_buys}
@@ -733,14 +803,26 @@ Return JSON only. No markdown fences.
 }}"""
 
 
-def _layer3_prompt(l1: dict, l2: dict, role: str = "", max_sector_pct: int = 40) -> str:
+def _layer3_prompt(l1: dict, l2: dict, role: str = "", max_sector_pct: int = 40, persona_context: dict | None = None) -> str:
     role_line = f"Your role: {role}\n\n" if role else ""
     # L1 (Strategist) now outputs swaps only — no allocation table
     l1_swaps    = l1.get("swap_suggestions", l1.get("swaps", []))[:4]
     l1_priority = l1.get("priority", "balanced")
     l2_allocs   = l2.get("allocations", l2.get("target_allocations", []))
+
+    persona_note = ""
+    if persona_context:
+        p_label    = persona_context.get("persona_label", "Balanced")
+        p_turn     = persona_context.get("turnover_tolerance", 0.5)
+        p_vol      = persona_context.get("volatility_tolerance", 0.5)
+        persona_note = (
+            f"\nPersona Policy: {p_label.upper()} "
+            f"(turnover tolerance: {int(p_turn*100)}%, volatility tolerance: {int(p_vol*100)}%)\n"
+            "Flag any risk that conflicts with this persona's policy constraints.\n"
+        )
+
     return f"""You are a portfolio risk auditor.
-{role_line}Evaluate both allocation proposals for concentration risk and soundness.
+{persona_note}{role_line}Evaluate both allocation proposals for concentration risk and soundness.
 
 Layer 1 (Strategist):
 Priority: {l1_priority}
@@ -1017,6 +1099,7 @@ def run_layered_optimizer(
     cash_balance: float = 0.0,
     fallback_provider: str = "anthropic",
     fallback_model: str = "claude-sonnet-4-6",
+    persona_context: dict | None = None,
 ) -> dict:
     """3-layer Dynamic Capital Allocation Engine with global single-shot fallback."""
     if layers is None:
@@ -1051,6 +1134,7 @@ def run_layered_optimizer(
                 c_pc, c_wc, sell_forced, swap_eligible,
                 max_sector_pct=max_sector_pct, sector_limits=sector_limits,
                 max_stocks=max_stocks, current_count=portfolio_count,
+                persona_context=persona_context,
             )
             logger.info(f"L1 prompt chars: {len(l1_prompt)}")
             l1_raw = call_ai(
@@ -1088,7 +1172,8 @@ def run_layered_optimizer(
         try:
             l2_raw = call_ai(
                 _layer2_prompt(pc, wc, l1_result, l2_cfg.get("role", ""),
-                               cash_balance=cash_balance, total_value=total_value),
+                               cash_balance=cash_balance, total_value=total_value,
+                               persona_context=persona_context),
                 l2_cfg["provider"], l2_cfg["model"], max_tokens=8192,
                 usage_operation="optimize", usage_layer="layer2",
             )
@@ -1137,7 +1222,8 @@ def run_layered_optimizer(
         # Layer 3 — Risk Auditor
         try:
             l3_raw = call_ai(
-                _layer3_prompt(l1_result, l2_result, l3_cfg.get("role", ""), max_sector_pct=max_sector_pct),
+                _layer3_prompt(l1_result, l2_result, l3_cfg.get("role", ""), max_sector_pct=max_sector_pct,
+                               persona_context=persona_context),
                 l3_cfg["provider"], l3_cfg["model"], max_tokens=2048,
                 usage_operation="optimize", usage_layer="layer3",
             )
@@ -1239,6 +1325,19 @@ def run_layered_optimizer(
         buy_symbols = [a["symbol"] for a in final_allocations if a.get("action") in ("BUY", "ACCUMULATE")]
         watchlist_ranking = _rebuild_watchlist_ranking(buy_symbols, wc)
 
+        persona_fields: dict = {}
+        if persona_context:
+            persona_fields = {
+                "target_persona":         persona_context.get("persona"),
+                "persona_label":          persona_context.get("persona_label"),
+                "current_portfolio_dna":  persona_context.get("portfolio_dna"),
+                "style_drift_score":      persona_context.get("drift_score"),
+                "style_drift_severity":   persona_context.get("drift_severity"),
+                "factor_alignment_score": persona_context.get("factor_alignment_score"),
+                "factor_drift":           persona_context.get("factor_drift"),
+                "rebalance_urgency":      persona_context.get("rebalance_urgency"),
+            }
+
         return {
             "portfolio_name": portfolio_name,
             "status": xai_status,
@@ -1280,6 +1379,7 @@ def run_layered_optimizer(
                 "provider": l3_cfg["provider"], "model": l3_cfg["model"], "name": l3_cfg.get("name", "Risk Auditor"),
             },
             "consensus": consensus,
+            **persona_fields,
         }
 
     except Exception as exc:

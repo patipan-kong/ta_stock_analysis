@@ -56,6 +56,7 @@ class Portfolio(Base):
     workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String, nullable=False)
     cash_balance = Column(Float, nullable=False, default=0.0)
+    strategy_persona = Column(String, nullable=True, default="BALANCED")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     workspace = relationship("Workspace", back_populates="portfolios")
@@ -395,6 +396,8 @@ def migrate_legacy_data() -> None:
                     p_cols = {c["name"] for c in inspector.get_columns("portfolios")}
                     if "cash_balance" not in p_cols:
                         conn.execute(text("ALTER TABLE portfolios ADD COLUMN cash_balance REAL NOT NULL DEFAULT 0"))
+                    if "strategy_persona" not in p_cols:
+                        conn.execute(text("ALTER TABLE portfolios ADD COLUMN strategy_persona TEXT DEFAULT 'BALANCED'"))
 
             if "portfolio_items" in tables:
                 with engine.begin() as conn:

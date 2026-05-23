@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-type TabType = "scoring" | "signals" | "optimizer" | "operations";
+type TabType = "scoring" | "signals" | "optimizer" | "factors" | "operations";
 
 export default function SystemGuidePage() {
   const [activeTab, setActiveTab] = useState<TabType>("scoring");
@@ -11,7 +11,8 @@ export default function SystemGuidePage() {
     { id: "scoring", label: "Scoring System" },
     { id: "signals", label: "Signal Guide" },
     { id: "optimizer", label: "3-Layer Optimizer" },
-    { id: "operations", label: "Jobs, Cache, Analytics" },
+    { id: "factors", label: "Factor Analysis" },
+    { id: "operations", label: "Cache & Analytics" },
   ];
 
   return (
@@ -25,7 +26,7 @@ export default function SystemGuidePage() {
       </div>
 
       {/* Tab Navigation */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-8">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-8">
         {tabs.map((tab) => (
           <button
             key={tab.id}
@@ -46,6 +47,7 @@ export default function SystemGuidePage() {
         {activeTab === "scoring" && <ScoringTab />}
         {activeTab === "signals" && <SignalsTab />}
         {activeTab === "optimizer" && <OptimizerTab />}
+        {activeTab === "factors" && <FactorsTab />}
         {activeTab === "operations" && <OperationsTab />}
       </div>
     </div>
@@ -393,6 +395,130 @@ function OptimizerTab() {
   );
 }
 
+function FactorsTab() {
+  const factors = [
+    {
+      name: "Growth",
+      color: "border-emerald-500 bg-emerald-50",
+      titleColor: "text-emerald-700",
+      metrics: [
+        { label: "Revenue Growth", weight: "50%" },
+        { label: "Earnings Growth", weight: "50%" },
+      ],
+      note: "Captures top-line and bottom-line expansion velocity.",
+    },
+    {
+      name: "Value",
+      color: "border-blue-500 bg-blue-50",
+      titleColor: "text-blue-700",
+      metrics: [
+        { label: "Inverse P/E", weight: "50%" },
+        { label: "Inverse P/B", weight: "30%" },
+        { label: "Inverse EV/EBITDA", weight: "20%" },
+      ],
+      note: "Lower multiples rank higher. Eliminates Thai SET vs US valuation bias via percentile normalization.",
+    },
+    {
+      name: "Dividend",
+      color: "border-amber-500 bg-amber-50",
+      titleColor: "text-amber-700",
+      metrics: [
+        { label: "Dividend Yield", weight: "70%" },
+        { label: "Payout Optimality", weight: "30%" },
+      ],
+      note: "Rewards sustainable yield — excessively high payout ratios are penalized.",
+    },
+    {
+      name: "Momentum",
+      color: "border-violet-500 bg-violet-50",
+      titleColor: "text-violet-700",
+      metrics: [
+        { label: "30-day Return", weight: "40%" },
+        { label: "90-day Return", weight: "20%" },
+        { label: "MA Alignment", weight: "30%" },
+        { label: "RSI (14)", weight: "10%" },
+      ],
+      note: "Combines price trend strength with technical confirmation signals.",
+    },
+    {
+      name: "Quality",
+      color: "border-rose-500 bg-rose-50",
+      titleColor: "text-rose-700",
+      metrics: [
+        { label: "ROE", weight: "40%" },
+        { label: "Net Margin", weight: "40%" },
+        { label: "Inverse D/E (leverage)", weight: "20%" },
+      ],
+      note: "High-quality businesses earn well on equity and carry low financial risk.",
+    },
+  ];
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h2 className="text-3xl font-bold mb-4 text-blue-600">
+          Factor Exposure Analysis
+        </h2>
+        <p className="text-gray-700 mb-2">
+          The platform computes five institutional-grade factor exposures for each portfolio.
+          All sub-metrics are <strong>percentile-ranked within the portfolio universe</strong> before
+          aggregation — this eliminates cross-market bias between Thai SET and US valuations.
+        </p>
+        <p className="text-gray-600 text-sm">
+          Access via <strong>Portfolio → Factor DNA</strong> or{" "}
+          <code className="bg-gray-100 px-1 rounded text-xs">GET /analytics/factor-exposure?portfolio_id=X</code>.
+          Results are cached for 15 minutes.
+        </p>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-5">
+        {factors.map((f) => (
+          <div key={f.name} className={`border-l-4 ${f.color} rounded-lg p-5 shadow`}>
+            <h3 className={`text-xl font-bold mb-3 ${f.titleColor}`}>{f.name}</h3>
+            <div className="space-y-1 mb-3">
+              {f.metrics.map((m) => (
+                <div key={m.label} className="flex justify-between text-sm text-gray-700">
+                  <span>{m.label}</span>
+                  <span className="font-mono font-semibold text-gray-500">{m.weight}</span>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-gray-500">{f.note}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow">
+        <h3 className="text-xl font-bold mb-3 text-gray-800">Style Classification</h3>
+        <p className="text-sm text-gray-700 mb-4">
+          A portfolio is dynamically classified into one of <strong>7 single-factor</strong> or{" "}
+          <strong>10 dual-factor</strong> styles — no hardcoded thresholds.
+        </p>
+        <div className="grid md:grid-cols-2 gap-4 text-sm text-gray-700">
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="font-semibold text-gray-900 mb-2">Single-factor style</p>
+            <p>Top factor dominates by ≥ 15 points <em>and</em> scores ≥ 60.</p>
+            <p className="text-xs text-gray-500 mt-1">Example: Growth 82, next factor 61 → "Growth Portfolio"</p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="font-semibold text-gray-900 mb-2">Dual-factor blend</p>
+            <p>Top two factors within 15 points of each other, both ≥ 50.</p>
+            <p className="text-xs text-gray-500 mt-1">Example: Value 74, Quality 68 → "Value-Quality Portfolio"</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <p className="text-sm text-blue-800">
+          <strong>Cross-market normalization:</strong> a Thai bank at P/E 8 and a US tech stock at P/E 30 are
+          ranked relative to each other within the portfolio, so factor scores reflect portfolio composition
+          rather than absolute market-level differences.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function OperationsTab() {
   const cacheStrategies = [
     {
@@ -445,13 +571,22 @@ function OperationsTab() {
       </div>
 
       <div className="bg-white rounded-lg p-6 border border-gray-200 shadow">
-        <h3 className="text-xl font-bold mb-4 text-gray-900">Async Watchlist Jobs</h3>
+        <h3 className="text-xl font-bold mb-4 text-gray-900">Concurrent Watchlist Analysis</h3>
         <div className="space-y-2 text-sm text-gray-700">
-          <p><strong>POST /analyze/watchlist</strong> queues a run and returns job_id immediately.</p>
-          <p><strong>GET /analyze/jobs/{"{job_id}"}</strong> returns queued/running/done status with progress.</p>
-          <p><strong>GET /analyze/jobs/{"{job_id}"}/stream</strong> streams SSE progress events in real time.</p>
-          <p>Job records are stored in-process with a 10-minute expiration window.</p>
-          <p>Per-symbol analysis uses concurrency limits and deterministic fallback if AI times out.</p>
+          <p>
+            <strong>POST /watchlist/analyze/all</strong> runs all stale symbols concurrently via{" "}
+            <code className="bg-gray-100 px-1 rounded text-xs">asyncio.gather()</code> capped at{" "}
+            <code className="bg-gray-100 px-1 rounded text-xs">Semaphore(10)</code> — ~32 s for 68 stocks.
+          </p>
+          <p>
+            <strong>POST /watchlist/analyze/all/stream</strong> returns a{" "}
+            <code className="bg-gray-100 px-1 rounded text-xs">StreamingResponse (application/x-ndjson)</code>{" "}
+            emitting <code className="bg-gray-100 px-1 rounded text-xs">start → progress → complete</code> events
+            as stocks finish in completion order.
+          </p>
+          <p>Each AI call is wrapped in a 10-second timeout. On timeout or error, a deterministic fallback
+            signal is computed from TA/FA scores — the UI shows a fallback count when applicable.</p>
+          <p>Fallback results are <em>not</em> written to AnalysisCache so the next run will retry the AI call.</p>
         </div>
       </div>
 

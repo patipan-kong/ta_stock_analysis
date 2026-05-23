@@ -1,7 +1,7 @@
 # Portfolio Intelligence Platform
 
 ## Project Overview
-Full-stack web application for analyzing US and Thai SET stocks. Generates 6-level trading signals (ACCUMULATE / BUY / WATCH / HOLD / REDUCE / SELL) via multi-provider AI with Technical Analysis, Fundamental Analysis, and News aggregation. Includes portfolio management, watchlist, a 3-layer AI optimizer, sector allocation tracking, multi-timeframe charting, and AI latency/cost statistics.
+Full-stack web application for analyzing US and Thai SET stocks. Generates 6-level trading signals (ACCUMULATE / BUY / WATCH / HOLD / REDUCE / SELL) via multi-provider AI with Technical Analysis, Fundamental Analysis, and News aggregation. Includes portfolio management, watchlist, a 3-layer AI optimizer with strategy persona & portfolio DNA, sector allocation tracking, multi-timeframe charting, and AI latency/cost statistics.
 
 ## Tech Stack
 - **Frontend**: Next.js 14+ (App Router), TypeScript, Tailwind CSS, @tanstack/react-table v8, recharts
@@ -32,7 +32,7 @@ stock-analysis/
 │   │   ├── portfolio/page.tsx        # Portfolio management + side-by-side pie charts
 │   │   ├── watchlist/page.tsx        # Watchlist with sector column + filter
 │   │   ├── stock/[symbol]/page.tsx   # Stock detail (chart, consensus, history, second opinion)
-│   │   ├── optimizer/page.tsx        # 3-layer Portfolio Optimizer + sector impact panel
+│   │   ├── optimizer/page.tsx        # 3-layer Portfolio Optimizer + persona selector + DNA/drift cards
 │   │   ├── settings/page.tsx         # All settings + Data Management (sector backfill)
 │   │   ├── stats/page.tsx            # AI latency + cost statistics
 │   │   └── login/page.tsx            # Auth
@@ -71,12 +71,18 @@ stock-analysis/
 │   │   └── versions/
 │   │       ├── 5551f8b86e30_initial_schema.py
 │   │       ├── a1b2c3d4e5f6_add_latency_columns.py
-│   │       └── b2c3d4e5f6a7_add_sector_to_watchlist_and_portfolio.py
+│   │       ├── b2c3d4e5f6a7_add_sector_to_watchlist_and_portfolio.py
+│   │       └── l6m7n8o9p0q1_add_strategy_persona.py  # Portfolio.strategy_persona (3B.2)
 │   └── services/
 │       ├── data_fetcher.py           # yfinance wrapper + normalize_dr_symbol()
 │       ├── scorer.py                 # Deterministic 0-100 scoring (no AI)
 │       ├── ai_client.py              # call_ai() → dict{text, latency_ms, tokens, ...}
-│       └── json_utils.py             # safe_parse_json() — robust JSON from AI responses
+│       ├── json_utils.py             # safe_parse_json() — robust JSON from AI responses
+│       ├── optimizer/
+│       │   └── strategy_profiles.py  # 6 persona definitions + compute_portfolio_dna() + compute_style_drift()
+│       └── analytics/
+│           ├── factor_engine.py      # Institutional factor exposure (Growth/Value/Momentum/Quality/Dividend)
+│           └── quant_engine.py       # Quantitative metrics + in-process cache
 │
 └── CLAUDE.MD
 ```
@@ -105,7 +111,7 @@ Signal badge colors: ACCUMULATE=teal (#0F6E56), BUY=green (#27500A), WATCH=blue 
 ## Database Models (`models/database.py`)
 | Model | Purpose |
 |---|---|
-| `Portfolio` | Named portfolio (id, name) |
+| `Portfolio` | Named portfolio (id, name, **strategy_persona**) |
 | `PortfolioItem` | Holdings (symbol, shares, avg_cost, allow_swap, **sector**) |
 | `Watchlist` | Watchlist symbols (**sector** stored at add-time) |
 | `AnalysisCache` | Latest signal per symbol (upserted, 12h staleness check) |
@@ -147,6 +153,8 @@ DELETE /portfolios/{id}/holdings/{symbol}
 PATCH  /portfolios/{id}/holdings/{symbol}/swap-permission   { allow_swap }
 GET    /portfolios/{id}/prices       # lightweight real-time price refresh
 GET    /portfolios/{id}/sector-breakdown  # sector allocation vs limits (reads PortfolioItem.sector)
+GET    /portfolios/{id}/persona      # returns { persona, profile }
+PATCH  /portfolios/{id}/persona      { persona: "GROWTH" } → assigns strategy persona
 POST   /portfolios/{id}/analyze      # full analyze (12h cache, skips fresh)
 POST   /portfolios/{id}/analyze/all  # stale-only (60-min cache) → { total, analyzed, skipped, results }
 ```
@@ -175,11 +183,12 @@ GET  /analysis/history/{symbol}      # last 20 history records
 DELETE /analysis/history/{symbol}/{id}
 ```
 
-### Optimizer
+### Optimizer & Strategy
 ```
-POST /analyze/optimizer              { portfolio_id } → 3-layer result + sector weights + consensus
+POST /analyze/optimizer              { portfolio_id } → 3-layer result + sector weights + consensus + DNA/drift
 GET  /optimizer/history?portfolio_id={id}
 GET  /optimizer/history/{id}
+GET  /strategy-profiles              # all 6 persona definitions with factor_weights + policy params
 ```
 
 ### Stats & Admin
@@ -232,11 +241,49 @@ Layer 2 — Challenger   : Independent review — agrees or proposes alternative
 Layer 3 — Risk Auditor : Concentration risk flags (LOW/MEDIUM/HIGH/CRITICAL) + safer_choice
 Consensus Engine       : Pure Python — no AI call
 ```
-- `run_layered_optimizer(...)` returns `layer1/2/3_latency_ms`, `total_latency_ms`, `current_sector_weights`, `projected_sector_weights`, `sector_warnings`
+- `run_layered_optimizer(...)` accepts optional `persona_context: dict` — injects strategy mandate into all 3 layer prompts
+- Returns `layer1/2/3_latency_ms`, `total_latency_ms`, `current_sector_weights`, `projected_sector_weights`, `sector_warnings`
+- Persona fields in result: `target_persona`, `persona_label`, `current_portfolio_dna`, `style_drift_score`, `style_drift_severity`, `factor_alignment_score`, `factor_drift`, `rebalance_urgency`
 - Each layer has configurable provider/model (Settings → Optimizer Layers)
 - Post-processing enforces: forced SELL entries, locked stock exclusion, sector caps, room cap
 - PE percentiles computed batch-wide in `analyze_optimizer` endpoint; injected into `scores_map`
 - **Sector Impact panel** in optimizer result shows before/after sector weights vs limits
+
+## Strategy Persona System (`services/optimizer/strategy_profiles.py`)
+
+**6 personas** stored per portfolio in `Portfolio.strategy_persona` column:
+
+| Persona | Top Factor Priority | Turnover | Aggressiveness |
+|---|---|---|---|
+| BALANCED | Equal weight (all 0.20) | 40% | 50% |
+| GROWTH | Growth 40% → Momentum 30% | 70% | 75% |
+| VALUE | Value 40% → Quality 30% | 20% | 25% |
+| DIVIDEND | Dividend 45% → Quality 30% | 15% | 20% |
+| MOMENTUM | Momentum 50% → Growth 25% | 90% | 90% |
+| PASSIVE | Quality 30% → Value 25% | 10% | 10% |
+
+**`compute_portfolio_dna(portfolio_data)`** — lightweight factor exposure from optimizer scores:
+- `momentum` ← `ta_score` (already 0–100)
+- `quality` ← `fa_score`
+- `growth` ← `revenue_growth` (if available) else ta/fa composite
+- `value` ← inverse P/E (P/E 5→90, P/E 25→58, P/E 50+→10)
+- `dividend` ← proxy from P/E < 15 + ROE > 12% bonus
+
+**`compute_style_drift(dna, persona)`** — Euclidean distance between normalized DNA and target factor weights. Returns `drift_score` (0–100), `drift_severity` (LOW/MEDIUM/HIGH/CRITICAL), `factor_alignment_score`, `rebalance_urgency`.
+
+**Prompt injection** — `persona_context` prepends a `[STRATEGY CONTEXT]` block to L1 and L2 prompts with:
+- Target persona label + description
+- Current DNA display (sorted by exposure)
+- Style drift severity + score
+- Factor priority order (`VALUE > QUALITY > GROWTH > DIVIDEND > MOMENTUM`)
+- Turnover tolerance + rebalance urgency
+- Explicit mandate: all proposed changes must increase the top-priority factor alignment
+
+**Frontend (`optimizer/page.tsx`):**
+- `PersonaSelector` — dropdown in controls row; saves immediately via PATCH on change
+- `PortfolioDNACard` — factor bars with current (colored) vs target (gray marker) per factor
+- `StyleDriftCard` — drift score, alignment score, urgency badge, top misaligned factors with pp delta bars
+- Both cards shown in a 2-col grid above the layer sections when DNA is present in result
 
 ## AI Client (`services/ai_client.py`)
 ```python
@@ -294,6 +341,7 @@ Available providers: anthropic, gemini, openai, deepseek, zhipu, groq (configure
 - **DR symbols**: always call `normalize_dr_symbol(symbol)` before any yfinance `ticker.info` / `fetch_info` call in agents; keep original symbol for DB storage
 - **Sector in GET endpoints**: read from `item.sector` DB column — do NOT call `_get_sector()` on-the-fly in list_holdings / list_watchlist / sector-breakdown
 - **Alembic**: add new columns to both `migrate_legacy_data()` (SQLite) AND a new migration file in `migrations/versions/`
+- **Strategy persona**: always use `valid_persona(raw)` to normalise input before storing; default is `"BALANCED"`; `compute_portfolio_dna()` requires `market_value` on each item (call `_compute_portfolio_weights` first)
 
 ## Environment Variables
 ```
@@ -348,6 +396,24 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 ## CURRENT ARCHITECTURE STATE
 _Last updated: 2026-05-23. Update this section at the start of each new session._
 
+### Phase 3B.2 — Strategy Persona & Policy-Driven Optimization ✅ SHIPPED 2026-05-23
+
+The optimizer is now a **strategy-aware portfolio intelligence engine** driven by explicit investment philosophy.
+
+**What was built:**
+- `services/optimizer/strategy_profiles.py` — 6 persona profiles (BALANCED/GROWTH/VALUE/DIVIDEND/MOMENTUM/PASSIVE), `compute_portfolio_dna()`, `compute_style_drift()`, `build_persona_context()`
+- `Portfolio.strategy_persona` column (TEXT, default `'BALANCED'`) — Alembic migration `l6m7n8o9p0q1` + SQLite `migrate_legacy_data()` patch
+- `GET /strategy-profiles`, `GET /portfolios/{id}/persona`, `PATCH /portfolios/{id}/persona` endpoints
+- `run_layered_optimizer(..., persona_context)` — injects `[STRATEGY CONTEXT]` block into L1, L2, L3 prompts; result carries `target_persona`, `current_portfolio_dna`, `style_drift_score`, `style_drift_severity`, `factor_alignment_score`, `factor_drift`, `rebalance_urgency`
+- `analyze_optimizer` endpoint computes DNA → drift → persona_context before calling optimizer; uses `_compute_portfolio_weights` (imported locally) to get `market_value` for weighted averaging
+- Frontend: `PersonaSelector`, `PortfolioDNACard`, `StyleDriftCard` in `optimizer/page.tsx`; `StrategyPersona`, `PortfolioDNA`, `DriftSeverity` types + `listStrategyProfiles`, `getPortfolioPersona`, `updatePortfolioPersona` in `api.ts`
+
+**Key design decisions:**
+- DNA computation is **lightweight** — uses `ta_score`, `fa_score`, `pe_ratio`, `roe`, `revenue_growth` already in `scores_map`; no extra yfinance calls
+- Drift is a **Euclidean distance** between normalized DNA (0–1) and persona factor weights (0–1 fractions), giving `drift_score` 0–100
+- Persona saved **per-portfolio** in DB — each portfolio can have a different strategy philosophy
+- Backward compat: `persona_context=None` leaves all 3 prompts unchanged (no strategy block injected)
+
 ### Watchlist Analysis Pipeline — Optimized (as-built)
 
 The `POST /watchlist/analyze/all` and `POST /portfolios/{id}/analyze/all` endpoints were fully overhauled from sequential to concurrent execution.
@@ -378,8 +444,8 @@ The optimizer has been refactored from a "swap engine" into a **3-layer Capital 
 **L1 output fields** (`swaps` array items): `sell`, `buy`, `score_delta`, `sector`, `type`
 **L2 output fields** (`allocations` array items): `symbol`, `current_weight`, `target_weight`, `action`, `allocation_change_percent`, `reason`
 
-**L1 Strategist prompt — active mandate (2026-05-22):**
-- Signature: `_layer1_prompt(c_pc, c_wc, sell_forced, swap_eligible, max_sector_pct, sector_limits, max_stocks, current_count)`
+**L1 Strategist prompt — active mandate (2026-05-22, persona-aware 2026-05-23):**
+- Signature: `_layer1_prompt(c_pc, c_wc, sell_forced, swap_eligible, max_sector_pct, sector_limits, max_stocks, current_count, persona_context=None)`
 - Role framing changed from passive "DIRECTOR" to active "STRATEGIST" — biased toward finding improvements
 - **5-point evaluation mandate**: before deciding, must check (1) sector concentration, (2) watchlist BUY/ACCUMULATE candidates, (3) overweight positions >25%, (4) low-score swap-eligible holdings, (5) 2–5% shift opportunities
 - **Prefers incremental actions**: REDUCE/ACCUMULATE over full SELL/BUY; explicitly instructs that small shifts (2–5%) are meaningful

@@ -28,6 +28,10 @@ from agents.fundamental import analyze_fundamental
 from agents.news import analyze_news
 from agents.summary import analyze_summary, determine_signal
 from agents.optimizer import run_optimizer, run_layered_optimizer, _DEFAULT_LAYERS
+from services.optimizer.strategy_profiles import (
+    STRATEGY_PROFILES, valid_persona, compute_portfolio_dna,
+    compute_style_drift, build_persona_context,
+)
 from agents.chart_data import fetch_chart_data
 from services.data_fetcher import (
     fetch_price_info, fetch_info, normalize_dr_symbol, is_dr_symbol,
@@ -721,6 +725,55 @@ async def get_sector_breakdown(portfolio_id: int, db: Session = Depends(get_db))
             "status": status,
         })
     return {"sectors": result, "total_value": round(total_value, 2)}
+
+
+# ─── Strategy Persona endpoints ───────────────────────────────────────────────
+
+@app.get("/strategy-profiles")
+async def list_strategy_profiles() -> dict:
+    """Return all available strategy persona profiles."""
+    return {
+        "profiles": [
+            {
+                "id": k,
+                **{f: v for f, v in prof.items() if f != "factor_weights"},
+                "factor_weights": prof["factor_weights"],
+            }
+            for k, prof in STRATEGY_PROFILES.items()
+        ]
+    }
+
+
+class PersonaUpdate(BaseModel):
+    persona: str
+
+
+@app.get("/portfolios/{portfolio_id}/persona")
+async def get_portfolio_persona(portfolio_id: int, db: Session = Depends(get_db)) -> dict:
+    """Return the current strategy persona for a portfolio."""
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    persona = valid_persona(p.strategy_persona or "BALANCED")
+    from services.optimizer.strategy_profiles import get_profile
+    profile = get_profile(persona)
+    return {"persona": persona, "profile": profile}
+
+
+@app.patch("/portfolios/{portfolio_id}/persona")
+async def update_portfolio_persona(
+    portfolio_id: int, body: PersonaUpdate, db: Session = Depends(get_db)
+) -> dict:
+    """Assign a strategy persona to a portfolio."""
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    persona = valid_persona(body.persona)
+    p.strategy_persona = persona
+    db.commit()
+    return {"persona": persona, "ok": True}
 
 
 @app.post("/portfolios/{portfolio_id}/holdings", status_code=201)
@@ -1866,6 +1919,15 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     for sym in scores_map:
         scores_map[sym]["valuation_percentile"] = pe_pct.get(sym)
 
+    # ── Portfolio DNA + Strategy Persona context ──────────────────────────────
+    # compute_portfolio_dna needs market_value; _compute_portfolio_weights adds it
+    from agents.optimizer import _compute_portfolio_weights
+    pd_with_weights = _compute_portfolio_weights(portfolio_data)
+    persona = valid_persona(portfolio.strategy_persona or "BALANCED")
+    portfolio_dna = compute_portfolio_dna(pd_with_weights)
+    drift_data = compute_style_drift(portfolio_dna, persona)
+    persona_ctx = build_persona_context(persona, portfolio_dna, drift_data)
+
     layers = _get_optimizer_layers(db, ws)
     if body.provider:
         layers["layer1"]["provider"] = body.provider
@@ -1877,6 +1939,7 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         portfolio_count, max_reached, layers, max_stocks, max_sector_pct, sector_limits,
         portfolio.cash_balance or 0.0,
         fallback_cfg["provider"], fallback_cfg["model"],
+        persona_ctx,
     )
     result["portfolio_name"] = portfolio.name
     result["analyzed_at"] = datetime.utcnow().isoformat() + "Z"
