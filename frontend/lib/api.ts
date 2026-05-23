@@ -273,6 +273,7 @@ export interface PriceRefreshItem {
   current_price: number | null;
   change_percent: number | null;
   last_updated: string | null;
+  upside_pct?: number | null;
 }
 
 export const getPortfolioPrices = (portfolioId: number) =>

@@ -99,6 +99,7 @@ export default function PortfolioPage() {
   const [items, setItems] = useState<PortfolioItem[]>([]);
   const [cashBalance, setCashBalance] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [pricesLoading, setPricesLoading] = useState(false);
 
   // Import flow
   const [showImport, setShowImport] = useState(false);
@@ -117,18 +118,24 @@ export default function PortfolioPage() {
   // Active transaction modal
   const [modal, setModal] = useState<ModalState | null>(null);
 
+  // Shared helper — patches price fields (including upside_pct) onto items list
+  function applyPrices(prev: PortfolioItem[], prices: Awaited<ReturnType<typeof getPortfolioPrices>>) {
+    return prev.map((item) => {
+      const p = prices.find((x) => x.symbol === item.symbol);
+      return p
+        ? { ...item, current_price: p.current_price, change_percent: p.change_percent,
+            last_updated: p.last_updated, upside_pct: p.upside_pct ?? item.upside_pct }
+        : item;
+    });
+  }
+
   const refreshPrices = useCallback(async (pid: number) => {
     if (refreshingRef.current) return;
     refreshingRef.current = true;
     setRefreshingPrices(true);
     try {
       const prices = await getPortfolioPrices(pid);
-      setItems((prev) =>
-        prev.map((item) => {
-          const p = prices.find((x) => x.symbol === item.symbol);
-          return p ? { ...item, current_price: p.current_price, change_percent: p.change_percent, last_updated: p.last_updated } : item;
-        })
-      );
+      setItems((prev) => applyPrices(prev, prices));
       setPriceRefreshAt(new Date());
     } catch {
       // silent
@@ -136,7 +143,7 @@ export default function PortfolioPage() {
       refreshingRef.current = false;
       setRefreshingPrices(false);
     }
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function refreshHoldings(pid: number) {
     const [updated, breakdown] = await Promise.all([
@@ -145,28 +152,53 @@ export default function PortfolioPage() {
     ]);
     setItems(updated);
     if (breakdown) setSectorBreakdown(breakdown);
+    // Fetch prices in background — non-blocking
+    getPortfolioPrices(pid)
+      .then((prices) => {
+        if (activeIdRef.current !== pid) return;
+        setItems((prev) => applyPrices(prev, prices));
+        setPriceRefreshAt(new Date());
+      })
+      .catch(() => {});
   }
 
-  // Initial load
+  // Initial load — Phase 1: holdings from DB (< 500 ms), Phase 2: prices in background
   useEffect(() => {
     if (activeId == null) return;
     activeIdRef.current = activeId;
     setLoading(true);
+    setPricesLoading(false);
     setItems([]);
     setSectorBreakdown(null);
     setPriceRefreshAt(null);
     const cash = activePortfolio?.cash_balance ?? 0;
     setCashBalance(cash);
-    getHoldings(activeId)
+
+    const pid = activeId;
+    getHoldings(pid)
       .then((data) => {
+        if (activeIdRef.current !== pid) return;
         setItems(data);
-        setPriceRefreshAt(new Date());
-        return getSectorBreakdown(activeId);
+        setLoading(false);
+
+        // Phase 2: prices + sector breakdown concurrently (non-blocking)
+        setPricesLoading(true);
+        const pricesP = getPortfolioPrices(pid)
+          .then((prices) => {
+            if (activeIdRef.current !== pid) return;
+            setItems((prev) => applyPrices(prev, prices));
+            setPriceRefreshAt(new Date());
+          })
+          .catch(() => {});
+        const sectorP = getSectorBreakdown(pid)
+          .then((bd) => { if (activeIdRef.current === pid) setSectorBreakdown(bd); })
+          .catch(() => {});
+        Promise.all([pricesP, sectorP]).finally(() => {
+          if (activeIdRef.current === pid) setPricesLoading(false);
+        });
       })
-      .then(setSectorBreakdown)
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [activeId]);
+      .catch(() => setLoading(false));
+  }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync cash from context
   useEffect(() => {
@@ -183,12 +215,7 @@ export default function PortfolioPage() {
       setRefreshingPrices(true);
       try {
         const prices = await getPortfolioPrices(pid);
-        setItems((prev) =>
-          prev.map((item) => {
-            const p = prices.find((x) => x.symbol === item.symbol);
-            return p ? { ...item, current_price: p.current_price, change_percent: p.change_percent, last_updated: p.last_updated } : item;
-          })
-        );
+        setItems((prev) => applyPrices(prev, prices));
         setPriceRefreshAt(new Date());
       } catch { /* silent */ } finally {
         refreshingRef.current = false;
@@ -196,7 +223,7 @@ export default function PortfolioPage() {
       }
     }, PRICE_REFRESH_INTERVAL);
     return () => clearInterval(id);
-  }, [activeId]);
+  }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Transaction handlers ──────────────────────────────────────────────────
 
@@ -479,7 +506,7 @@ export default function PortfolioPage() {
         <p className="text-sm text-gray-400">Loading…</p>
       ) : (
         <>
-          <PortfolioSummary items={items} cashBalance={cashBalance} />
+          <PortfolioSummary items={items} cashBalance={cashBalance} pricesLoading={pricesLoading} />
 
           {/* Cash Balance display (read-only; modified via Deposit / Withdraw) */}
           <div className="bg-white border rounded-xl p-4 shadow-sm flex items-center gap-4">
@@ -510,6 +537,7 @@ export default function PortfolioPage() {
             onRemove={handleRemove}
             onReanalyze={handleReanalyze}
             onToggleSwap={handleToggleSwap}
+            pricesLoading={pricesLoading}
             onSell={(item) =>
               setModal({
                 mode: "sell",

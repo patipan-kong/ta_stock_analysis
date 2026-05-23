@@ -130,6 +130,10 @@ function freshnessTitle(analyzedAt: string | null): string {
   return "Stale (> 3h)";
 }
 
+function PriceSkeleton() {
+  return <span className="inline-block w-12 h-3.5 bg-gray-200 rounded animate-pulse" />;
+}
+
 function SortIcon({ column }: { column: Column<PortfolioItem, unknown> }) {
   if (!column.getCanSort()) return null;
   const sorted = column.getIsSorted();
@@ -166,12 +170,14 @@ export default function PortfolioTable({
   onReanalyze,
   onToggleSwap,
   onSell,
+  pricesLoading = false,
 }: {
   rows: PortfolioItem[];
   onRemove: (symbol: string) => Promise<void>;
   onReanalyze: (symbol: string) => Promise<void>;
   onToggleSwap: (symbol: string, allow_swap: boolean) => Promise<void>;
   onSell?: (item: PortfolioItem) => void;
+  pricesLoading?: boolean;
 }) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [busy, setBusy] = useState<Record<string, "remove" | "reanalyze" | "toggle" | null>>({});
@@ -233,7 +239,11 @@ export default function PortfolioTable({
       ),
       columnHelper.accessor("current_price", {
         header: "Price", sortingFn: "basic",
-        cell: ({ getValue }) => { const v = getValue(); return v != null ? v.toFixed(2) : "—"; },
+        cell: ({ getValue }) => {
+          if (pricesLoading) return <PriceSkeleton />;
+          const v = getValue();
+          return v != null ? v.toFixed(2) : "—";
+        },
       }),
       columnHelper.accessor(
         (row) => row.current_price != null ? row.current_price * row.shares : null,
@@ -242,6 +252,7 @@ export default function PortfolioTable({
           header: "Mkt Value",
           sortingFn: "basic",
           cell: ({ getValue }) => {
+            if (pricesLoading) return <PriceSkeleton />;
             const v = getValue() as number | null;
             if (v == null) return <span className="text-gray-400">—</span>;
             return <span className="text-gray-700 font-medium">{v >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(2)}</span>;
@@ -250,7 +261,7 @@ export default function PortfolioTable({
       ),
       columnHelper.accessor("change_percent", {
         header: "Day%", sortingFn: "basic",
-        cell: ({ getValue }) => <ChangeCell value={getValue()} />,
+        cell: ({ getValue }) => pricesLoading ? <PriceSkeleton /> : <ChangeCell value={getValue()} />,
       }),
       columnHelper.accessor(
         (row) => row.current_price != null && row.avg_cost !== 0
@@ -260,7 +271,7 @@ export default function PortfolioTable({
           id: "pl_pct",
           header: "%P/L",
           sortingFn: "basic",
-          cell: ({ getValue }) => <PLPctCell value={getValue() as number | null} />,
+          cell: ({ getValue }) => pricesLoading ? <PriceSkeleton /> : <PLPctCell value={getValue() as number | null} />,
         }
       ),
       columnHelper.accessor(
@@ -269,10 +280,10 @@ export default function PortfolioTable({
           id: "pl_amount",
           header: "P/L",
           sortingFn: "basic",
-          cell: ({ getValue }) => <PLCell value={getValue() as number | null} />,
+          cell: ({ getValue }) => pricesLoading ? <PriceSkeleton /> : <PLCell value={getValue() as number | null} />,
         }
       ),
-      
+
       columnHelper.accessor("latest_signal", {
         header: "Signal", sortingFn: "alphanumeric",
         cell: ({ getValue }) => {
@@ -282,14 +293,17 @@ export default function PortfolioTable({
       }),
       columnHelper.accessor("upside_pct", {
         header: "Upside", sortingFn: "basic",
-        cell: ({ getValue, row }) => (
-          <UpsideCell
-            upside={getValue()}
-            signal={row.original.latest_signal}
-            isDr={row.original.is_dr}
-            parentSymbol={row.original.parent_symbol}
-          />
-        ),
+        cell: ({ getValue, row }) => {
+          if (pricesLoading) return <PriceSkeleton />;
+          return (
+            <UpsideCell
+              upside={getValue()}
+              signal={row.original.latest_signal}
+              isDr={row.original.is_dr}
+              parentSymbol={row.original.parent_symbol}
+            />
+          );
+        },
       }),
       columnHelper.accessor("risk_level", {
         header: "Risk", sortingFn: "alphanumeric",
@@ -352,7 +366,7 @@ export default function PortfolioTable({
         },
       }),
     ],
-    [busy, onSell]
+    [busy, onSell, pricesLoading]
   );
 
   const table = useReactTable({
@@ -417,23 +431,23 @@ export default function PortfolioTable({
               </div>
               <div className="flex items-center gap-4 text-sm">
                 <span className="font-semibold text-gray-800">
-                  {item.current_price != null ? item.current_price.toFixed(2) : "—"}
+                  {pricesLoading ? <PriceSkeleton /> : item.current_price != null ? item.current_price.toFixed(2) : "—"}
                 </span>
-                <ChangeCell value={item.change_percent} />
+                {pricesLoading ? <PriceSkeleton /> : <ChangeCell value={item.change_percent} />}
                 <span className="text-gray-400 text-xs ml-auto">{item.shares} shares</span>
               </div>
               <div className="flex items-center gap-4 text-sm">
                 <div className="flex flex-col">
                   <span className="text-xs text-gray-400">P/L</span>
-                  <PLCell value={pl} />
+                  {pricesLoading ? <PriceSkeleton /> : <PLCell value={pl} />}
                 </div>
                 <div className="flex flex-col">
                   <span className="text-xs text-gray-400">%P/L</span>
-                  <PLPctCell value={plPct} />
+                  {pricesLoading ? <PriceSkeleton /> : <PLPctCell value={plPct} />}
                 </div>
                 <div className="flex flex-col">
                   <span className="text-xs text-gray-400">Upside</span>
-                  <UpsideCell upside={item.upside_pct} signal={item.latest_signal} isDr={item.is_dr} parentSymbol={item.parent_symbol} />
+                  {pricesLoading ? <PriceSkeleton /> : <UpsideCell upside={item.upside_pct} signal={item.latest_signal} isDr={item.is_dr} parentSymbol={item.parent_symbol} />}
                 </div>
                 <div className="flex flex-col">
                   <span className="text-xs text-gray-400">Risk</span>
@@ -445,7 +459,7 @@ export default function PortfolioTable({
                   {(() => { const v = item.avg_cost * item.shares; return v >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(2); })()}
                 </span></span>
                 <span>Mkt Value: <span className="text-gray-700 font-medium">
-                  {item.current_price != null
+                  {pricesLoading ? <PriceSkeleton /> : item.current_price != null
                     ? (() => { const v = item.current_price * item.shares; return v >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(2); })()
                     : "—"}
                 </span></span>

@@ -564,6 +564,12 @@ class HoldingCreate(BaseModel):
 
 @app.get("/portfolios/{portfolio_id}/holdings")
 async def list_holdings(portfolio_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    """Return holdings from DB only — no yfinance calls.
+
+    Price fields (current_price, change_percent, last_updated, upside_pct) are
+    returned as null and filled in by a follow-up call to /prices.
+    This makes the endpoint respond in < 500 ms regardless of portfolio size.
+    """
     ws = _ws_id(db)
     p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
     if not p:
@@ -571,8 +577,12 @@ async def list_holdings(portfolio_id: int, db: Session = Depends(get_db)) -> lis
     items = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == portfolio_id).all()
     if not items:
         return []
-    prices = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, item.symbol) for item in items])
     symbols = [item.symbol for item in items]
+
+    # Null prices — filled by /prices endpoint after initial render
+    null_prices = [{"current_price": None, "change_percent": None, "last_updated": None}
+                   for _ in items]
+
     cached = {
         c.symbol: c
         for c in db.query(AnalysisCache).filter(
@@ -592,18 +602,18 @@ async def list_holdings(portfolio_id: int, db: Session = Depends(get_db)) -> lis
             }
         except Exception:
             pass
-    dr_parents = sorted({d["parent_symbol"] for d in fa_info.values() if d.get("is_dr") and d.get("parent_symbol")})
-    parent_prices: dict[str, dict] = {}
-    if dr_parents:
-        pp_list = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, s) for s in dr_parents])
-        parent_prices = dict(zip(dr_parents, pp_list))
     consensus_map = _latest_day_consensus(symbols, ws, db)
-    return _enrich_holdings(items, prices, cached, fa_info, parent_prices, consensus_map)
+    # No parent prices — upside_pct will be null until /prices responds
+    return _enrich_holdings(items, null_prices, cached, fa_info, {}, consensus_map)
 
 
 @app.get("/portfolios/{portfolio_id}/prices")
 async def get_portfolio_prices(portfolio_id: int, db: Session = Depends(get_db)) -> list[dict]:
-    """Lightweight real-time price refresh — parallel yfinance fast_info, no AI or cache queries."""
+    """Fetch current prices for all holdings (hits MarketDataCache first, 5-min TTL).
+
+    Also returns upside_pct computed server-side (requires FA agent cache + DR parent
+    prices) so the frontend can patch all price-dependent columns in one round-trip.
+    """
     ws = _ws_id(db)
     p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
     if not p:
@@ -611,13 +621,63 @@ async def get_portfolio_prices(portfolio_id: int, db: Session = Depends(get_db))
     items = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == portfolio_id).all()
     if not items:
         return []
+    symbols = [item.symbol for item in items]
+
+    # Parallel price fetch — hits DB cache (5-min TTL) before touching yfinance
     prices = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, item.symbol) for item in items])
-    return [{"symbol": item.symbol, **price} for item, price in zip(items, prices)]
+    price_map = {item.symbol: pr for item, pr in zip(items, prices)}
+
+    # FA info for target_price + DR detection (DB only, no yfinance)
+    fa_info: dict[str, dict] = {}
+    for row in db.query(AgentCache).filter(AgentCache.symbol.in_(symbols), AgentCache.agent == "fundamental").all():
+        try:
+            data = _json.loads(row.result_json)
+            dr = is_dr_symbol(row.symbol)
+            fa_info[row.symbol] = {
+                "target_price": data.get("target_price"),
+                "is_dr": dr,
+                "parent_symbol": normalize_dr_symbol(row.symbol) if dr else None,
+            }
+        except Exception:
+            pass
+
+    # DR parent prices needed for upside_pct of DR holdings
+    dr_parents = sorted({d["parent_symbol"] for d in fa_info.values() if d.get("is_dr") and d.get("parent_symbol")})
+    parent_prices: dict[str, dict] = {}
+    if dr_parents:
+        pp_list = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, s) for s in dr_parents])
+        parent_prices = dict(zip(dr_parents, pp_list))
+
+    result = []
+    for item, price in zip(items, prices):
+        sym = item.symbol
+        info = fa_info.get(sym, {})
+        target_price = info.get("target_price")
+        is_dr = info.get("is_dr", False)
+        parent_sym = info.get("parent_symbol")
+        upside_price = (
+            (parent_prices.get(parent_sym) or {}).get("current_price")
+            if is_dr and parent_sym
+            else price.get("current_price")
+        )
+        upside_pct: float | None = (
+            round((target_price - upside_price) / upside_price * 100, 1)
+            if target_price and upside_price and upside_price > 0
+            else None
+        )
+        result.append({"symbol": sym, **price, "upside_pct": upside_pct})
+
+    return result
 
 
 @app.get("/portfolios/{portfolio_id}/sector-breakdown")
 async def get_sector_breakdown(portfolio_id: int, db: Session = Depends(get_db)) -> dict:
-    """Return sector allocation for the portfolio with limit status for each sector."""
+    """Return sector allocation from DB only — no yfinance calls.
+
+    Uses cost basis (avg_cost × shares) as the value proxy so sector weights
+    are available instantly.  Sector column is read directly from DB (populated
+    at add-time), so this endpoint is pure SQL and responds in < 50 ms.
+    """
     ws = _ws_id(db)
     p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
     if not p:
@@ -626,25 +686,17 @@ async def get_sector_breakdown(portfolio_id: int, db: Session = Depends(get_db))
     if not items:
         return {"sectors": [], "total_value": 0}
 
-    prices_list = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, i.symbol) for i in items])
-    price_map = {item.symbol: p for item, p in zip(items, prices_list)}
-
-    sector_map: dict[str, str] = {item.symbol: normalize_sector(item.sector) for item in items}
-
     sector_limits = _get_sector_limits(db, ws)
     default_limit: int = int(sector_limits.get("default") or _get_portfolio_settings(db, ws).get("max_sector_pct", 40))
 
     agg: dict[str, dict] = {}
     for item in items:
-        sym = item.symbol
-        pr = price_map.get(sym, {})
-        price = pr.get("current_price") or item.avg_cost
-        mv = item.shares * price
-        sector = sector_map.get(sym, "Other")
+        mv = item.shares * item.avg_cost  # cost basis — pure DB, no yfinance
+        sector = normalize_sector(item.sector)
         if sector not in agg:
             agg[sector] = {"value": 0.0, "stocks": []}
         agg[sector]["value"] += mv
-        agg[sector]["stocks"].append(sym)
+        agg[sector]["stocks"].append(item.symbol)
 
     total_value = sum(d["value"] for d in agg.values())
     result = []
