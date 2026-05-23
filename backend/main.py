@@ -2384,10 +2384,15 @@ async def get_cost_estimate(
     result_list = sorted(by_model.values(), key=lambda x: -x["estimated_cost_usd"])
     for item in result_list:
         item["estimated_cost_usd"] = round(item["estimated_cost_usd"], 6)
+        item["estimated_cost_thb"] = round(item["estimated_cost_usd"] * _USD_TO_THB, 4)
+
+    total_usd = round(sum(r["estimated_cost_usd"] for r in result_list), 6)
 
     return {
+        "fx": {"usd_to_thb": _USD_TO_THB},
         "by_model": result_list,
-        "total_estimated_usd": round(sum(r["estimated_cost_usd"] for r in result_list), 6),
+        "total_estimated_usd": total_usd,
+        "total_estimated_thb": round(total_usd * _USD_TO_THB, 4),
     }
 
 

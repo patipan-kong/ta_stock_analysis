@@ -2,16 +2,16 @@
 
 import { useState } from "react";
 
-type TabType = "scoring" | "signals" | "optimizer" | "caching";
+type TabType = "scoring" | "signals" | "optimizer" | "operations";
 
 export default function SystemGuidePage() {
   const [activeTab, setActiveTab] = useState<TabType>("scoring");
 
-  const tabs: { id: TabType; label: string; icon: string }[] = [
-    { id: "scoring", label: "🧩 Scoring System", icon: "🧩" },
-    { id: "signals", label: "🚦 Signal Guide", icon: "🚦" },
-    { id: "optimizer", label: "🧠 3-Layer Optimizer", icon: "🧠" },
-    { id: "caching", label: "⚡ Caching & Freshness", icon: "⚡" },
+  const tabs: { id: TabType; label: string }[] = [
+    { id: "scoring", label: "Scoring System" },
+    { id: "signals", label: "Signal Guide" },
+    { id: "optimizer", label: "3-Layer Optimizer" },
+    { id: "operations", label: "Jobs, Cache, Analytics" },
   ];
 
   return (
@@ -46,7 +46,7 @@ export default function SystemGuidePage() {
         {activeTab === "scoring" && <ScoringTab />}
         {activeTab === "signals" && <SignalsTab />}
         {activeTab === "optimizer" && <OptimizerTab />}
-        {activeTab === "caching" && <CachingTab />}
+        {activeTab === "operations" && <OperationsTab />}
       </div>
     </div>
   );
@@ -57,93 +57,66 @@ function ScoringTab() {
     <div className="space-y-8">
       <div>
         <h2 className="text-3xl font-bold mb-4 text-blue-600">
-          🧩 Scoring System
+          Scoring System
         </h2>
         <p className="text-gray-700 mb-6">
-          The system uses <strong>Deterministic Scoring</strong> (mathematics-based,
-          no AI) to calculate raw scores on a 0-100 scale. These scores serve as
-          <strong> anchors</strong> that the AI uses to reason about investment decisions.
+          The platform computes deterministic, math-first scores before any AI summary call.
+          These scores become objective anchors used by the analysis and optimizer pipelines.
         </p>
       </div>
 
       <div className="grid md:grid-cols-2 gap-6">
-        {/* Technical Score */}
         <div className="bg-white rounded-lg p-6 border-l-4 border-orange-500 shadow">
           <h3 className="text-xl font-bold mb-3 text-orange-600">
-            📈 Technical Score
+            Technical Score (0-100)
           </h3>
           <ul className="space-y-2 text-sm text-gray-700">
-            <li>
-              <strong>Midpoint:</strong> 50 (Neutral)
-            </li>
-            <li>
-              <strong>&gt; 65:</strong> <span className="text-green-600">Bullish</span>
-            </li>
-            <li>
-              <strong>&lt; 35:</strong> <span className="text-red-600">Bearish</span>
-            </li>
+            <li><strong>50:</strong> neutral baseline</li>
+            <li><strong>&gt; 65:</strong> bullish</li>
+            <li><strong>&lt; 35:</strong> bearish</li>
             <li className="pt-2 text-xs text-gray-500">
-              Based on EMA, TEMA, ZigZag pivots, BB crossovers, RSI, MACD, and price patterns.
+              Derived from multi-timeframe TA indicators (EMA, TEMA, ZigZag, BB, MACD, RSI).
             </li>
           </ul>
         </div>
 
-        {/* Fundamental Score */}
         <div className="bg-white rounded-lg p-6 border-l-4 border-green-500 shadow">
           <h3 className="text-xl font-bold mb-3 text-green-600">
-            💰 Fundamental Score
+            Fundamental Score (0-100)
           </h3>
           <ul className="space-y-2 text-sm text-gray-700">
-            <li>
-              <strong>Midpoint:</strong> 50 (Fairly Valued)
-            </li>
-            <li>
-              <strong>&gt; 70:</strong> <span className="text-green-600">Undervalued</span>
-            </li>
-            <li>
-              <strong>&lt; 30:</strong> <span className="text-red-600">Overvalued</span>
-            </li>
+            <li><strong>50:</strong> fairly valued baseline</li>
+            <li><strong>&gt; 70:</strong> relatively undervalued</li>
+            <li><strong>&lt; 30:</strong> relatively overvalued</li>
             <li className="pt-2 text-xs text-gray-500">
-              Based on P/E ratio, ROE, revenue growth, and debt/equity ratio.
+              Uses P/E, ROE, growth, debt/equity, and related valuation factors.
             </li>
           </ul>
         </div>
 
-        {/* News Sentiment */}
         <div className="bg-white rounded-lg p-6 border-l-4 border-blue-500 shadow">
           <h3 className="text-xl font-bold mb-3 text-blue-600">
-            📰 News Sentiment
+            News Sentiment (0-100)
           </h3>
           <ul className="space-y-2 text-sm text-gray-700">
-            <li>
-              <strong>Midpoint:</strong> 50 (Neutral)
-            </li>
-            <li>
-              <strong>&gt; 65:</strong> <span className="text-green-600">Positive</span> news
-            </li>
-            <li>
-              <strong>&lt; 35:</strong> <span className="text-red-600">Negative</span> news
-            </li>
+            <li><strong>50:</strong> neutral sentiment</li>
+            <li><strong>&gt; 65:</strong> positive narrative flow</li>
+            <li><strong>&lt; 35:</strong> negative narrative flow</li>
             <li className="pt-2 text-xs text-gray-500">
-              Aggregated sentiment from recent news articles and market activity.
+              Built from recent headline flow and tone extraction.
             </li>
           </ul>
         </div>
 
-        {/* Valuation Percentile */}
         <div className="bg-white rounded-lg p-6 border-l-4 border-amber-500 shadow">
           <h3 className="text-xl font-bold mb-3 text-amber-600">
-            📊 Valuation Percentile Penalty
+            Valuation Percentile Penalty
           </h3>
           <ul className="space-y-2 text-sm text-gray-700">
-            <li>
-              <strong>≥ 92:</strong> <span className="text-red-600">−12 points</span> to Fundamental
-            </li>
-            <li>
-              <strong>≥ 80:</strong> <span className="text-orange-600">−6 points</span> to Fundamental
-            </li>
+            <li><strong>&gt;= 92 percentile:</strong> -12 to fundamental score</li>
+            <li><strong>&gt;= 80 percentile:</strong> -6 to fundamental score</li>
             <li className="pt-2 text-xs text-gray-500">
-              Protects against overpaying in a sector. Adjusted during portfolio optimization.
+              Applied during optimizer peer comparison to reduce overpaying risk.
             </li>
           </ul>
         </div>
@@ -151,9 +124,8 @@ function ScoringTab() {
 
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
         <p className="text-sm text-blue-800">
-          💡 <strong>Why Scores Matter:</strong> All three scores are calculated before
-          the AI makes recommendations. This ensures the AI bases decisions on
-          objective, reproducible measurements—not just subjective reasoning.
+          <strong>Why this matters:</strong> AI summaries consume these scores as fixed inputs,
+          so recommendations stay tethered to reproducible numeric evidence.
         </p>
       </div>
     </div>
@@ -164,45 +136,39 @@ function SignalsTab() {
   const signals = [
     {
       level: "BUY",
-      color: "green",
       bg: "bg-green-50 border-green-200",
-      desc: "FA is strong AND TA is positive. Top-20% opportunity with valuation_percentile < 92. TA must NOT be bearish.",
-      when: "Ready to deploy capital immediately.",
+      desc: "FA strong and TA positive. Reserved for top-quality setups; TA must not be bearish.",
+      when: "Deploy capital now when portfolio constraints allow.",
     },
     {
       level: "ACCUMULATE",
-      color: "teal",
       bg: "bg-teal-50 border-teal-200",
-      desc: "FA is strong, but TA is weak or neutral. Best for Dollar-Cost Averaging (DCA)—buy gradually over time, not all at once.",
-      when: "Fundamentals are solid but technicals need work.",
+      desc: "FA strong, TA not fully aligned. Better for phased entries and DCA.",
+      when: "Scale in gradually instead of one-shot buying.",
     },
     {
       level: "WATCH",
-      color: "blue",
       bg: "bg-blue-50 border-blue-200",
-      desc: "Good fundamentals, technicals not ready. Valuation percentile < 75 and FA positive but TA neutral.",
-      when: "Hold back and wait for a better entry signal or chart confirmation.",
+      desc: "Underlying quality exists, but setup is not ready for action.",
+      when: "Wait for technical confirmation or improved entry.",
     },
     {
       level: "HOLD",
-      color: "gray",
       bg: "bg-gray-100 border-gray-300",
-      desc: "Mixed or insufficient signals. No strong reason to add or reduce.",
-      when: "Neither a buy nor a sell. Status quo is acceptable.",
+      desc: "Mixed evidence with no high-conviction add or reduce trigger.",
+      when: "Keep position unchanged.",
     },
     {
       level: "REDUCE",
-      color: "amber",
       bg: "bg-amber-50 border-amber-200",
-      desc: "Position is overextended. TA strongly bearish on the holding OR valuation_percentile > 85.",
-      when: "Begin trimming and taking profits.",
+      desc: "Position looks stretched, crowded, or over-valued relative to risk.",
+      when: "Trim size and protect gains.",
     },
     {
       level: "SELL",
-      color: "red",
       bg: "bg-red-50 border-red-200",
-      desc: "Exit immediately. FA is deteriorating OR TA score ≤ −3 OR major negative catalyst.",
-      when: "Liquidate position to prevent further losses.",
+      desc: "Thesis deterioration or severe technical breakdown; exit bias is dominant.",
+      when: "Close position and reallocate.",
     },
   ];
 
@@ -210,12 +176,11 @@ function SignalsTab() {
     <div className="space-y-8">
       <div>
         <h2 className="text-3xl font-bold mb-4 text-blue-600">
-          🚦 Signal Guide (6 Levels)
+          Signal Guide (6 Levels)
         </h2>
         <p className="text-gray-700 mb-6">
-          Each stock receives one of six trading signals, each with distinct
-          investment guidance. The AI translates combined scores into these signals
-          using strict rules.
+          Every symbol is mapped to one of six action levels. Signals combine deterministic
+          scores and model reasoning, then flow into portfolio and optimizer decisions.
         </p>
       </div>
 
@@ -246,8 +211,8 @@ function SignalsTab() {
 
       <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
         <p className="text-sm text-yellow-800">
-          ⚠️ <strong>Golden Rule:</strong> The system NEVER assigns a BUY signal based
-          on Fundamentals alone. Both FA strength AND TA confirmation are required for BUY.
+          <strong>Golden rule:</strong> BUY is never assigned on fundamentals alone.
+          Technical confirmation is required for top-conviction entries.
         </p>
       </div>
     </div>
@@ -259,123 +224,122 @@ function OptimizerTab() {
     <div className="space-y-8">
       <div>
         <h2 className="text-3xl font-bold mb-4 text-blue-600">
-          🧠 3-Layer Optimizer (Consensus Engine)
+          3-Layer Optimizer (Consensus Engine)
         </h2>
         <p className="text-gray-700 mb-6">
-          Instead of relying on a single AI call, the optimizer runs three independent
-          layers that check and balance each other. This multi-perspective approach
-          reduces bias and improves portfolio recommendations.
+          The optimizer runs three independent AI layers plus a pure-Python consensus engine.
+          This design reduces single-model bias and adds explicit risk controls.
         </p>
       </div>
 
       <div className="space-y-6">
-        {/* Layer 1 */}
         <div className="bg-purple-50 border-l-4 border-purple-500 rounded-lg p-6 border shadow">
           <h3 className="text-2xl font-bold mb-2 text-purple-700">
-            📋 Layer 1 — Strategist
+            Layer 1 - Strategist
           </h3>
           <p className="text-gray-700 mb-3">
-            <strong>Primary Role:</strong> Architect of the main portfolio allocation.
+            <strong>Role:</strong> proposes the primary allocation plan.
           </p>
           <ul className="text-sm text-gray-700 space-y-2">
-            <li>✓ Creates the foundational allocation plan</li>
-            <li>✓ Proposes stock swaps (which holdings to exit, which to enter)</li>
-            <li>✓ Ranks watchlist symbols by growth potential</li>
-            <li>✓ Follows an <strong>Aggressive Growth</strong> strategy</li>
+            <li>Creates swaps, top buys, and sector flags</li>
+            <li>Includes partial actions (REDUCE and ACCUMULATE), not only full swaps</li>
+            <li>Evaluates sector concentration, overweight holdings, and 2-5% shift opportunities</li>
           </ul>
         </div>
 
-        {/* Layer 2 */}
         <div className="bg-indigo-50 border-l-4 border-indigo-500 rounded-lg p-6 border shadow">
           <h3 className="text-2xl font-bold mb-2 text-indigo-700">
-            🔍 Layer 2 — Challenger
+            Layer 2 - Challenger
           </h3>
           <p className="text-gray-700 mb-3">
-            <strong>Primary Role:</strong> Independent reviewer and alternative strategist.
+            <strong>Role:</strong> independent critique and alternative allocation.
           </p>
           <ul className="text-sm text-gray-700 space-y-2">
-            <li>✓ Reviews Layer 1's plan objectively</li>
-            <li>✓ Searches for overlooked opportunities</li>
-            <li>✓ Proposes risk-diversified alternatives</li>
-            <li>✓ Either agrees with Layer 1 or suggests a different approach</li>
+            <li>Can agree with strategist or provide disagreements</li>
+            <li>Returns portfolio assessment, cash target, and full target weights</li>
+            <li>Acts as the final actionable plan source for signal-history logging</li>
           </ul>
         </div>
 
-        {/* Layer 3 */}
         <div className="bg-cyan-50 border-l-4 border-cyan-500 rounded-lg p-6 border shadow">
           <h3 className="text-2xl font-bold mb-2 text-cyan-700">
-            ⚠️ Layer 3 — Risk Auditor
+            Layer 3 - Risk Auditor
           </h3>
           <p className="text-gray-700 mb-3">
-            <strong>Primary Role:</strong> Detect deep-level risks and concentration issues.
+            <strong>Role:</strong> concentration and downside risk audit.
           </p>
           <ul className="text-sm text-gray-700 space-y-2">
-            <li>✓ Flags sector concentration risks (Limit: 40% per sector)</li>
-            <li>✓ Analyzes intra-sector stock correlations</li>
-            <li>✓ Proposes safer alternatives or rebalancing</li>
-            <li>✓ Provides risk severity ratings and remediation steps</li>
+            <li>Emits LOW, MEDIUM, HIGH, or CRITICAL risk flags</li>
+            <li>Can block aggressive plans when concentration risk is excessive</li>
+            <li>Suggests safer alternatives for high-risk exposure clusters</li>
           </ul>
         </div>
       </div>
 
-      {/* Consensus Engine */}
       <div className="bg-green-50 border border-green-200 rounded-lg p-6 shadow">
         <h3 className="text-2xl font-bold mb-2 text-green-700">
-          🎯 Consensus Engine
+          Consensus Matrix
         </h3>
         <p className="text-gray-700 mb-4">
-          After all three layers submit their recommendations, a <strong>pure Python backend</strong> aggregates
-          their votes and decisions:
+          A pure-Python engine scores alignment and risk to classify outcomes into seven types:
         </p>
-        <ul className="text-sm text-gray-700 space-y-2">
-          <li>✓ Tallies agreement scores across layers</li>
-          <li>✓ Enforces forced SELL for flagged holdings</li>
-          <li>✓ Respects locked stock exclusions</li>
-          <li>✓ Applies sector allocation caps (e.g., Tech ≤ 35%)</li>
-          <li>✓ Ensures total allocation ≤ 100% (respects dry powder)</li>
-          <li>✓ Outputs final swap recommendations and watchlist priority order</li>
-        </ul>
+        <div className="grid md:grid-cols-2 gap-3 text-sm text-gray-700">
+          <div className="bg-white border border-green-200 rounded p-3">STRONG_CONSENSUS</div>
+          <div className="bg-white border border-green-200 rounded p-3">REFINED_CONSENSUS</div>
+          <div className="bg-white border border-green-200 rounded p-3">PARTIAL_CONSENSUS</div>
+          <div className="bg-white border border-green-200 rounded p-3">WEAK_CONSENSUS</div>
+          <div className="bg-white border border-green-200 rounded p-3">RISK_CONFLICT</div>
+          <div className="bg-white border border-green-200 rounded p-3">STRATEGIC_CONFLICT</div>
+          <div className="bg-white border border-green-200 rounded p-3 md:col-span-2">NO_ACTION_CONSENSUS</div>
+        </div>
       </div>
 
       <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
         <p className="text-sm text-orange-800">
-          ⏱️ <strong>Performance Note:</strong> Each of the 3 layers makes one independent
-          AI call. Expect the optimizer to take 30–60 seconds per full run.
+          <strong>Performance note:</strong> one optimizer run triggers three sequential AI calls,
+          so end-to-end latency can still be tens of seconds.
         </p>
       </div>
     </div>
   );
 }
 
-function CachingTab() {
+function OperationsTab() {
   const cacheStrategies = [
     {
       name: "Technical Data",
       ttl: "15 minutes",
-      reason: "Price and chart patterns change frequently",
-      scope: "EMA, TEMA, ZigZag, BB, MACD, RSI, OHLCV",
+      reason: "chart indicators and trend state change quickly",
+      scope: "TA agent cache",
       color: "bg-orange-50 border-orange-200",
     },
     {
       name: "News Data",
       ttl: "1 hour",
-      reason: "News articles arrive throughout the day",
-      scope: "Recent articles, sentiment updates",
+      reason: "headline flow updates intraday",
+      scope: "news agent cache",
       color: "bg-blue-50 border-blue-200",
     },
     {
       name: "Fundamental Data",
       ttl: "24 hours",
-      reason: "Earnings only update quarterly, ratios change slowly",
-      scope: "P/E, ROE, revenue growth, debt/equity, dividends",
+      reason: "fundamental ratios move slowly compared to price",
+      scope: "fundamental agent cache",
       color: "bg-green-50 border-green-200",
     },
     {
       name: "Analysis Cache (AI Summary)",
       ttl: "12 hours",
-      reason: "AI signal should reflect latest data without constant reanalysis",
-      scope: "Generated signal, reasoning, confidence",
+      reason: "reduce repeated model calls while keeping signals reasonably fresh",
+      scope: "signal, confidence, reasoning",
       color: "bg-purple-50 border-purple-200",
+    },
+    {
+      name: "Analyze All Shortcut Cache",
+      ttl: "60 minutes",
+      reason: "batch runs skip recently analyzed symbols",
+      scope: "portfolio/watchlist analyze-all endpoints",
+      color: "bg-indigo-50 border-indigo-200",
     },
   ];
 
@@ -383,14 +347,23 @@ function CachingTab() {
     <div className="space-y-8">
       <div>
         <h2 className="text-3xl font-bold mb-4 text-blue-600">
-          ⚡ Caching & Freshness
+          Jobs, Caching, and Analytics
         </h2>
         <p className="text-gray-700 mb-6">
-          The system caches data at multiple layers with different Time-To-Live (TTL)
-          values. This balances responsiveness with API rate limits and computational
-          efficiency. A <strong>freshness indicator</strong> (colored dot) shows you how
-          recent each piece of data is.
+          This platform uses concurrent analysis workers, in-process job tracking, and
+          layered caches to keep large watchlists responsive.
         </p>
+      </div>
+
+      <div className="bg-white rounded-lg p-6 border border-gray-200 shadow">
+        <h3 className="text-xl font-bold mb-4 text-gray-900">Async Watchlist Jobs</h3>
+        <div className="space-y-2 text-sm text-gray-700">
+          <p><strong>POST /analyze/watchlist</strong> queues a run and returns job_id immediately.</p>
+          <p><strong>GET /analyze/jobs/{"{job_id}"}</strong> returns queued/running/done status with progress.</p>
+          <p><strong>GET /analyze/jobs/{"{job_id}"}/stream</strong> streams SSE progress events in real time.</p>
+          <p>Job records are stored in-process with a 10-minute expiration window.</p>
+          <p>Per-symbol analysis uses concurrency limits and deterministic fallback if AI times out.</p>
+        </div>
       </div>
 
       <div className="grid md:grid-cols-2 gap-6">
@@ -417,53 +390,23 @@ function CachingTab() {
         ))}
       </div>
 
-      {/* Freshness Indicator */}
-      <div className="bg-white rounded-lg p-6 border border-gray-200 shadow">
-        <h3 className="text-xl font-bold mb-4 text-gray-900">
-          🟢 Freshness Indicator (Colored Dots)
-        </h3>
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <span className="inline-flex h-4 w-4 rounded-full bg-green-500"></span>
-            <span className="text-gray-700">
-              <strong>Green:</strong> Data updated within the TTL (Fresh)
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="inline-flex h-4 w-4 rounded-full bg-yellow-500"></span>
-            <span className="text-gray-700">
-              <strong>Yellow:</strong> Data is aging, approaching stale threshold
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="inline-flex h-4 w-4 rounded-full bg-red-500"></span>
-            <span className="text-gray-700">
-              <strong>Red:</strong> Data is stale (exceeded TTL)
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Batch Analysis */}
-      <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-6 shadow">
-        <h3 className="text-xl font-bold mb-3 text-indigo-700">
-          📊 Batch Analysis ("Analyze All")
-        </h3>
-        <p className="text-gray-700 mb-3">
-          The "Analyze All" button has its own 60-minute cache:
+      <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-6 shadow">
+        <h3 className="text-xl font-bold mb-3 text-emerald-700">Performance Comparison Endpoint</h3>
+        <p className="text-sm text-gray-700 mb-2">
+          <strong>GET /analytics/performance-comparison</strong> returns benchmark-normalized series
+          (base = 100 at the first snapshot date).
         </p>
         <ul className="text-sm text-gray-700 space-y-2">
-          <li>✓ Skips symbols analyzed within the last 60 minutes</li>
-          <li>✓ Only re-analyzes stale symbols</li>
-          <li>✓ Reduces API calls and computation time</li>
-          <li>✓ Perfect for overnight batch updates</li>
+          <li>Compares portfolio curve against configurable benchmark symbols</li>
+          <li>Returns flat chart-ready rows for frontend rendering</li>
+          <li>Supports default benchmark pair ^SET.BK and QQQ</li>
         </ul>
       </div>
 
       <div className="bg-teal-50 border border-teal-200 rounded-lg p-4">
         <p className="text-sm text-teal-800">
-          💡 <strong>Pro Tip:</strong> If you need fresh data immediately, click
-          "Analyze" on a specific stock to bypass the cache and fetch live data.
+          <strong>Operator tip:</strong> use job stream for long watchlist runs and poll endpoint for
+          resilient progress tracking if the browser reconnects.
         </p>
       </div>
     </div>

@@ -742,12 +742,15 @@ export interface ModelCostStat {
   total_input_tokens: number;
   total_output_tokens: number;
   estimated_cost_usd: number;
+  estimated_cost_thb?: number;
   call_count: number;
 }
 
 export interface CostEstimate {
+  fx?: { usd_to_thb: number };
   by_model: ModelCostStat[];
   total_estimated_usd: number;
+  total_estimated_thb?: number;
 }
 
 function _dateQS(fromDate?: string, toDate?: string): string {

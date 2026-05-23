@@ -128,6 +128,8 @@ function OptimizerLatencyTable({ rows }: { rows: OptimizerLatencyStat[] }) {
 
 function CostTable({ data }: { data: CostEstimate }) {
   const { by_model, total_estimated_usd } = data;
+  const fx = data.fx?.usd_to_thb ?? 36;
+  const totalEstimatedThb = data.total_estimated_thb ?? total_estimated_usd * fx;
   if (!by_model.length) return <p className="px-5 py-4 text-sm text-gray-400">No data yet.</p>;
   const totalCalls = by_model.reduce((s, r) => s + r.call_count, 0);
   const totalIn    = by_model.reduce((s, r) => s + r.total_input_tokens, 0);
@@ -141,7 +143,8 @@ function CostTable({ data }: { data: CostEstimate }) {
             <th className="py-2 pr-3 font-medium text-right">Calls</th>
             <th className="py-2 pr-3 font-medium text-right">Input tokens</th>
             <th className="py-2 pr-3 font-medium text-right">Output tokens</th>
-            <th className="py-2 pr-5 font-medium text-right">Est. cost</th>
+            <th className="py-2 pr-3 font-medium text-right">Est. cost (USD)</th>
+            <th className="py-2 pr-5 font-medium text-right">Est. cost (THB)</th>
           </tr>
         </thead>
         <tbody>
@@ -156,8 +159,11 @@ function CostTable({ data }: { data: CostEstimate }) {
               <td className="py-2.5 pr-3 text-right text-gray-600">{row.call_count}</td>
               <td className="py-2.5 pr-3 text-right text-gray-600">{fmt(row.total_input_tokens)}</td>
               <td className="py-2.5 pr-3 text-right text-gray-600">{fmt(row.total_output_tokens)}</td>
-              <td className="py-2.5 pr-5 text-right font-semibold text-gray-800">
+              <td className="py-2.5 pr-3 text-right font-semibold text-gray-800">
                 ${row.estimated_cost_usd.toFixed(4)}
+              </td>
+              <td className="py-2.5 pr-5 text-right font-semibold text-gray-800">
+                ฿{(row.estimated_cost_thb ?? row.estimated_cost_usd * fx).toFixed(2)}
               </td>
             </tr>
           ))}
@@ -166,7 +172,8 @@ function CostTable({ data }: { data: CostEstimate }) {
             <td className="py-2.5 pr-3 text-right font-semibold text-gray-700">{totalCalls}</td>
             <td className="py-2.5 pr-3 text-right font-semibold text-gray-700">{fmt(totalIn)}</td>
             <td className="py-2.5 pr-3 text-right font-semibold text-gray-700">{fmt(totalOut)}</td>
-            <td className="py-2.5 pr-5 text-right font-bold text-gray-900">${total_estimated_usd.toFixed(4)}</td>
+            <td className="py-2.5 pr-3 text-right font-bold text-gray-900">${total_estimated_usd.toFixed(4)}</td>
+            <td className="py-2.5 pr-5 text-right font-bold text-gray-900">฿{totalEstimatedThb.toFixed(2)}</td>
           </tr>
         </tbody>
       </table>
@@ -299,6 +306,9 @@ export default function StatsPage() {
             <div className="text-right shrink-0">
               <p className="text-xs text-gray-500">{isFiltered ? "Filtered total" : "All-time total"}</p>
               <p className="text-xl font-bold text-gray-900">${cost.total_estimated_usd.toFixed(4)}</p>
+              <p className="text-sm font-semibold text-gray-600">
+                ฿{(cost.total_estimated_thb ?? cost.total_estimated_usd * (cost.fx?.usd_to_thb ?? 36)).toFixed(2)}
+              </p>
             </div>
           )}
         </div>
