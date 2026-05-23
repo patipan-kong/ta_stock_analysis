@@ -1,149 +1,380 @@
+"""Cache-aware market data facade.
+
+Call hierarchy:
+  agents / main.py
+      ↓  fetch_history / fetch_info / fetch_price_info / fetch_news
+  data_fetcher  ← this module (cache layer)
+      ↓  on cache-miss or cache-expired
+  services.market_data.YahooProvider (network I/O)
+      ↓  on failure
+  stale cache (served with _stale_data metadata attached)
+
+TTL policy:
+  quote             → 5 min
+  history intraday  → 5 min
+  history short     → 15 min (1mo / 3mo)
+  history long      → 24 h  (6mo+ / weekly)
+  fundamental/info  → 24 h
+  benchmark         → 15 min
+"""
+from __future__ import annotations
+
+import io
+import json as _json
+import logging
 import re
+import threading
 import time
-import random
-import traceback
-import yfinance as yf
-import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from typing import Optional
 
-try:
-    from yfinance.exceptions import YFRateLimitError as _YFRateLimitError
-except ImportError:
-    _YFRateLimitError = None
+import pandas as pd
 
-# DR (Depository Receipt) symbols traded on the Thai SET: letters + 2 digits + .BK
-# e.g. AAPL01.BK, AMD08.BK, MSFT12.BK → base US ticker: AAPL, AMD, MSFT
-_DR_RE = re.compile(r'^([A-Z]+)\d{2}\.BK$')
+from models.database import MarketDataCache, SessionLocal
+from services.market_data.yahoo import YahooProvider, _is_rate_limit
 
-# In-memory price cache: {symbol: {current_price, change_percent, last_updated, cached_at}}
-_price_cache: dict = {}
-_PRICE_CACHE_TTL = 15 * 60  # 15 minutes
+_log = logging.getLogger(__name__)
 
+# ── DR symbol regex ────────────────────────────────────────────────────────────
+_DR_RE = re.compile(r"^([A-Z]+)\d{2}\.BK$")
+
+# ── Provider singleton ─────────────────────────────────────────────────────────
+_provider: YahooProvider = YahooProvider()
+
+# ── TTL table (seconds) ────────────────────────────────────────────────────────
+_TTL_QUOTE       = 5  * 60        # 5 min  – live prices
+_TTL_FUND        = 24 * 3600      # 24 h   – P/E, ROE, sector, …
+_TTL_BENCHMARK   = 15 * 60        # 15 min – index / ETF prices
+_TTL_HIST_INTRA  = 5  * 60        # 5 min  – intraday bars
+_TTL_HIST_SHORT  = 15 * 60        # 15 min – 1mo / 3mo daily
+_TTL_HIST_LONG   = 24 * 3600      # 24 h   – 6mo+ / weekly
+
+
+def _history_ttl(period: str, interval: str) -> int:
+    if interval in ("1m", "2m", "5m", "15m", "30m", "60m", "1h"):
+        return _TTL_HIST_INTRA
+    if period in ("1d", "5d"):
+        return _TTL_HIST_INTRA
+    if period in ("1mo", "3mo"):
+        return _TTL_HIST_SHORT
+    return _TTL_HIST_LONG
+
+
+# ── In-process stats counters (reset on server restart) ───────────────────────
+_stats_lock = threading.Lock()
+_stats: dict = {
+    "cache_hits":              0,
+    "cache_misses":            0,
+    "stale_served":            0,
+    "yahoo_requests":          0,
+    "yahoo_errors":            0,
+    "timeouts":                0,
+    "rate_limits":             0,
+    "yahoo_total_latency_ms":  0.0,
+    "yahoo_latency_samples":   0,
+    "started_at":              datetime.utcnow().isoformat() + "Z",
+}
+
+
+def _inc(key: str, amount: float = 1.0) -> None:
+    with _stats_lock:
+        _stats[key] = _stats.get(key, 0) + amount
+
+
+def get_cache_stats() -> dict:
+    """Return a copy of current in-process counters (used by /admin/cache-stats)."""
+    with _stats_lock:
+        s = dict(_stats)
+    total = s["cache_hits"] + s["cache_misses"]
+    hit_rate  = round(s["cache_hits"]  / total * 100, 1) if total else 0.0
+    miss_rate = round(100 - hit_rate, 1) if total else 0.0
+    avg_lat   = (
+        round(s["yahoo_total_latency_ms"] / s["yahoo_latency_samples"], 1)
+        if s["yahoo_latency_samples"] else 0.0
+    )
+    # Extrapolate to a per-day request rate
+    started = datetime.fromisoformat(s["started_at"].rstrip("Z"))
+    uptime_h = (datetime.utcnow() - started).total_seconds() / 3600
+    req_per_day = round(s["yahoo_requests"] / uptime_h * 24, 0) if uptime_h > 0 else 0
+
+    return {
+        **s,
+        "hit_rate_pct":              hit_rate,
+        "miss_rate_pct":             miss_rate,
+        "avg_yahoo_latency_ms":      avg_lat,
+        "yahoo_requests_per_day_est": req_per_day,
+        "uptime_hours":              round(uptime_h, 2),
+    }
+
+
+# ── Cache I/O helpers ──────────────────────────────────────────────────────────
+
+def _get_cached(symbol: str, cache_type: str) -> Optional[dict]:
+    """Return valid (non-expired) cached payload or None."""
+    db = SessionLocal()
+    try:
+        entry: MarketDataCache | None = (
+            db.query(MarketDataCache)
+            .filter_by(symbol=symbol, cache_type=cache_type)
+            .first()
+        )
+        if entry is None:
+            _log.debug("cache_miss symbol=%s type=%s", symbol, cache_type)
+            _inc("cache_misses")
+            return None
+        if entry.expires_at < datetime.utcnow():
+            _log.debug("cache_expired symbol=%s type=%s", symbol, cache_type)
+            _inc("cache_misses")
+            return None
+        entry.hit_count = (entry.hit_count or 0) + 1
+        db.commit()
+        _log.debug("cache_hit symbol=%s type=%s", symbol, cache_type)
+        _inc("cache_hits")
+        return _json.loads(entry.payload_json)
+    except Exception as exc:
+        _log.warning("cache_read_error symbol=%s type=%s: %s", symbol, cache_type, exc)
+        return None
+    finally:
+        db.close()
+
+
+def _set_cached(symbol: str, cache_type: str, payload: dict, ttl_secs: int) -> None:
+    now     = datetime.utcnow()
+    expires = now + timedelta(seconds=ttl_secs)
+    payload_str = _json.dumps(payload, default=str)
+    db = SessionLocal()
+    try:
+        entry = (
+            db.query(MarketDataCache)
+            .filter_by(symbol=symbol, cache_type=cache_type)
+            .first()
+        )
+        if entry:
+            entry.payload_json = payload_str
+            entry.fetched_at   = now
+            entry.expires_at   = expires
+        else:
+            db.add(MarketDataCache(
+                symbol=symbol, cache_type=cache_type,
+                payload_json=payload_str,
+                fetched_at=now, expires_at=expires,
+                hit_count=0,
+            ))
+        db.commit()
+    except Exception as exc:
+        _log.warning("cache_write_error symbol=%s type=%s: %s", symbol, cache_type, exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _get_stale(symbol: str, cache_type: str) -> Optional[dict]:
+    """Return an expired cache entry as a stale fallback (includes _stale_data metadata)."""
+    db = SessionLocal()
+    try:
+        entry = (
+            db.query(MarketDataCache)
+            .filter_by(symbol=symbol, cache_type=cache_type)
+            .first()
+        )
+        if entry is None:
+            return None
+        payload = _json.loads(entry.payload_json)
+        age_s   = (datetime.utcnow() - entry.fetched_at).total_seconds()
+        payload["_stale_data"]         = True
+        payload["_cache_age_minutes"]  = round(age_s / 60, 1)
+        _inc("stale_served")
+        _log.warning(
+            "stale_cache_served symbol=%s type=%s age_min=%.1f",
+            symbol, cache_type, age_s / 60,
+        )
+        return payload
+    except Exception:
+        return None
+    finally:
+        db.close()
+
+
+# ── DataFrame serialisation ────────────────────────────────────────────────────
+
+def _df_to_payload(df: pd.DataFrame) -> dict:
+    try:
+        return {"json_split": df.to_json(orient="split", date_format="iso", default_handler=str)}
+    except Exception as exc:
+        _log.error("df_serialize_error: %s", exc)
+        return {}
+
+
+def _payload_to_df(payload: dict) -> Optional[pd.DataFrame]:
+    if not payload or "json_split" not in payload:
+        return None
+    try:
+        df = pd.read_json(io.StringIO(payload["json_split"]), orient="split")
+        df.index = pd.to_datetime(df.index, utc=True)
+        return df
+    except Exception as exc:
+        _log.error("df_deserialize_error: %s", exc)
+        return None
+
+
+# ── DR / symbol helpers (public, consumed by agents and main.py) ───────────────
 
 def normalize_dr_symbol(symbol: str) -> str:
-    """Strip the DR digit-suffix so yfinance can find the underlying US company.
+    """Strip DR digit-suffix so yfinance can find the underlying US company.
 
     AAPL01.BK → 'AAPL'   (DR → base ticker)
-    PTT.BK    → 'PTT.BK' (unchanged — regular Thai stock)
-    AAPL      → 'AAPL'   (unchanged — already a US ticker)
+    PTT.BK    → 'PTT.BK' (unchanged – regular Thai stock)
+    AAPL      → 'AAPL'   (unchanged – US ticker)
     """
     m = _DR_RE.match(symbol)
     return m.group(1) if m else symbol
 
 
 def is_dr_symbol(symbol: str) -> bool:
-    """Return True if symbol is a Thai SET Depository Receipt (e.g. AMD80.BK, AAPL01.BK)."""
     return bool(_DR_RE.match(symbol))
 
 
 def resolve_symbol(symbol: str) -> str:
-    """Append .BK for Thai stocks if not already present and not a US ticker."""
     symbol = symbol.upper()
     if symbol.endswith(".BK"):
         return symbol
     return symbol
 
 
-def _is_rate_limit(e: Exception) -> bool:
-    if _YFRateLimitError and isinstance(e, _YFRateLimitError):
-        return True
-    msg = str(e).lower()
-    return "429" in msg or "rate limit" in msg or "too many requests" in msg
+# ── Internal fetch helpers ─────────────────────────────────────────────────────
+
+def _record_yf_call(t0: float) -> None:
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    _inc("yahoo_total_latency_ms", elapsed_ms)
+    _inc("yahoo_latency_samples")
+    _log.info("yahoo_fetch_time latency_ms=%.0f", elapsed_ms)
 
 
-def _yf_retry(fn, *args, max_attempts: int = 3, **kwargs):
-    """Call fn(*args, **kwargs) with exponential backoff on rate-limit errors."""
-    for attempt in range(max_attempts):
-        try:
-            return fn(*args, **kwargs)
-        except Exception as e:
-            if _is_rate_limit(e) and attempt < max_attempts - 1:
-                wait = (2 ** attempt) + random.uniform(1, 3)
-                print(f"⚠️ yfinance rate limit, retry in {wait:.1f}s (attempt {attempt + 1}/{max_attempts})")
-                time.sleep(wait)
-                continue
-            raise
+def _record_yf_error(e: Exception) -> None:
+    _inc("yahoo_errors")
+    if _is_rate_limit(e):
+        _inc("rate_limits")
+        _log.warning("yahoo_rate_limit: %s", e)
+    else:
+        _log.error("yahoo_fetch_error: %s", e)
 
+
+# ── Public API (same signatures as the original data_fetcher.py) ───────────────
 
 def fetch_history(symbol: str, period: str = "6mo", interval: str = "1d") -> Optional[pd.DataFrame]:
+    cache_type = f"history:{period}:{interval}"
+    ttl        = _history_ttl(period, interval)
+
+    cached = _get_cached(symbol, cache_type)
+    if cached:
+        return _payload_to_df(cached)
+
+    _inc("yahoo_requests")
+    t0 = time.monotonic()
     try:
-        ticker = yf.Ticker(symbol)
-        df = _yf_retry(ticker.history, period=period, interval=interval)
-        if df is None or df.empty:
-            return None
+        df = _provider.get_history(symbol, period, interval)
+        _record_yf_call(t0)
+        _log.info("yahoo_fetch symbol=%s type=%s", symbol, cache_type)
+        if df is not None and not df.empty:
+            _set_cached(symbol, cache_type, _df_to_payload(df), ttl)
         return df
-    except Exception:
-        return None
+    except Exception as exc:
+        _record_yf_error(exc)
+        stale = _get_stale(symbol, cache_type)
+        return _payload_to_df(stale) if stale else None
 
 
 def fetch_info(symbol: str) -> dict:
     """Fetch yfinance .info for a symbol.
     Callers are responsible for normalising DR symbols via normalize_dr_symbol() first."""
+    cache_type = "fundamental"
+
+    cached = _get_cached(symbol, cache_type)
+    if cached:
+        # Strip internal stale markers so callers get a clean info dict
+        return {k: v for k, v in cached.items() if not k.startswith("_")}
+
+    _inc("yahoo_requests")
+    t0 = time.monotonic()
     try:
-        ticker = yf.Ticker(symbol)
-        return _yf_retry(lambda: ticker.info) or {}
-    except Exception:
+        info = _provider.get_fundamentals(symbol)
+        _record_yf_call(t0)
+        _log.info("yahoo_fetch symbol=%s type=fundamental", symbol)
+        if info:
+            _set_cached(symbol, cache_type, info, _TTL_FUND)
+        return info or {}
+    except Exception as exc:
+        _record_yf_error(exc)
+        stale = _get_stale(symbol, cache_type)
+        if stale:
+            return {k: v for k, v in stale.items() if not k.startswith("_")}
         return {}
 
 
 def fetch_price_info(symbol: str) -> dict:
-    # Return cached price if still fresh
-    cached = _price_cache.get(symbol)
-    if cached and (time.time() - cached["cached_at"]) < _PRICE_CACHE_TTL:
-        return {
-            "current_price": cached["current_price"],
-            "change_percent": cached["change_percent"],
-            "last_updated": cached["last_updated"],
-        }
+    """Return {current_price, change_percent, last_updated} for a symbol."""
+    cache_type = "quote"
 
-    # Jitter before hitting yfinance to reduce thundering-herd on bulk calls
-    time.sleep(random.uniform(0.5, 1.5))
+    cached = _get_cached(symbol, cache_type)
+    if cached:
+        return {k: v for k, v in cached.items() if not k.startswith("_")}
 
+    _inc("yahoo_requests")
+    t0 = time.monotonic()
     try:
-        ticker = yf.Ticker(symbol)
-        # Use history() — fast_info.last_price triggers a full 1y history fetch internally
-        df = _yf_retry(ticker.history, period="5d")
-
-        current_price: float | None = None
-        change_percent: float | None = None
-
-        if df is not None and not df.empty:
-            current_price = float(df["Close"].iloc[-1])
-            if len(df) >= 2:
-                prev_close = float(df["Close"].iloc[-2])
-                if prev_close and prev_close != 0:
-                    change_percent = round((current_price - prev_close) / prev_close * 100, 2)
-
-        last_updated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        result = {
-            "current_price": round(current_price, 4) if current_price is not None else None,
-            "change_percent": change_percent,
-            "last_updated": last_updated,
-        }
-        _price_cache[symbol] = {**result, "cached_at": time.time()}
+        result = _provider.get_quote(symbol)
+        _record_yf_call(t0)
+        _log.info("yahoo_fetch symbol=%s type=quote", symbol)
+        if result.get("current_price") is not None:
+            _set_cached(symbol, cache_type, result, _TTL_QUOTE)
         return result
-
-    except Exception as e:
-        print(f"❌ Error fetching price for {symbol}: {str(e)}")
-        traceback.print_exc()
+    except Exception as exc:
+        _record_yf_error(exc)
+        stale = _get_stale(symbol, cache_type)
+        if stale:
+            return {k: v for k, v in stale.items() if not k.startswith("_")}
         return {"current_price": None, "change_percent": None, "last_updated": None}
 
 
 def fetch_news(symbol: str) -> list[dict]:
     """Callers are responsible for normalising DR symbols via normalize_dr_symbol() first."""
+    # News is short-lived and already managed by AgentCache (1 h TTL).
+    # We skip a second DB cache layer here to avoid double-caching.
+    _inc("yahoo_requests")
+    t0 = time.monotonic()
     try:
-        ticker = yf.Ticker(symbol)
-        news = _yf_retry(lambda: ticker.news) or []
-        result = []
-        for item in news[:10]:
-            content = item.get("content", {})
-            result.append({
-                "title": content.get("title", ""),
-                "publisher": content.get("provider", {}).get("displayName", "") if isinstance(content.get("provider"), dict) else "",
-                "link": content.get("canonicalUrl", {}).get("url", "") if isinstance(content.get("canonicalUrl"), dict) else "",
-                "published": content.get("pubDate", ""),
-            })
+        result = _provider.get_news(symbol)
+        _record_yf_call(t0)
         return result
-    except Exception:
+    except Exception as exc:
+        _record_yf_error(exc)
         return []
+
+
+def prefetch_history_batch(
+    symbols: list[str], period: str = "6mo", interval: str = "1d"
+) -> None:
+    """Warm the cache for a batch of symbols using yf.download() in chunks.
+
+    Call this before a concurrent analysis burst to replace N individual
+    yfinance requests with ceil(N/15) batched downloads.
+    Only fetches symbols whose cache entry is missing or expired.
+    """
+    cache_type = f"history:{period}:{interval}"
+    ttl        = _history_ttl(period, interval)
+
+    stale = [s for s in symbols if _get_cached(s, cache_type) is None]
+    if not stale:
+        return
+
+    _log.info("prefetch_history_batch symbols=%d period=%s interval=%s", len(stale), period, interval)
+    _inc("yahoo_requests", len(stale))
+    t0 = time.monotonic()
+    try:
+        batch = _provider.get_history_batch(stale, period, interval)
+        _record_yf_call(t0)
+        for sym, df in batch.items():
+            if df is not None and not df.empty:
+                _set_cached(sym, cache_type, _df_to_payload(df), ttl)
+    except Exception as exc:
+        _record_yf_error(exc)

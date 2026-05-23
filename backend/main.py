@@ -21,6 +21,7 @@ from models.database import (
     Portfolio, PortfolioItem, Watchlist,
     AgentCache, AnalysisCache, AnalysisHistory, OptimizerHistory, SignalHistory,
     Settings, UserUsage, Transaction, PortfolioSnapshot, BenchmarkPrice,
+    MarketDataCache,
 )
 from agents.technical import analyze_technical
 from agents.fundamental import analyze_fundamental
@@ -28,7 +29,10 @@ from agents.news import analyze_news
 from agents.summary import analyze_summary, determine_signal
 from agents.optimizer import run_optimizer, run_layered_optimizer, _DEFAULT_LAYERS
 from agents.chart_data import fetch_chart_data
-from services.data_fetcher import fetch_price_info, fetch_info, normalize_dr_symbol, is_dr_symbol
+from services.data_fetcher import (
+    fetch_price_info, fetch_info, normalize_dr_symbol, is_dr_symbol,
+    get_cache_stats,
+)
 from services.scorer import compute_scores
 from services.ai_client import call_ai
 from services.json_utils import safe_parse_json
@@ -3221,3 +3225,83 @@ async def admin_benchmark_backfill(
     results = await backfill_benchmarks(db, symbols=sym_list, from_date=from_date, to_date=to_date)
     total_rows = sum(r.get("rows", 0) for r in results)
     return {"results": results, "total_rows_written": total_rows}
+
+
+@app.get("/admin/cache-stats")
+async def admin_cache_stats(db: Session = Depends(get_db)) -> dict:
+    """Market data cache performance metrics.
+
+    Returns:
+      - In-process counters (hits, misses, stale_served, yahoo_requests, errors, …)
+      - Derived rates (hit_rate_pct, avg_yahoo_latency_ms, requests_per_day_est)
+      - DB snapshot: total cached entries, breakdown by cache_type, oldest/newest entry
+    Note: counters reset when the server process restarts.
+    """
+    # ── In-process stats ──────────────────────────────────────────────────────
+    stats = get_cache_stats()
+
+    # ── DB snapshot ───────────────────────────────────────────────────────────
+    total_entries = db.query(MarketDataCache).count()
+    now = datetime.utcnow()
+    live_entries  = db.query(MarketDataCache).filter(MarketDataCache.expires_at >= now).count()
+    stale_entries = total_entries - live_entries
+
+    # Breakdown by cache_type (quote / fundamental / history:…)
+    type_rows = (
+        db.query(MarketDataCache.cache_type, func.count(MarketDataCache.id))
+        .group_by(MarketDataCache.cache_type)
+        .all()
+    )
+    by_type = {row[0]: row[1] for row in type_rows}
+
+    # Top-10 hottest symbols by hit_count
+    hot_rows = (
+        db.query(MarketDataCache.symbol, func.sum(MarketDataCache.hit_count).label("hits"))
+        .group_by(MarketDataCache.symbol)
+        .order_by(func.sum(MarketDataCache.hit_count).desc())
+        .limit(10)
+        .all()
+    )
+    hot_symbols = [{"symbol": r[0], "hits": r[1]} for r in hot_rows]
+
+    oldest = db.query(func.min(MarketDataCache.fetched_at)).scalar()
+    newest = db.query(func.max(MarketDataCache.fetched_at)).scalar()
+
+    return {
+        **stats,
+        "db": {
+            "total_entries":  total_entries,
+            "live_entries":   live_entries,
+            "stale_entries":  stale_entries,
+            "by_cache_type":  by_type,
+            "hot_symbols":    hot_symbols,
+            "oldest_entry":   oldest.isoformat() + "Z" if oldest else None,
+            "newest_entry":   newest.isoformat() + "Z" if newest else None,
+        },
+    }
+
+
+@app.delete("/admin/cache-purge")
+async def admin_cache_purge(
+    symbol: str | None = None,
+    cache_type: str | None = None,
+    expired_only: bool = True,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Purge market_data_cache entries.
+
+    Query params:
+      symbol        — limit to one symbol (optional)
+      cache_type    — limit to one cache_type, e.g. "quote" or "fundamental" (optional)
+      expired_only  — if true (default), only delete entries past their expires_at
+    """
+    q = db.query(MarketDataCache)
+    if symbol:
+        q = q.filter(MarketDataCache.symbol == symbol)
+    if cache_type:
+        q = q.filter(MarketDataCache.cache_type == cache_type)
+    if expired_only:
+        q = q.filter(MarketDataCache.expires_at < datetime.utcnow())
+    deleted = q.delete(synchronize_session=False)
+    db.commit()
+    return {"deleted": deleted, "symbol": symbol, "cache_type": cache_type, "expired_only": expired_only}

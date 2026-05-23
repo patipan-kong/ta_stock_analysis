@@ -287,6 +287,26 @@ class Settings(Base):
     __table_args__ = (UniqueConstraint("workspace_id", "key", name="uq_settings_ws_key"),)
 
 
+class MarketDataCache(Base):
+    """DB-backed cache for raw yfinance responses.
+
+    Keyed by (symbol, cache_type) where cache_type encodes both the data kind
+    and the fetch parameters, e.g. "quote", "fundamental", "history:1y:1wk".
+    Shared across all workspaces — market data is not user-specific.
+    """
+    __tablename__ = "market_data_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    cache_type = Column(String, nullable=False)   # "quote"|"fundamental"|"history:1y:1wk"|…
+    payload_json = Column(Text, nullable=False)
+    fetched_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    hit_count = Column(Integer, nullable=False, default=0)
+
+    __table_args__ = (UniqueConstraint("symbol", "cache_type", name="uq_market_data_cache"),)
+
+
 class UserUsage(Base):
     __tablename__ = "user_usage"
 
@@ -476,6 +496,24 @@ def migrate_legacy_data() -> None:
                         conn.execute(text("ALTER TABLE transactions ADD COLUMN currency TEXT DEFAULT 'THB'"))
                     if "exchange_rate" not in tx_cols:
                         conn.execute(text("ALTER TABLE transactions ADD COLUMN exchange_rate REAL DEFAULT 1.0"))
+
+            # market_data_cache: production-grade yfinance response cache
+            if "market_data_cache" not in tables:
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS market_data_cache (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            symbol TEXT NOT NULL,
+                            cache_type TEXT NOT NULL,
+                            payload_json TEXT NOT NULL,
+                            fetched_at DATETIME NOT NULL,
+                            expires_at DATETIME NOT NULL,
+                            hit_count INTEGER NOT NULL DEFAULT 0,
+                            UNIQUE (symbol, cache_type)
+                        )
+                    """))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_mdc_symbol ON market_data_cache (symbol)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_mdc_expires ON market_data_cache (expires_at)"))
 
             # benchmark_prices: create if missing (SQLite has no CREATE TABLE IF NOT EXISTS in ALTER path)
             if "benchmark_prices" not in tables:
