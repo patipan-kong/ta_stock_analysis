@@ -2,6 +2,19 @@ import json
 import re
 
 
+def _repair_json(text: str) -> str:
+    """Light syntactic repairs for common AI JSON artifacts."""
+    # Trailing commas before closing brace/bracket  (e.g. [1, 2,] or {"a":1,})
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+    # JavaScript non-values not valid in JSON
+    text = re.sub(r"(?<!['\"\w])NaN(?!['\"\w])", "null", text)
+    text = re.sub(r"(?<!['\"\w])Infinity(?!['\"\w])", "null", text)
+    text = re.sub(r"(?<!['\"\w])-Infinity(?!['\"\w])", "null", text)
+    # Single-quoted strings → double-quoted (Gemini occasionally emits these)
+    # Only do the outer quotes; skip if the text already looks valid
+    return text
+
+
 def safe_parse_json(text: str) -> dict:
     """
     Robustly parse a JSON object from any AI provider's raw response.
@@ -10,6 +23,7 @@ def safe_parse_json(text: str) -> dict:
     - Markdown fences  (```json ... ``` or ``` ... ```)
     - Leading/trailing prose before or after the JSON block
     - Gemini edge cases (fence wrapping even with response_mime_type set)
+    - Trailing commas, NaN/Infinity literals (repaired automatically)
     - Finds the first matching { ... } block by brace depth
     """
     text = text.strip()
@@ -26,7 +40,15 @@ def safe_parse_json(text: str) -> dict:
     if fenced:
         text = fenced.group(1).strip()
 
-    # 3. Find the first '{' and walk to its matching '}'
+    # 3. Fast path: the whole text is already a valid JSON object
+    try:
+        result = json.loads(text)
+        if isinstance(result, dict):
+            return result
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # 4. Find the first '{' and walk to its matching '}' by brace depth
     start = text.find("{")
     if start == -1:
         raise ValueError(f"No JSON object found in response: {text[:200]!r}")
@@ -60,4 +82,20 @@ def safe_parse_json(text: str) -> dict:
     if end == -1:
         raise ValueError(f"Unmatched braces in JSON response: {text[:200]!r}")
 
-    return json.loads(text[start : end + 1])
+    blob = text[start : end + 1]
+
+    # 5. Try raw blob parse
+    try:
+        return json.loads(blob)
+    except json.JSONDecodeError:
+        pass
+
+    # 6. Try repaired blob (trailing commas, NaN, etc.)
+    repaired = _repair_json(blob)
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"JSON parse failed after repair. Error: {exc}. "
+            f"Blob snippet: {blob[:300]!r}"
+        )

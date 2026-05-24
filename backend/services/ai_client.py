@@ -11,6 +11,7 @@ call_ai() returns a dict: {"text": str, "latency_ms": int, "input_tokens": int,
 import logging
 import os
 import json
+import re
 import time
 from functools import lru_cache
 from dotenv import load_dotenv
@@ -182,8 +183,12 @@ def call_ai(
         gemini_client = google_genai.Client(api_key=api_key)
         send_prompt = (
             prompt
-            + "\n\nReturn only the structural JSON data specified in the schema. "
-            "Do not output any thinking process, chat greetings, or additional explanations."
+            + "\n\n"
+            "OUTPUT RULES (MANDATORY):\n"
+            "1. Return ONLY a raw JSON object — no markdown fences, no prose, no explanation.\n"
+            "2. All string values must be properly escaped (no raw newlines inside strings).\n"
+            "3. No trailing commas. No JavaScript literals (NaN, Infinity, undefined).\n"
+            "4. Start your response with '{' and end with '}'."
         )
         if use_schema:
             gen_config = genai_types.GenerateContentConfig(
@@ -209,6 +214,49 @@ def call_ai(
         usage_meta = getattr(gemini_response, "usage_metadata", None)
         in_tokens = int(getattr(usage_meta, "prompt_token_count", 0) or 0)
         out_tokens = int(getattr(usage_meta, "candidates_token_count", 0) or 0)
+
+        # Silent self-correction if the response isn't parseable JSON (schema calls only)
+        if use_schema and text:
+            _json_ok = False
+            _stripped = re.sub(r"^```(?:json)?\s*", "", text.strip())
+            _stripped = re.sub(r"\s*```$", "", _stripped).strip()
+            try:
+                json.loads(_stripped)
+                text = _stripped  # fence-strip was enough
+                _json_ok = True
+            except json.JSONDecodeError:
+                pass
+            if not _json_ok:
+                logger.warning("[GEMINI] schema response not parseable JSON — attempting self-correction (len=%d)", len(text))
+                try:
+                    _corr_prompt = (
+                        "Your previous response was not valid JSON.\n"
+                        "Return ONLY a valid JSON object with these exact keys and types:\n"
+                        '{"swaps":[{"sell":"SYMBOL_OR_NULL","buy":"SYMBOL_OR_NULL","score_delta":0.0,'
+                        '"sector":"Other","type":"SWAP"}],'
+                        '"top_buys":["SYMBOL"],"sector_flags":["note"],"priority":"balanced"}\n'
+                        "Rules: no markdown, no prose, no trailing commas, strings must be properly escaped.\n"
+                        f"Failed response to correct (first 400 chars):\n{text[:400]}"
+                    )
+                    _corr_cfg = genai_types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=_Layer1Response,
+                        temperature=0.0,
+                        max_output_tokens=min(max_tokens, 1024),
+                    )
+                    _corr_resp = gemini_client.models.generate_content(
+                        model=model, contents=_corr_prompt, config=_corr_cfg,
+                    )
+                    _corr_text = _corr_resp.text or ""
+                    if _corr_text:
+                        text = _corr_text
+                        _corr_meta = getattr(_corr_resp, "usage_metadata", None)
+                        in_tokens  += int(getattr(_corr_meta, "prompt_token_count", 0) or 0)
+                        out_tokens += int(getattr(_corr_meta, "candidates_token_count", 0) or 0)
+                        logger.info("[GEMINI] self-correction response len=%d", len(text))
+                except Exception as _corr_err:
+                    logger.error("[GEMINI] self-correction call failed: %s", _corr_err)
+
         in_cost, out_cost, total_cost = _compute_cost_usd(in_tokens, out_tokens, in_per_1m, out_per_1m)
         _record_usage(provider, model, in_tokens, out_tokens, in_cost, out_cost, total_cost, usage_operation, usage_layer, latency_ms)
         return {

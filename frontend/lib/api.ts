@@ -633,6 +633,11 @@ export interface OptimizerConsensus {
   risk_alignment_score?: number;
   disagreement_reasons?: string[];
   refinement_summary?: string | null;
+  // Phase 3B.4 — Policy governance scores
+  policy_alignment_score?: number | null;
+  regime_compliance_score?: number | null;
+  risk_governance_score?: number | null;
+  governance_flags?: string[];
   // Legacy fields (preserved for backward compat with old history rows)
   agrees: boolean;
   consensus_decision?: "REBALANCE" | "NO_ACTION" | "REVIEW";
@@ -659,6 +664,40 @@ export interface WatchlistRanking {
 export type StrategyPersona = "BALANCED" | "GROWTH" | "VALUE" | "DIVIDEND" | "MOMENTUM" | "PASSIVE";
 export type DriftSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type RebalanceUrgency = "LOW" | "MODERATE" | "HIGH" | "CRITICAL";
+
+// ─── Phase 3B.4 — Adaptive Policy Engine ─────────────────────────────────────
+
+export type DeploymentBias = "AGGRESSIVE" | "SELECTIVE" | "DEFENSIVE" | "PRESERVATION";
+export type StrictnessLevel = "RELAXED" | "NORMAL" | "STRICT" | "EMERGENCY";
+
+export interface PolicyHardConstraints {
+  min_cash_pct: number;
+  max_single_position_pct: number;
+  max_sector_pct: number;
+  max_turnover_pct: number;
+  suppress_speculative: boolean;
+  beta_ceiling: number | null;
+  max_new_positions: number;
+}
+
+export interface ActivePolicy {
+  hard_constraints: PolicyHardConstraints;
+  soft_factor_tilts: Record<string, number>;
+  deployment_bias: DeploymentBias;
+  risk_budget: number;
+  rebalance_aggressiveness: number;
+  strictness_level: StrictnessLevel;
+  emergency_override: boolean;
+  emergency_reason: string | null;
+  policy_narrative: string;
+  confidence_discount: number;
+  violations: string[];
+  // Governance scores — populated after constraint enforcement
+  policy_alignment_score?: number | null;
+  regime_compliance_score?: number | null;
+  risk_governance_score?: number | null;
+  governance_flags?: string[];
+}
 
 export interface StrategyProfile {
   id: StrategyPersona;
@@ -719,6 +758,20 @@ export interface OptimizerResult {
   factor_alignment_score?: number | null;
   factor_drift?: Record<string, number> | null;
   rebalance_urgency?: RebalanceUrgency | null;
+  // Market regime context (injected at optimizer run time)
+  market_regime?: Pick<
+    MarketRegime,
+    | "regime"
+    | "confidence_pct"
+    | "trend_score"
+    | "volatility_score"
+    | "transition_stability"
+    | "regime_duration_days"
+    | "narrative"
+    | "transition_warnings"
+  > | null;
+  // Phase 3B.4 — Active Policy Envelope
+  active_policy?: ActivePolicy | null;
 }
 
 export interface OptimizerHistoryItem {
@@ -1201,6 +1254,76 @@ export interface FactorExposureResult {
 
 export const getFactorExposure = (portfolioId: number) =>
   apiFetch<FactorExposureResult>(`/analytics/factor-exposure?portfolio_id=${portfolioId}`);
+
+// ─── Market Regime ────────────────────────────────────────────────────────────
+
+export type RegimeState =
+  | "RISK_ON"
+  | "RISK_OFF"
+  | "SIDEWAYS"
+  | "HIGH_VOLATILITY"
+  | "DEFENSIVE_REGIME"
+  | "TRANSITION_RISK_ON"
+  | "TRANSITION_RISK_OFF";
+
+export type TransitionStability = "STABLE" | "TRANSITIONING" | "VOLATILE";
+
+export interface RegimeConstraints {
+  min_cash_pct: number;
+  max_single_position_pct: number;
+  turnover_multiplier: number;
+  momentum_bias: boolean;
+  quality_bias: boolean;
+  dividend_bias: boolean;
+  suppress_speculative: boolean;
+  deployment_stance: string;
+  mandate: string;
+}
+
+export interface RegimeHistoryPoint {
+  date: string;
+  regime: RegimeState;
+  confidence: number;
+  trend_score: number;
+  volatility_score: number;
+}
+
+export interface BenchmarkSignal {
+  ema_trend_score: number;
+  vol_score: number;
+  drawdown_score: number;
+  momentum_score: number;
+  vol_z_score: number;
+  return_20d: number;
+  realized_vol_20d: number;
+}
+
+export interface MarketRegime {
+  regime: RegimeState;
+  confidence: number;
+  confidence_pct: number;
+  trend_score: number;
+  volatility_score: number;
+  drawdown_score: number;
+  momentum_score: number;
+  vol_z_score: number;
+  ema_alignment: number;
+  vix_level: number | null;
+  regime_duration_days: number;
+  previous_regime: RegimeState | "UNKNOWN";
+  transition_stability: TransitionStability;
+  transition_warnings: string[];
+  benchmark_signals: Record<string, BenchmarkSignal>;
+  narrative: string;
+  constraints: RegimeConstraints;
+  regime_history: RegimeHistoryPoint[];
+  detected_at: string;
+  detection_ms: number;
+  data_error?: boolean;
+}
+
+export const getMarketRegime = () =>
+  apiFetch<MarketRegime>("/analytics/market-regime");
 
 // ─── Portfolio Snapshots ──────────────────────────────────────────────────────
 

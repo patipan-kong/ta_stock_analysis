@@ -394,7 +394,78 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 ---
 
 ## CURRENT ARCHITECTURE STATE
-_Last updated: 2026-05-23. Update this section at the start of each new session._
+_Last updated: 2026-05-24. Update this section at the start of each new session._
+
+### Phase 3B.4 — Adaptive Optimizer Policy Engine ✅ SHIPPED 2026-05-24
+
+The optimizer now operates inside a **deterministic, institutional-grade Policy Engine** that synthesizes Strategy Persona + Market Regime + Portfolio Risk + Confidence State into a single unified governance layer above all AI agents.
+
+**What was built:**
+- `services/optimizer/policy_engine.py` — pure Python `compute_policy(persona_ctx, regime_ctx, portfolio_data, consensus, max_sector_pct)` → `PolicyEnvelope` dataclass with `hard_constraints`, `soft_factor_tilts`, `deployment_bias`, `risk_budget`, `rebalance_aggressiveness`, `strictness_level`, `emergency_override`, `confidence_discount`, `violations`.
+- `build_policy_prompt_block(envelope)` — generates `[ACTIVE OPTIMIZATION POLICY — MANDATORY GOVERNANCE]` block injected into L1/L2/L3 prompts.
+- `compute_policy_alignment_score(final_allocations, envelope, total_value)` → `(policy_alignment_score, regime_compliance_score, risk_governance_score, governance_flags)`.
+- `envelope_to_dict(envelope)` — JSON-serializable dict including pre-built `prompt_block`.
+- `agents/optimizer.py` — `run_layered_optimizer` gains `policy_context: dict | None` parameter; policy block injected into all 3 prompt builders; post-AI constraint enforcement now uses `policy_context.hard_constraints` (with legacy regime fallback when no policy_context); governance scoring added to `consensus` dict after constraint enforcement.
+- `_make_envelope_from_dict(d)` helper reconstructs `PolicyEnvelope` from serialized dict for scoring.
+- `main.py` — `analyze_optimizer` builds `policy_ctx` via `compute_policy()` immediately after persona + regime detection; `policy_ctx` passed to `run_layered_optimizer`; `active_policy` (sans `prompt_block`) surfaced in API result.
+- `frontend/lib/api.ts` — `DeploymentBias`, `StrictnessLevel`, `PolicyHardConstraints`, `ActivePolicy` types; `OptimizerResult.active_policy` field; `OptimizerConsensus` gains `policy_alignment_score`, `regime_compliance_score`, `risk_governance_score`, `governance_flags`.
+- `frontend/components/ActivePolicyEnvelopeCard.tsx` — color-coded deployment mode badge, strictness badge, emergency banner, hard constraints grid, risk budget bar, factor tilt bars, governance score bars, governance flags, portfolio violations, confidence discount note, policy narrative.
+- `frontend/app/optimizer/page.tsx` — `ActivePolicyEnvelopeCard` rendered inside `ResultPanel` between `MarketRegimeCard` and Persona DNA cards.
+- `scripts/verify_adaptive_optimizer.py` — 4 scenario simulations (Growth+RISK_ON, Growth+RISK_OFF, Dividend+HIGH_VOL emergency, Momentum+TRANSITION); 33/33 checks pass.
+
+**Emergency override logic:**
+- `vol_z_score ≥ 2.5` → emergency (extreme volatility)
+- `drawdown_score ≤ 15` → emergency (severe drawdown)
+- `HIGH_VOLATILITY` regime at confidence ≥ 65% → emergency (confirmed crisis)
+- `VOLATILE` stability + confidence < 40% → emergency (unstable transition)
+
+When emergency: `max_new_positions = 0`, all BUY/ACCUMULATE frozen to HOLD in Python, `min_cash ≥ 20%`, `max_position ≤ 15%`, aggressiveness ≤ 0.12, strictness = EMERGENCY.
+
+**Dynamic scaling (confidence discount):**
+Discount 0–1 based on: regime confidence (50% weight), stability (35%), consensus strength (15%). Discount raises cash floor (up to +8%), tightens max position (-15%), reduces turnover ceiling, reduces rebalance aggressiveness.
+
+**Prompt injection order (L1 and L2):** `[ACTIVE OPTIMIZATION POLICY]` → `[MARKET REGIME]` (legacy, only when no policy block) → `[STRATEGY CONTEXT]` → base prompt.
+
+**L3 policy note:** Adds policy compliance check instructions (cash mandate, max position, deployment mode) to L3 auditor prompt. Flags `POLICY_VIOLATION`, `CONCENTRATION_BREACH`, `OVER_AGGRESSION`, `REGIME_MISMATCH` for L3 to surface.
+
+**Governance flags (post-AI, Python-computed):**
+- `POLICY_VIOLATION` — cash below mandate or turnover exceeds ceiling
+- `CONCENTRATION_BREACH` — position exceeds max_single_position_pct
+- `OVER_AGGRESSION` — BUY allocations in DEFENSIVE/PRESERVATION mode
+- `REGIME_MISMATCH` — new allocations during EMERGENCY override
+
+Each governance flag penalty: −6 from `consensus_strength_score` (max −20 total).
+
+**Backward compatibility:** `policy_context=None` leaves all existing behavior (prompt, enforcement, consensus) unchanged. Historical optimizer results without `active_policy` display normally.
+
+### Phase 3B.3 — Market Regime Detection & Adaptive Portfolio Intelligence ✅ SHIPPED 2026-05-24
+
+The optimizer is now **market-regime-aware** — it detects the current macro environment and adapts allocation behavior dynamically.
+
+**What was built:**
+- `services/analytics/regime_detector.py` — multi-signal engine using ^GSPC/^SET.BK/QQQ benchmark data. 7 regime states: `RISK_ON`, `RISK_OFF`, `SIDEWAYS`, `HIGH_VOLATILITY`, `DEFENSIVE_REGIME`, `TRANSITION_RISK_ON`, `TRANSITION_RISK_OFF`. Signals: EMA20/50 alignment, rolling vol z-score (20D vs 90D), max drawdown (30D rolling), momentum persistence, cross-benchmark return dispersion, optional ^VIX. 30-min in-process cache keyed `_global_`.
+- `models/database.py` → `RegimeSnapshot` model — daily snapshots with trend/vol/drawdown/momentum scores, duration, stability, signals JSON.
+- `migrations/versions/m7n8o9p0q1r2_add_regime_snapshots.py` — Alembic migration; SQLite handled via `migrate_legacy_data()`.
+- `GET /analytics/market-regime` — returns active regime, confidence, all signal scores, duration, previous regime, transition stability, warnings, per-benchmark breakdown, 30-day history, hard allocation constraints.
+- `run_layered_optimizer(..., regime_context)` — injects `[MARKET REGIME — MANDATORY ALLOCATION CONTEXT]` block into L1 and L2 prompts. Post-AI hard constraints applied in Python: caps BUY/ACCUMULATE target_weight at `max_single_position_pct`, enforces `min_cash_pct` by trimming largest BUY allocations.
+- `analyze_optimizer` endpoint: calls `detect_regime()` before `run_layered_optimizer()`, surfaces compact `market_regime` dict in result (regime, confidence_pct, narrative, transition_warnings).
+- `frontend/components/MarketRegimeCard.tsx` — color-coded regime badge, confidence meter (5-bar), 4 signal score bars, meta row (duration, prev regime, stability, VIX), 30-day history dot-trail, transition warnings. `compact` prop for inline use.
+- `frontend/lib/api.ts` — `MarketRegime`, `RegimeState`, `RegimeConstraints`, `RegimeHistoryPoint`, `BenchmarkSignal` types; `getMarketRegime()`; `OptimizerResult.market_regime` field added.
+- `optimizer/page.tsx` — `MarketRegimeCard` rendered inside `ResultPanel` between PortfolioMetricsBar and PersonaDNA cards.
+- `scripts/seed_regime_scenarios.py` — 5 synthetic scenarios: bull (RISK_ON), crash (TRANSITION→HIGH_VOL→RISK_OFF), sideways chop, vol spike, defensive recession. `--scenario`, `--days`, `--clear` flags.
+
+**Hard constraint logic (Python, post-AI):**
+- Regime constraints from `_REGIME_CONSTRAINTS[regime]`: `min_cash_pct`, `max_single_position_pct`, `suppress_speculative`, etc.
+- BUY/ACCUMULATE allocations capped at `max_single_position_pct`; surplus redistributed to implicit cash
+- If total deployed > (100 - `min_cash_pct`), largest BUY allocations trimmed until cash floor satisfied
+
+**Regime classification algorithm:**
+- HIGH_VOLATILITY overrides all if: vol_z > 2.0 OR VIX > 30 OR vol_score < 20 OR drawdown_score < 20
+- Composite = trend×0.40 + vol×0.25 + drawdown×0.20 + momentum×0.15 − dispersion_penalty
+- RISK_ON: composite ≥ 68 AND trend ≥ 65; RISK_OFF: composite ≤ 35 AND trend ≤ 40; etc.
+- Confidence = 0.40–0.95 based on distance from 50-neutral
+
+**Backward compatibility:** `regime_context=None` leaves prompts and constraints unchanged.
 
 ### Phase 3B.2 — Strategy Persona & Policy-Driven Optimization ✅ SHIPPED 2026-05-23
 

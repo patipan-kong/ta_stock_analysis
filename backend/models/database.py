@@ -308,6 +308,29 @@ class MarketDataCache(Base):
     __table_args__ = (UniqueConstraint("symbol", "cache_type", name="uq_market_data_cache"),)
 
 
+class RegimeSnapshot(Base):
+    """Daily market regime detection snapshot for historical tracking and backtesting."""
+    __tablename__ = "regime_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    snapshot_date = Column(String, nullable=False, index=True)   # "YYYY-MM-DD"
+    regime = Column(String, nullable=False)                       # RISK_ON | RISK_OFF | ...
+    confidence = Column(Float, nullable=False)                    # 0.0–1.0
+    trend_score = Column(Float, nullable=True)                    # 0–100
+    volatility_score = Column(Float, nullable=True)               # 0–100
+    drawdown_score = Column(Float, nullable=True)                 # 0–100
+    momentum_score = Column(Float, nullable=True)                 # 0–100
+    vol_z_score = Column(Float, nullable=True)                    # signed z-score
+    ema_alignment = Column(Float, nullable=True)                  # 0–100
+    regime_duration_days = Column(Integer, nullable=True)
+    previous_regime = Column(String, nullable=True)
+    transition_stability = Column(String, nullable=True)          # STABLE | TRANSITIONING | VOLATILE
+    signals_json = Column(Text, nullable=True)                    # per-benchmark signal details
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("snapshot_date", name="uq_regime_snapshot_date"),)
+
+
 class UserUsage(Base):
     __tablename__ = "user_usage"
 
@@ -517,6 +540,32 @@ def migrate_legacy_data() -> None:
                     """))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_mdc_symbol ON market_data_cache (symbol)"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_mdc_expires ON market_data_cache (expires_at)"))
+
+            # regime_snapshots: daily market regime detection history
+            if "regime_snapshots" not in tables:
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS regime_snapshots (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            snapshot_date TEXT NOT NULL,
+                            regime TEXT NOT NULL,
+                            confidence REAL NOT NULL,
+                            trend_score REAL,
+                            volatility_score REAL,
+                            drawdown_score REAL,
+                            momentum_score REAL,
+                            vol_z_score REAL,
+                            ema_alignment REAL,
+                            regime_duration_days INTEGER,
+                            previous_regime TEXT,
+                            transition_stability TEXT,
+                            signals_json TEXT,
+                            created_at DATETIME,
+                            UNIQUE (snapshot_date)
+                        )
+                    """))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_regime_snapshots_date ON regime_snapshots (snapshot_date)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_regime_snapshots_regime ON regime_snapshots (regime)"))
 
             # benchmark_prices: create if missing (SQLite has no CREATE TABLE IF NOT EXISTS in ALTER path)
             if "benchmark_prices" not in tables:

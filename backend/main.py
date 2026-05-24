@@ -1934,13 +1934,47 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     if body.model:
         layers["layer1"]["model"] = body.model
     fallback_cfg = _get_optimizer_fallback(db, ws)
+
+    # Fetch regime context — graceful degradation if detection fails
+    regime_ctx: dict | None = None
+    try:
+        from services.analytics.regime_detector import detect_regime
+        regime_ctx = await asyncio.to_thread(detect_regime, db)
+    except Exception as _re:
+        _log.warning("analyze_optimizer: regime detection failed — continuing without regime context: %s", _re)
+
+    # ── Phase 3B.4 — Build unified Policy Envelope ────────────────────────────
+    policy_ctx: dict | None = None
+    try:
+        from services.optimizer.policy_engine import compute_policy, envelope_to_dict as _env_to_dict
+        _policy_env = compute_policy(
+            persona_ctx, regime_ctx, pd_with_weights,
+            consensus=None, max_sector_pct=max_sector_pct,
+        )
+        policy_ctx = _env_to_dict(_policy_env)
+    except Exception as _pe:
+        _log.warning("analyze_optimizer: policy engine failed — continuing without policy context: %s", _pe)
+
     result = await asyncio.to_thread(
         run_layered_optimizer, portfolio_data, watchlist_data, portfolio.name,
         portfolio_count, max_reached, layers, max_stocks, max_sector_pct, sector_limits,
         portfolio.cash_balance or 0.0,
         fallback_cfg["provider"], fallback_cfg["model"],
-        persona_ctx,
+        persona_ctx, regime_ctx, policy_ctx,
     )
+
+    # Surface regime in optimizer result for frontend display
+    if regime_ctx:
+        result["market_regime"] = {
+            "regime":               regime_ctx.get("regime"),
+            "confidence_pct":       regime_ctx.get("confidence_pct"),
+            "trend_score":          regime_ctx.get("trend_score"),
+            "volatility_score":     regime_ctx.get("volatility_score"),
+            "transition_stability": regime_ctx.get("transition_stability"),
+            "regime_duration_days": regime_ctx.get("regime_duration_days"),
+            "narrative":            regime_ctx.get("narrative"),
+            "transition_warnings":  regime_ctx.get("transition_warnings", []),
+        }
     result["portfolio_name"] = portfolio.name
     result["analyzed_at"] = datetime.utcnow().isoformat() + "Z"
     result.setdefault("portfolio_count", portfolio_count)
@@ -3616,4 +3650,38 @@ async def get_factor_exposure(
     if result.get("error") == "portfolio_not_found":
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
+    return result
+
+
+# ─── Market Regime Detection ──────────────────────────────────────────────────
+
+@app.get("/analytics/market-regime")
+async def get_market_regime(
+    db: Session = Depends(get_db),
+) -> dict:
+    """Detect the current market regime using multi-signal benchmark analysis.
+
+    Classifies the macro environment into one of 7 states:
+    RISK_ON | RISK_OFF | SIDEWAYS | HIGH_VOLATILITY |
+    DEFENSIVE_REGIME | TRANSITION_RISK_ON | TRANSITION_RISK_OFF
+
+    Signals: EMA20/50 trend alignment, rolling vol z-score, 30D drawdown,
+    momentum persistence, cross-benchmark return dispersion, optional VIX.
+
+    Response includes:
+      - active regime + confidence
+      - trend/volatility/drawdown/momentum scores (0-100)
+      - regime duration (trading days)
+      - previous regime + transition stability
+      - transition warnings
+      - per-benchmark signal breakdown
+      - 30-day historical regime timeline
+      - hard allocation constraints for the current regime
+      - narrative text for display
+
+    Result is cached for 30 minutes.
+    """
+    from services.analytics.regime_detector import detect_regime
+
+    result = await asyncio.to_thread(detect_regime, db)
     return result

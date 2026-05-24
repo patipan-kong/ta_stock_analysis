@@ -3,8 +3,41 @@ import logging
 from services.ai_client import call_ai
 from services.json_utils import safe_parse_json
 from services.optimizer.strategy_profiles import build_persona_context, get_profile  # noqa: F401
+from services.optimizer.policy_engine import (  # noqa: F401
+    compute_policy_alignment_score,
+    envelope_to_dict as _envelope_to_dict,
+    HardConstraints as _HardConstraints,
+    PolicyEnvelope as _PolicyEnvelope,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _make_envelope_from_dict(d: dict) -> _PolicyEnvelope:
+    """Reconstruct a PolicyEnvelope from its serialized dict form (for scoring)."""
+    hc = d.get("hard_constraints", {})
+    return _PolicyEnvelope(
+        hard_constraints=_HardConstraints(
+            min_cash_pct            = float(hc.get("min_cash_pct", 5.0)),
+            max_single_position_pct = float(hc.get("max_single_position_pct", 22.0)),
+            max_sector_pct          = float(hc.get("max_sector_pct", 40.0)),
+            max_turnover_pct        = float(hc.get("max_turnover_pct", 40.0)),
+            suppress_speculative    = bool(hc.get("suppress_speculative", False)),
+            beta_ceiling            = hc.get("beta_ceiling"),
+            max_new_positions       = int(hc.get("max_new_positions", 3)),
+        ),
+        soft_factor_tilts       = d.get("soft_factor_tilts", {}),
+        deployment_bias         = d.get("deployment_bias", "SELECTIVE"),
+        risk_budget             = float(d.get("risk_budget", 55.0)),
+        rebalance_aggressiveness= float(d.get("rebalance_aggressiveness", 0.5)),
+        strictness_level        = d.get("strictness_level", "NORMAL"),
+        emergency_override      = bool(d.get("emergency_override", False)),
+        emergency_reason        = d.get("emergency_reason"),
+        policy_narrative        = d.get("policy_narrative", ""),
+        confidence_discount     = float(d.get("confidence_discount", 0.0)),
+        violations              = list(d.get("violations", [])),
+    )
+
 
 _DEFAULT_LAYERS: dict = {
     "layer1": {
@@ -454,6 +487,12 @@ def _consensus_engine(l1: dict, l2: dict, l3: dict) -> dict:
     overlap_bonus    = round((buy_overlap * 0.6 + sell_overlap * 0.4) * 20 - 10)  # –10 … +10
     strategist_alignment_score = int(max(5, min(95, base - disagree_penalty + overlap_bonus)))
 
+    # When L1 parsing failed entirely, strategist alignment is unknowable — hard-cap
+    # it so the consensus type reflects the degraded signal quality.
+    l1_parse_failure = any("L1_PARSE_FAILURE" in (d or "") for d in disagreements)
+    if l1_parse_failure or l1.get("error"):
+        strategist_alignment_score = min(strategist_alignment_score, 28)
+
     if not risk_flags:
         risk_alignment_score = 92
     elif critical_flags:
@@ -632,8 +671,21 @@ def _layer1_prompt(
     max_stocks: int = 12,
     current_count: int = 0,
     persona_context: dict | None = None,
+    regime_context: dict | None = None,
+    policy_context: dict | None = None,
 ) -> str:
     sl = sector_limits or {"default": max_sector_pct}
+
+    # Policy block (3B.4) — overrides / supplements regime + strategy blocks
+    policy_block = ""
+    if policy_context and policy_context.get("prompt_block"):
+        policy_block = policy_context["prompt_block"] + "\n"
+
+    regime_block = ""
+    if regime_context and not policy_context:
+        # Only inject standalone regime block when no unified policy block is present
+        from services.analytics.regime_detector import build_regime_prompt_block
+        regime_block = build_regime_prompt_block(regime_context) + "\n"
 
     strategy_block = ""
     if persona_context:
@@ -669,9 +721,32 @@ Stocks proposed for REDUCE/SELL must be misaligned with {p_label} or overweight.
 
 """
 
-    return f"""{strategy_block}You are a STRATEGIST. Output swap targets in JSON only.
-No explanation. No prose. Only valid JSON output.
+    # Build a note when the policy envelope already shows hard-constraint violations.
+    # This prevents L1 from freezing when historical positions breach the limits —
+    # it must actively propose REDUCE actions to resolve the breach step-by-step.
+    violation_note = ""
+    if policy_context:
+        hc = policy_context.get("hard_constraints", {})
+        max_pos = float(hc.get("max_single_position_pct", 22.0))
+        policy_violations = policy_context.get("violations", [])
+        if policy_violations:
+            violation_note = (
+                f"\nPOLICY VIOLATIONS ACTIVE: {', '.join(policy_violations)}\n"
+                f"Max single position is {max_pos:.0f}%. Every position currently over this limit "
+                "MUST be targeted for REDUCE in your swaps (sell=SYM, buy=null). "
+                "Step-by-step trimming is preferred over full exits. "
+                "Do NOT output no_action — a REDUCE is always the right response to a breach.\n"
+            )
+        else:
+            # Even without flagged violations, remind about the position cap
+            violation_note = (
+                f"\nPolicy max single position: {max_pos:.0f}%. "
+                "If any holding currently exceeds this, propose an incremental REDUCE swap.\n"
+            )
 
+    return f"""{policy_block}{regime_block}{strategy_block}You are a STRATEGIST. Output swap targets in JSON only.
+No explanation. No prose. Only valid JSON output.
+{violation_note}
 Portfolio: {json.dumps(c_pc)}
 Watchlist: {json.dumps(c_wc)}
 Sector limits: {json.dumps(sl)}
@@ -711,8 +786,19 @@ def _layer2_prompt(
     cash_balance: float = 0.0,
     total_value: float = 0.0,
     persona_context: dict | None = None,
+    regime_context: dict | None = None,
+    policy_context: dict | None = None,
 ) -> str:
     role_line = f"Your role: {role}\n\n" if role else ""
+
+    policy_block = ""
+    if policy_context and policy_context.get("prompt_block"):
+        policy_block = policy_context["prompt_block"] + "\n"
+
+    regime_block = ""
+    if regime_context and not policy_context:
+        from services.analytics.regime_detector import build_regime_prompt_block
+        regime_block = build_regime_prompt_block(regime_context) + "\n"
     l1_swaps    = l1.get("swap_suggestions", l1.get("swaps", []))
     l1_top_buys = l1.get("top_buys", [])
     l1_flags    = l1.get("sector_flags", [])
@@ -750,7 +836,7 @@ Factor weighting, position sizing, and stock selection must all reflect this per
 """
 
     return f"""You are an independent portfolio reviewer.
-{strategy_block}{role_line}The Strategist (Layer 1) proposed:
+{policy_block}{regime_block}{strategy_block}{role_line}The Strategist (Layer 1) proposed:
 - Priority: {l1_priority}
 - Swaps: {json.dumps(l1_swaps, indent=2)}
 - Top watchlist picks: {l1_top_buys}
@@ -803,26 +889,45 @@ Return JSON only. No markdown fences.
 }}"""
 
 
-def _layer3_prompt(l1: dict, l2: dict, role: str = "", max_sector_pct: int = 40, persona_context: dict | None = None) -> str:
+def _layer3_prompt(
+    l1: dict,
+    l2: dict,
+    role: str = "",
+    max_sector_pct: int = 40,
+    persona_context: dict | None = None,
+    policy_context: dict | None = None,
+) -> str:
     role_line = f"Your role: {role}\n\n" if role else ""
-    # L1 (Strategist) now outputs swaps only — no allocation table
     l1_swaps    = l1.get("swap_suggestions", l1.get("swaps", []))[:4]
     l1_priority = l1.get("priority", "balanced")
     l2_allocs   = l2.get("allocations", l2.get("target_allocations", []))
 
     persona_note = ""
     if persona_context:
-        p_label    = persona_context.get("persona_label", "Balanced")
-        p_turn     = persona_context.get("turnover_tolerance", 0.5)
-        p_vol      = persona_context.get("volatility_tolerance", 0.5)
+        p_label = persona_context.get("persona_label", "Balanced")
+        p_turn  = persona_context.get("turnover_tolerance", 0.5)
+        p_vol   = persona_context.get("volatility_tolerance", 0.5)
         persona_note = (
             f"\nPersona Policy: {p_label.upper()} "
             f"(turnover tolerance: {int(p_turn*100)}%, volatility tolerance: {int(p_vol*100)}%)\n"
             "Flag any risk that conflicts with this persona's policy constraints.\n"
         )
 
+    policy_note = ""
+    if policy_context:
+        hc = policy_context.get("hard_constraints", {})
+        bias = policy_context.get("deployment_bias", "SELECTIVE")
+        policy_note = (
+            f"\nActive Policy Governance ({bias} mode — strictness: {policy_context.get('strictness_level','NORMAL')}):\n"
+            f"  Cash mandate: ≥{hc.get('min_cash_pct', 5):.0f}%  "
+            f"  Max position: {hc.get('max_single_position_pct', 22):.0f}%  "
+            f"  Max sector: {hc.get('max_sector_pct', 40):.0f}%\n"
+            "Flag POLICY_VIOLATION for cash < mandate, CONCENTRATION_BREACH for position > cap,\n"
+            "OVER_AGGRESSION for excessive buys in defensive mode, REGIME_MISMATCH for emergency violations.\n"
+        )
+
     return f"""You are a portfolio risk auditor.
-{persona_note}{role_line}Evaluate both allocation proposals for concentration risk and soundness.
+{policy_note}{persona_note}{role_line}Evaluate both allocation proposals for concentration risk and soundness.
 
 Layer 1 (Strategist):
 Priority: {l1_priority}
@@ -1043,6 +1148,45 @@ def _run_single_shot_fallback(
     }
 
 
+# ─── L1 minimal-prompt retry helper ──────────────────────────────────────────
+
+def _retry_l1_with_schema(
+    c_pc: list[dict],
+    c_wc: list[dict],
+    sell_forced: list[str],
+    swap_eligible: list[str],
+    l1_cfg: dict,
+) -> dict:
+    """Single-shot L1 retry with a stripped-down prompt after an initial parse failure.
+
+    Called only when the full L1 prompt produced unparseable output.  The goal is
+    to get *something* structurally valid so L2/L3 can still run with real signal.
+    """
+    minimal_prompt = (
+        "You are a portfolio strategist. Return ONLY a valid JSON object — "
+        "no markdown, no prose, just the JSON.\n\n"
+        f"Current holdings: {json.dumps(c_pc)}\n"
+        f"Watchlist candidates: {json.dumps(c_wc)}\n"
+        f"Swap-eligible: {swap_eligible or 'none'}\n"
+        f"Forced exits: {sell_forced or 'none'}\n\n"
+        "Propose up to 3 swap / reduce actions and rank the top watchlist buys.\n"
+        "Required output (fill in real values):\n"
+        '{"swaps":[{"sell":"SYM_OR_NULL","buy":"SYM_OR_NULL","score_delta":0.0,'
+        '"sector":"Other","type":"SWAP"}],"top_buys":["SYM"],'
+        '"sector_flags":[],"priority":"balanced"}'
+    )
+    raw = call_ai(
+        minimal_prompt,
+        l1_cfg["provider"],
+        l1_cfg["model"],
+        max_tokens=800,
+        use_schema=True,
+        usage_operation="optimize",
+        usage_layer="layer1_retry",
+    )
+    return safe_parse_json(raw["text"])
+
+
 # ─── Public API ───────────────────────────────────────────────────────────────
 
 def run_optimizer(
@@ -1100,6 +1244,8 @@ def run_layered_optimizer(
     fallback_provider: str = "anthropic",
     fallback_model: str = "claude-sonnet-4-6",
     persona_context: dict | None = None,
+    regime_context: dict | None = None,
+    policy_context: dict | None = None,
 ) -> dict:
     """3-layer Dynamic Capital Allocation Engine with global single-shot fallback."""
     if layers is None:
@@ -1135,6 +1281,8 @@ def run_layered_optimizer(
                 max_sector_pct=max_sector_pct, sector_limits=sector_limits,
                 max_stocks=max_stocks, current_count=portfolio_count,
                 persona_context=persona_context,
+                regime_context=regime_context,
+                policy_context=policy_context,
             )
             logger.info(f"L1 prompt chars: {len(l1_prompt)}")
             l1_raw = call_ai(
@@ -1160,20 +1308,32 @@ def run_layered_optimizer(
                 l1_result.get("priority"),
             )
         except Exception as e:
-            l1_parse_failed = True
             logger.error("[L1_DEBUG] parse_error=%s", e)
-            l1_result = {
-                "error": str(e), "swap_suggestions": [],
-                "top_buys": [], "sector_flags": [], "priority": "",
-            }
-            l1_latency_ms = 0
+            # Single quiet retry with a minimal stripped-down prompt before giving up
+            try:
+                l1_result = _retry_l1_with_schema(c_pc, c_wc, sell_forced, swap_eligible, l1_cfg)
+                l1_result["swap_suggestions"] = _postprocess_swaps(
+                    _normalize_l1_swaps(l1_result.get("swaps", [])), sell_forced, locked
+                )
+                l1_parse_failed = False
+                logger.info("[L1_RETRY] recovered successfully after minimal-prompt retry")
+            except Exception as retry_err:
+                logger.error("[L1_RETRY] also failed: %s", retry_err)
+                l1_parse_failed = True
+                l1_result = {
+                    "error": str(e), "swap_suggestions": [],
+                    "top_buys": [], "sector_flags": [], "priority": "",
+                }
+                l1_latency_ms = 0
 
         # Layer 2 — Challenger
         try:
             l2_raw = call_ai(
                 _layer2_prompt(pc, wc, l1_result, l2_cfg.get("role", ""),
                                cash_balance=cash_balance, total_value=total_value,
-                               persona_context=persona_context),
+                               persona_context=persona_context,
+                               regime_context=regime_context,
+                               policy_context=policy_context),
                 l2_cfg["provider"], l2_cfg["model"], max_tokens=8192,
                 usage_operation="optimize", usage_layer="layer2",
             )
@@ -1223,7 +1383,8 @@ def run_layered_optimizer(
         try:
             l3_raw = call_ai(
                 _layer3_prompt(l1_result, l2_result, l3_cfg.get("role", ""), max_sector_pct=max_sector_pct,
-                               persona_context=persona_context),
+                               persona_context=persona_context,
+                               policy_context=policy_context),
                 l3_cfg["provider"], l3_cfg["model"], max_tokens=2048,
                 usage_operation="optimize", usage_layer="layer3",
             )
@@ -1243,6 +1404,11 @@ def run_layered_optimizer(
             )
 
         consensus = _consensus_engine(l1_result, l2_result, l3_result)
+
+        # ── Policy governance scoring (3B.4) ───────────────────────────────────
+        # Populated after final_allocations are known; policy_context may be None.
+        # We store placeholders now and fill them in below after constraint enforcement.
+        _policy_scores_pending = bool(policy_context)
 
         # XAI metadata — extracted from L2 with safe defaults
         xai_status              = l2_result.get("status", "REBALANCE")
@@ -1284,6 +1450,95 @@ def run_layered_optimizer(
             a["allocation_change_percent"] = round(a["target_weight"] - a["current_weight"], 2)
             a["estimated_amount"] = round((a["allocation_change_percent"] / 100) * total_value)
 
+        # ── Policy / Regime hard constraints (applied after AI output) ────────
+        # When policy_context is available it supersedes the raw regime constraints
+        # (policy_engine already synthesizes persona + regime into a single envelope).
+        if policy_context:
+            pc_hard       = policy_context.get("hard_constraints", {})
+            min_cash_pct  = float(pc_hard.get("min_cash_pct", 5.0))
+            max_pos_pct   = float(pc_hard.get("max_single_position_pct", 22.0))
+            suppress_spec = bool(pc_hard.get("suppress_speculative", False))
+            emergency     = bool(policy_context.get("emergency_override", False))
+
+            # Emergency: convert all BUY/ACCUMULATE to HOLD
+            if emergency:
+                for a in final_allocations:
+                    if a.get("action") in ("BUY", "ACCUMULATE"):
+                        logger.info(
+                            "[POLICY_EMERGENCY] freezing %s BUY→HOLD (emergency override)", a["symbol"]
+                        )
+                        a["action"]                   = "HOLD"
+                        a["target_weight"]             = a.get("current_weight", 0.0)
+                        a["allocation_change_percent"] = 0.0
+                        a["estimated_amount"]          = 0
+
+            # Cap BUY/ACCUMULATE target_weight at policy max position
+            for a in final_allocations:
+                if a.get("action") in ("BUY", "ACCUMULATE") and a.get("target_weight", 0) > max_pos_pct:
+                    logger.info(
+                        "[POLICY] capping %s target_weight %.1f→%.1f (bias=%s)",
+                        a["symbol"], a["target_weight"], max_pos_pct,
+                        policy_context.get("deployment_bias"),
+                    )
+                    a["target_weight"]             = max_pos_pct
+                    a["allocation_change_percent"] = round(a["target_weight"] - a["current_weight"], 2)
+                    a["estimated_amount"]          = round((a["allocation_change_percent"] / 100) * total_value)
+
+            # Enforce minimum cash floor
+            total_target  = sum(a.get("target_weight", 0) for a in final_allocations
+                                if a.get("action") not in ("SELL",))
+            cash_headroom = 100.0 - total_target
+            if cash_headroom < min_cash_pct:
+                deficit = min_cash_pct - cash_headroom
+                buy_allocs = sorted(
+                    [a for a in final_allocations if a.get("action") in ("BUY", "ACCUMULATE")],
+                    key=lambda x: -x.get("target_weight", 0),
+                )
+                for a in buy_allocs:
+                    if deficit <= 0:
+                        break
+                    trim            = min(a["target_weight"], deficit)
+                    a["target_weight"]             = round(a["target_weight"] - trim, 2)
+                    a["allocation_change_percent"] = round(a["target_weight"] - a["current_weight"], 2)
+                    a["estimated_amount"]          = round((a["allocation_change_percent"] / 100) * total_value)
+                    deficit -= trim
+                logger.info(
+                    "[POLICY] enforced min_cash=%.0f%% deployment=%s",
+                    min_cash_pct, policy_context.get("deployment_bias"),
+                )
+
+        elif regime_context:
+            # Fallback: legacy regime-only enforcement when no policy_context
+            from services.analytics.regime_detector import get_regime_constraints
+            rc = get_regime_constraints(regime_context.get("regime", "SIDEWAYS"))
+            min_cash_pct  = rc["min_cash_pct"]
+            max_pos_pct   = rc["max_single_position_pct"]
+
+            for a in final_allocations:
+                if a.get("action") in ("BUY", "ACCUMULATE") and a.get("target_weight", 0) > max_pos_pct:
+                    a["target_weight"]             = max_pos_pct
+                    a["allocation_change_percent"] = round(a["target_weight"] - a["current_weight"], 2)
+                    a["estimated_amount"]          = round((a["allocation_change_percent"] / 100) * total_value)
+
+            total_target  = sum(a.get("target_weight", 0) for a in final_allocations
+                                if a.get("action") not in ("SELL",))
+            cash_headroom = 100.0 - total_target
+            if cash_headroom < min_cash_pct:
+                deficit = min_cash_pct - cash_headroom
+                buy_allocs = sorted(
+                    [a for a in final_allocations if a.get("action") in ("BUY", "ACCUMULATE")],
+                    key=lambda x: -x.get("target_weight", 0),
+                )
+                for a in buy_allocs:
+                    if deficit <= 0:
+                        break
+                    trim                           = min(a["target_weight"], deficit)
+                    a["target_weight"]             = round(a["target_weight"] - trim, 2)
+                    a["allocation_change_percent"] = round(a["target_weight"] - a["current_weight"], 2)
+                    a["estimated_amount"]          = round((a["allocation_change_percent"] / 100) * total_value)
+                    deficit -= trim
+                logger.info("[REGIME] enforced min_cash=%.0f%% regime=%s", min_cash_pct, regime_context.get("regime"))
+
         # Defensive: auto-correct NO_ACTION when allocations contain real changes
         if xai_status == "NO_ACTION" and any(
             a.get("action") not in ("HOLD", "WATCH") or abs(a.get("allocation_change_percent", 0)) >= 1.0
@@ -1296,6 +1551,24 @@ def run_layered_optimizer(
             xai_status = "REBALANCE"
             xai_no_action_reason = None
             xai_no_action_summary = None
+
+        # ── Policy governance scores (fill in now that allocations are finalized) ─
+        if _policy_scores_pending and policy_context:
+            from services.optimizer.policy_engine import compute_policy_alignment_score, PolicyEnvelope
+            pa_score, rc_score, rg_score, gov_flags = compute_policy_alignment_score(
+                final_allocations, _make_envelope_from_dict(policy_context), total_value
+            )
+            consensus["policy_alignment_score"]  = pa_score
+            consensus["regime_compliance_score"] = rc_score
+            consensus["risk_governance_score"]   = rg_score
+            consensus["governance_flags"]        = gov_flags
+            # Downgrade consensus strength when governance flags are raised
+            if gov_flags:
+                penalty = min(20, len(gov_flags) * 6)
+                consensus["consensus_strength_score"] = max(
+                    5, consensus.get("consensus_strength_score", 50) - penalty
+                )
+                logger.info("[POLICY_GOV] %d governance flag(s) raised, strength penalised -%d", len(gov_flags), penalty)
 
         # Auto-generate summary when empty but allocations exist
         if not final_summary and final_allocations:
@@ -1338,6 +1611,15 @@ def run_layered_optimizer(
                 "rebalance_urgency":      persona_context.get("rebalance_urgency"),
             }
 
+        # Strip prompt_block from policy_context before surfacing to API (it's large)
+        active_policy_out: dict | None = None
+        if policy_context:
+            active_policy_out = {k: v for k, v in policy_context.items() if k != "prompt_block"}
+            active_policy_out["policy_alignment_score"]  = consensus.get("policy_alignment_score")
+            active_policy_out["regime_compliance_score"] = consensus.get("regime_compliance_score")
+            active_policy_out["risk_governance_score"]   = consensus.get("risk_governance_score")
+            active_policy_out["governance_flags"]        = consensus.get("governance_flags", [])
+
         return {
             "portfolio_name": portfolio_name,
             "status": xai_status,
@@ -1379,6 +1661,7 @@ def run_layered_optimizer(
                 "provider": l3_cfg["provider"], "model": l3_cfg["model"], "name": l3_cfg.get("name", "Risk Auditor"),
             },
             "consensus": consensus,
+            "active_policy": active_policy_out,
             **persona_fields,
         }
 

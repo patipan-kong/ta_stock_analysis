@@ -9,11 +9,14 @@ import {
 } from "@/lib/api";
 import SignalBadge from "@/components/SignalBadge";
 import AIBadge from "@/components/AIBadge";
+import MarketRegimeCard from "@/components/MarketRegimeCard";
+import ActivePolicyEnvelopeCard from "@/components/ActivePolicyEnvelopeCard";
 import type {
   OptimizerResult, OptimizerHistoryItem, TargetAllocation, AllocationAction,
   WatchlistRanking, Layer2Result, Layer3Result, OptimizerConsensus, RiskFlag, SectorWarning,
   BlockedOpportunity, NoActionReason, SwapSuggestion, ConsensusType,
-  StrategyPersona, StrategyProfile, PortfolioDNA, DriftSeverity,
+  StrategyPersona, StrategyProfile, PortfolioDNA, DriftSeverity, MarketRegime,
+  ActivePolicy,
 } from "@/lib/api";
 
 const TZ = "Asia/Bangkok";
@@ -1205,6 +1208,16 @@ function ResultPanel({ result, loading, profiles }: {
 
       {/* Portfolio metrics */}
       {(result.total_value !== undefined) && <PortfolioMetricsBar result={result} />}
+
+      {/* Market Regime Indicator */}
+      {result.market_regime && (
+        <MarketRegimeCard regime={result.market_regime as MarketRegime} />
+      )}
+
+      {/* Active Policy Envelope (3B.4) */}
+      {result.active_policy && (
+        <ActivePolicyEnvelopeCard policy={result.active_policy as ActivePolicy} />
+      )}
 
       {/* Strategy Persona — DNA + Drift cards */}
       {result.current_portfolio_dna && result.target_persona && profiles.length > 0 && (
