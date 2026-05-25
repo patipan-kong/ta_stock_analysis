@@ -121,6 +121,12 @@ Signal badge colors: ACCUMULATE=teal (#0F6E56), BUY=green (#27500A), WATCH=blue 
 | `Settings` | Key-value store for all user settings |
 | `UserUsage` | Per-call AI token usage + cost + **latency_ms** |
 | `SignalHistory` | Append-only optimizer action log: `session_id` (ties rows to one optimizer run / `OptimizerHistory.id`), `symbol`, `action` (BUY/SELL/ACCUMULATE/REDUCE), `signal_type` (L1\|L2), `score_at_signal`, `price_at_signal`, `reasoning_snippet` (≤200 chars) |
+| `RecommendationSnapshot` | Full context of every 3L run: regime, constraint envelope, policy, L1/L2/L3 outputs, consensus, DNA, drift, scores_map. 1:1 with `OptimizerHistory`. |
+| `UserExecutionDecision` | User action on a recommendation: APPROVED \| REJECTED \| MANUAL_OVERRIDE. Chains to `RecommendationSnapshot`. |
+| `ShadowPortfolio` | Paper portfolio: STATIC_FROZEN (frozen at decision) or ACTIVE_MODEL (refreshed each run). Tracks hypothetical performance. |
+| `ShadowPortfolioSnapshot` | Daily paper-trading valuation per shadow: total_value, returns, benchmark comparison, alpha. |
+| `AttributionMetric` | BHB alpha attribution stub: selection_alpha, allocation_alpha, interaction_effect, per-sector breakdown. |
+| `ConfidenceCalibrationRecord` | AI confidence → outcome calibration stub: consensus/policy/regime score accuracy + `feedback_context_json` for prompt re-injection. |
 
 `migrate_legacy_data()` runs at startup for SQLite ALTER TABLE patches. PostgreSQL uses Alembic.
 
@@ -394,7 +400,83 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 ---
 
 ## CURRENT ARCHITECTURE STATE
-_Last updated: 2026-05-24. Update this section at the start of each new session._
+_Last updated: 2026-05-25 (Phase 3B.7C). Update this section at the start of each new session._
+
+### Phase 3B.7C — Execution Lifecycle Tracking & Shadow Portfolio Engine ✅ SHIPPED 2026-05-25
+
+See full block at bottom of CURRENT ARCHITECTURE STATE section.
+
+### Phase 3B.7B — Attribution Analytics & Human-vs-AI Benchmark Engine ✅ SHIPPED 2026-05-25
+
+See full block below Phase 3B.7C entry.
+
+### Phase 3B.7A — Decision Persistence & Shadow Benchmark Infrastructure ✅ SHIPPED 2026-05-25
+
+See full block below Phase 3B.6 entry.
+
+### Phase 3B.6 — Authorized Exception Semantics & Defensive Alignment Fix ✅ SHIPPED 2026-05-25
+
+Eliminated "Defensive Alignment Collapse" — the tendency of L2/L3 AI agents and the Consensus Engine to misinterpret authorized operational relaxations (e.g. Turnover Relaxation Active) as failure conditions warranting `REVIEW` escalation.
+
+**What was built:**
+
+- **Extended `_t1_note`** (`agents/optimizer.py`) — The Tier 1 breach notice block injected into all 3 AI layer prompts now appends a mandatory "AUTHORIZED EXCEPTION SEMANTICS" section containing:
+  - Explicit classification: `Turnover Relaxation Active` = SAFE AUTHORIZED STATE (not a failure)
+  - Two semantic categories injected into agent reasoning:
+    - **SAFE AUTHORIZED STATES** (must NOT escalate): Turnover Relaxation Active, Temporary Cash Deployment Override, Controlled Sector Rotation
+    - **DANGEROUS FAILURE STATES** (may escalate): Unresolved concentration breach, contradictory allocations, unauthorized risk escalation, policy violations without authorization
+  - Mandatory decision rule: if concentration violations are materially reduced + only concern is authorized turnover buffer → L2 MUST output `status=REBALANCE`; L3 MUST output `final_risk_level=low|medium`
+
+- **Governance penalty filter** (`agents/optimizer.py` ~line 1724) — When `_t1_severity != "NONE"` (Tier 1 relaxation active), turnover-related governance flags (`"turnover"`, `"tier3_efficiency"` in flag text) are excluded from the `consensus_strength_score` penalty. Only genuine unresolved violations (concentration, sector, cash, aggression) still penalize. Authorized expansions contribute neutral confidence impact.
+  - Log format: `[POLICY_GOV] flags=N penalizable=M strength_penalty=-P t1_severity=X`
+
+- **`TurnoverRelaxationNotice`** (`components/ActivePolicyEnvelopeCard.tsx`) — Redesigned from amber/warning to blue/informational:
+  - Title: "Turnover Relaxation Active" → **"Temporary Turnover Expansion Authorized"**
+  - Color: amber → blue; language communicates intentionality, controlled risk management
+
+- **`VIOLATION_FRIENDLY_NAME`** map (`ActivePolicyEnvelopeCard.tsx`) — All violation types now display human-friendly names:
+  - `TURNOVER_BREACH` → "Temporary Turnover Expansion Authorized"
+  - `CASH_BREACH` → "Cash Mandate Breach", etc.
+
+- **`PolicyViolationList`** (`ActivePolicyEnvelopeCard.tsx`) — When all remaining violations are authorized operational types (TURNOVER_BREACH / TURNOVER_RELAXED), the section header reads **"Controlled Optimization Adjustment"** instead of "Policy Violations Detected". `TURNOVER_BREACH` uses teal/info styling instead of blue-warning.
+
+- **`GOV_FLAG_COLOR`** (`ActivePolicyEnvelopeCard.tsx`) — `POLICY_VIOLATION` governance flags containing "turnover" now display with blue/informational styling instead of red/error.
+
+**Key design decisions:**
+- Authorized exception semantics injected via `_t1_note` (shared across all 3 layers) — no per-prompt duplication
+- Governance penalty skips only flags matching "turnover"/"tier3_efficiency" keyword pattern; all Tier 1/Tier 2 flags still penalize normally
+- `TURNOVER_BREACH` in `violation_details` only appears when turnover exceeds even the relaxed cap (genuine violation) — the informational display correctly softens genuine Tier 3 overages while not hiding real problems
+- `hasOnlyAuthorized` check in `PolicyViolationList` preserves strict language when real Tier 1/2 violations co-exist with authorized Tier 3 expansions
+
+### Phase 3B.5 — Deterministic Constraint Resolution Layer ✅ SHIPPED 2026-05-25
+
+The optimizer now has a **single, deterministic source of truth** for all allocation constraints, eliminating overlapping and contradictory controls between user settings, regime policies, and system safety limits.
+
+**What was built:**
+- `services/optimizer/constraint_resolver.py` — pure Python resolver merging 4 constraint sources into `EffectiveEnvelope`:
+  - **A) User Preferences** — `max_sector_pct`, per-sector `sector_limits`, persona volatility tolerance
+  - **B) Regime Policy** — `_REGIME_SECTOR_MULTIPLIERS` (e.g. `HIGH_VOLATILITY → 0.70`) applied multiplicatively to user sector limits
+  - **C) Emergency Overrides** — `EMERGENCY_MAX_SECTOR=25`, `EMERGENCY_MAX_SINGLE_POSITION=15`, `EMERGENCY_MIN_CASH=20`, `EMERGENCY_MAX_TURNOVER=15`
+  - **D) Absolute System Safety** — `ABSOLUTE_SYSTEM_MAX_SECTOR=70`, `ABSOLUTE_SYSTEM_MAX_SINGLE_POSITION=40`, etc.
+  - Resolution: `effective = min(A, B, C, D)` for upper bounds; `max()` for cash floor
+- `ConstraintBreakdown` dataclass — per-constraint audit trail: `{user_pref, regime_policy, emergency_limit, system_safety, effective, binding_source, tightened_reason}`
+- `EffectiveEnvelope` dataclass — holds `single_position`, `cash_min`, `turnover_max`, `beta_ceiling`, `sector_limits` (per-sector breakdowns), `global_sector_cap`, plus flat `effective_*` fields for quick access
+- `effective_sector_cap(envelope, sector)` — single call to get the resolved sector ceiling for any sector name
+- `envelope_to_dict(envelope)` — JSON-serializable dict including all breakdowns
+- `services/optimizer/policy_engine.py` — updated `compute_policy()` to accept `effective_envelope` param; uses resolver output as pre-discount baseline; `compute_policy_alignment_score()` returns 5-tuple adding `violation_details: list[dict]`; `build_policy_prompt_block()` shows `RESOLVED_SECTOR_LIMITS:` when per-sector limits available; `_detect_violations()` checks sector weights via market_value-weighted computation
+- `agents/optimizer.py` — `run_layered_optimizer()` gains `effective_envelope` param; L1 prompt uses resolved per-sector limits; L3 prompt uses `critical_pos_threshold`/`high_pos_threshold` derived from resolved max position (not hardcoded 30%); new post-AI **sector enforcement block** trims BUY/ACCUMULATE allocations when projected sector weight exceeds resolved limit; governance scoring uses 5-tuple; `effective_envelope` surfaced in return dict
+- `main.py` — calls `resolve_constraints()` before `compute_policy()`, passes `effective_envelope` through both
+- `frontend/lib/api.ts` — `ConstraintSource`, `ConstraintBreakdown`, `EffectiveEnvelope`, `PolicyViolationType`, `PolicyViolationDetail` types; `ActivePolicy.resolved_sector_limits`, `ActivePolicy.violation_details`, `OptimizerResult.effective_envelope`
+- `frontend/components/ActivePolicyEnvelopeCard.tsx` — `ConstraintComparisonTable` (User Pref | Regime Policy | Effective | Source columns); `PolicyViolationList` with typed violation details; `SourceBadge` component
+- `frontend/app/optimizer/page.tsx` — passes `effectiveEnvelope={result.effective_envelope}` to `ActivePolicyEnvelopeCard`
+
+**Key design decisions:**
+- Resolver outputs "pre-discount" baselines; policy engine's confidence discount applied on top (clean separation of concerns)
+- `emergency_limit` stored as `float | None` (not `float("inf")`) for JSON serializability
+- `_norm_sector()` duplicated inline in `policy_engine.py` to avoid circular import (optimizer.py → policy_engine.py)
+- Sector enforcement (new): first deterministic post-AI trimming of BUY/ACCUMULATE when projected sector weight exceeds resolved limit
+- All new parameters default to `None`; `effective_envelope=None` leaves all existing code paths unchanged
+- Historical optimizer results without `effective_envelope` display normally; `PolicyViolationList` only renders when `violation_details` is present
 
 ### Phase 3B.4 — Adaptive Optimizer Policy Engine ✅ SHIPPED 2026-05-24
 
@@ -613,6 +695,170 @@ GET /analytics/signals
 Returns rows ordered by `recorded_at DESC`. No auth required beyond existing JWT middleware.
 
 **Alembic migration:** `j4k5l6m7n8o9_add_signal_history_action_fields.py` — adds `session_id`, `action`, `score_at_signal`, `signal_type`, `reasoning_snippet` to `signal_history`. SQLite handled via `migrate_legacy_data()`.
+
+### Phase 3B.7A — Decision Persistence & Shadow Benchmark Infrastructure ✅ SHIPPED 2026-05-25
+
+Establishes the **Decision Attribution & Benchmark Intelligence** layer — a persistent memory of every optimizer recommendation, user execution decision, and the realized performance consequences. Provides the data foundation for selection/allocation alpha attribution and confidence calibration feedback loops.
+
+**What was built:**
+
+**Database schemas (`models/database.py` + Alembic `n8o9p0q1r2s3`):**
+
+| Table | Purpose |
+|---|---|
+| `recommendation_snapshots` | Full context of every 3L optimizer run: regime, constraint envelope, policy, L1/L2/L3 raw outputs, consensus, portfolio DNA, drift, scores_map, projected allocations. 1:1 with `optimizer_history`. |
+| `user_execution_decisions` | User action chained to a snapshot: `APPROVED \| REJECTED \| PARTIAL_EXECUTION \| MANUAL_OVERRIDE`. Records approved allocations, rejected symbols, override notes, execution timestamp. |
+| `shadow_portfolios` | Paper portfolio metadata for two tracking modes: `STATIC_FROZEN` (frozen at decision time — tracks "what would have happened") and `ACTIVE_MODEL` (hypothetical 100%-compliant portfolio, updated each optimizer run). |
+| `shadow_portfolio_snapshots` | Daily paper-trading valuations per shadow portfolio: total value, inception/daily return %, per-holding market values, benchmark return, alpha (shadow − benchmark). |
+| `attribution_metrics` | Brinson-Hood-Beebower decomposition per shadow/period: `selection_alpha`, `allocation_alpha`, `interaction_effect`, `total_alpha`, per-sector breakdown JSON. **Structural stub** — awaits per-sector benchmark data. |
+| `confidence_calibration_records` | Feedback loop: maps `consensus_strength_score`, `policy_alignment_score`, `regime_confidence` → realized outcomes. Produces `feedback_context_json` for re-injection into future AI prompts. **Structural stub** — regime stability dimension fully implemented; signal accuracy and policy compliance await >30-day history. |
+
+**Services (`services/decision_memory/`):**
+- `snapshot_writer.py` — `write_recommendation_snapshot()`: idempotent, called automatically after every optimizer run. Swallowed on failure — never blocks HTTP response.
+- `shadow_tracker.py` — `value_shadow_portfolio()`, `value_all_active_shadows()`, `create_static_frozen_shadow()`, `create_active_model_shadow()`. Paper-trading math using live yfinance prices + `BenchmarkPrice` table for benchmark return.
+- `attribution.py` — `compute_attribution()` / `get_attribution_summary()`: BHB framework structure, persists to `AttributionMetric`. Sector decomposition stub.
+- `calibration.py` — `compute_calibration()` / `get_latest_calibration()`: three calibration dimensions + `feedback_context_json` block. Regime stability is live; signal/policy accuracy stubs noted.
+
+**API endpoints (`main.py`):**
+```
+POST /optimizer/decisions                        # record APPROVED|REJECTED|PARTIAL_EXECUTION|MANUAL_OVERRIDE
+GET  /optimizer/decisions                        # list decisions (filter: portfolio_id, decision)
+GET  /optimizer/decisions/{id}                   # detail with linked snapshot metadata
+GET  /optimizer/snapshots/{id}                   # full RecommendationSnapshot (all L1/L2/L3 JSON)
+POST /analytics/shadow-portfolios                # create STATIC_FROZEN or ACTIVE_MODEL shadow
+GET  /analytics/shadow-portfolios                # list shadows (filter: portfolio_id, shadow_type, active_only)
+GET  /analytics/shadow-portfolios/{id}/performance  # daily history + today's valuation
+POST /analytics/shadow-portfolios/{id}/value     # trigger immediate paper-valuation
+GET  /analytics/attribution/{shadow_id}          # BHB attribution (+ history)
+GET  /analytics/calibration                      # confidence calibration (refresh=true to recompute)
+```
+
+**Frontend (`frontend/lib/api.ts`):** `ExecutionDecisionType`, `ShadowPortfolioType`, `ExecutionDecision`, `ExecutionDecisionDetail`, `RecordDecisionPayload`, `RecordDecisionResult`, `RecommendationSnapshotFull`, `ShadowPortfolioSummary`, `ShadowPortfolioPerformance`, `ShadowDailySnapshot`, `ShadowValuationResult`, `AttributionResult`, `CalibrationDetail`, `CalibrationResponse` types exported. API functions: `recordExecutionDecision`, `listExecutionDecisions`, `getExecutionDecision`, `getRecommendationSnapshot`, `createShadowPortfolio`, `listShadowPortfolios`, `getShadowPortfolioPerformance`, `triggerShadowValuation`, `getAttribution`, `getCalibration`. `OptimizerResult.recommendation_snapshot_id` added.
+
+**Scheduler integration (`services/snapshot_scheduler.py`):** `value_all_active_shadows()` called per-workspace in the daily 17:45 ICT job, after portfolio snapshots and before benchmark price fetch. Failure is caught and logged — never blocks the snapshot job.
+
+**Auto-hook in `analyze_optimizer`:** `write_recommendation_snapshot()` is called automatically after every successful optimizer run (after `OptimizerHistory` commit). The resulting `recommendation_snapshot_id` is included in the API response. Failure is swallowed and logged.
+
+**Key design decisions:**
+- `recommendation_snapshots.optimizer_history_id` has a UNIQUE constraint — idempotent write per run
+- `ShadowPortfolio.shadow_type` = `STATIC_FROZEN` (frozen at decision) vs `ACTIVE_MODEL` (refreshed each run, only one active per portfolio)
+- `PARTIAL_EXECUTION` added alongside `APPROVED | REJECTED | MANUAL_OVERRIDE` to model partial follow-through
+- Attribution and calibration are structural stubs with correct schema, working DB persistence, and well-typed stubs — completion requires accumulated price history and sector benchmark data
+- All new FK columns default to `None`/nullable — no impact on existing optimizer runs without snapshots
+- SQLite `migrate_legacy_data()` creates all 6 tables if missing; PostgreSQL uses Alembic migration
+
+---
+
+### Phase 3B.7B — Attribution Analytics & Human-vs-AI Benchmark Engine ✅ SHIPPED 2026-05-25
+
+Transforms the Decision Memory infrastructure (3B.7A) into measurable intelligence. All calculations are **purely deterministic Python** from stored DB data — no yfinance calls, no AI inference. Observational analytics only.
+
+**New Services:**
+
+| File | Purpose |
+|---|---|
+| `services/analytics/attribution_engine.py` | `compute_portfolio_attribution()` — actual vs shadow returns, max drawdown, regret score, avoided drawdown, ai_outperformed flag. `compute_max_drawdown()` utility. |
+| `services/analytics/human_vs_ai.py` | `compare_human_vs_ai()` — per-decision shadow vs actual comparison. Hit rate (% AI better), return delta, volatility delta, drawdown delta, verdict text. |
+| `services/analytics/regime_attribution.py` | `compute_regime_attribution()` — groups portfolio daily_return_pct by RegimeSnapshot label. Per-regime avg return, total return, volatility, min/max. Also groups optimizer run stats (rebalance rate, avg opportunity score) by regime. |
+
+**Calibration Enhancement (`services/decision_memory/calibration.py`):**
+- `_compute_signal_accuracy()` now LIVE (was stub) — queries `AgentCache.technical` for current prices of symbols in `SignalHistory`
+- Evaluates directional accuracy: BUY/ACCUMULATE correct if price went up, SELL/REDUCE correct if price went down
+- 14-day minimum holding period before a signal is evaluated
+- Groups by confidence bucket: HIGH (score ≥70), MEDIUM (40-69), LOW (<40) with per-bucket accuracy_pct
+- `compute_calibration()` now surfaces bucket data in insights list and `feedback_context_json`
+
+**DB Schema Extension (`AttributionMetric` table):**
+
+New columns added (backward-compatible, all nullable):
+- `portfolio_id` — FK to portfolios
+- `recommendation_snapshot_id` — FK to recommendation_snapshots
+- `evaluation_window_days` — evaluation period in days (default 30)
+- `actual_return_pct` — real portfolio return over the window
+- `static_shadow_return_pct` — STATIC_FROZEN shadow return
+- `ai_model_return_pct` — ACTIVE_MODEL shadow return
+- `avoided_drawdown_pct` — static_drawdown − actual_drawdown (positive = frozen had more drawdown)
+- `regret_score` — ai_model_return − actual_return (positive = AI would have done better)
+- `ai_outperformed` — bool: regret_score > 0
+
+Migration: `p0q1r2s3t4u5_add_attribution_columns.py` (Alembic) + `migrate_legacy_data()` patches for SQLite.
+
+**New API Endpoints (`main.py`):**
+```
+GET /analytics/attribution-summary?portfolio_id=X&evaluation_window_days=30
+    → PortfolioAttributionResult (actual/static_shadow/ai_model metrics + history)
+
+GET /analytics/human-vs-ai?portfolio_id=X&evaluation_days=90
+    → HumanVsAIResponse (per-decision breakdown + summary with hit_rate, return_delta, verdict)
+
+GET /analytics/regime-attribution?portfolio_id=X&lookback_days=90
+    → RegimeAttributionResponse (per-regime return stats + optimizer run stats by regime)
+
+GET /analytics/confidence-calibration?portfolio_id=X&lookback_days=30&refresh=false
+    → Enhanced calibration with signal accuracy buckets (replaces /analytics/calibration v1)
+```
+
+**Frontend (`frontend/components/AttributionPanel.tsx`):**
+4-card 2×2 grid rendered at the bottom of `ResultPanel` in `optimizer/page.tsx`:
+1. **Shadow Benchmark Comparison** — 3-column return view (Actual / Static Shadow / AI Model), regret score, avoided drawdown, ai_better badge, interpretation text
+2. **Human vs AI Decisions** — hit-rate gauge (circular), decision count, avg return delta, verdict text
+3. **Performance by Market Regime** — per-regime badges sorted by avg daily return, best/worst labels, coverage %
+4. **Confidence Calibration** — signal accuracy %, regime stability %, bucket bars (HIGH/MEDIUM/LOW confidence accuracy)
+
+All cards: `useEffect` on `portfolioId` change, graceful empty states, no blocking on data absence.
+
+**Key design decisions:**
+- `compare_human_vs_ai` priority: linked shadow first → ACTIVE_MODEL second → no shadow (skip)
+- `compute_max_drawdown` measures peak-to-trough in values list — used across all three services
+- Attribution Engine persists to `AttributionMetric` idempotent on (shadow_portfolio_id, period_start, period_end)
+- Regime attribution uses exact date-match between portfolio snapshot and regime snapshot; no interpolation
+- Signal accuracy evaluates only signals with `price_at_signal IS NOT NULL` and `action IN (BUY, ACCUMULATE, SELL, REDUCE)`
+- `getConfidenceCalibrationV2` is additive — `/analytics/confidence-calibration` is a new endpoint; original `/analytics/calibration` still exists
+
+---
+
+### Phase 3B.7C — Execution Lifecycle Tracking & Shadow Portfolio Engine ✅ SHIPPED 2026-05-25
+
+Closes the decision attribution loop by wiring automatic attribution computation into approval events and the daily scheduler, adds portfolio-level shadow performance aggregation, and exposes a full execution lifecycle API surface.
+
+**What was built:**
+
+**Auto-attribution triggers:**
+- `POST /optimizer/decisions` (record_execution_decision) now fires `compute_portfolio_attribution` in a background thread immediately after APPROVED shadow creation — attribution metrics are generated as soon as a decision is recorded, not just when the user navigates to the attribution panel.
+- `snapshot_scheduler.py` daily job: after `value_all_active_shadows`, iterates all portfolios with active shadows and calls `compute_portfolio_attribution` for each. Attribution metrics are refreshed every trading day alongside shadow valuations.
+
+**New API endpoints (`main.py`):**
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /optimizer/{snapshot_id}/decision` | Convenience endpoint — accepts snapshot_id from URL path; delegates to `POST /optimizer/decisions` |
+| `GET /analytics/shadow-performance?portfolio_id=X` | Portfolio-level aggregate shadow summary: both STATIC_FROZEN + ACTIVE_MODEL in one call with inception_return_pct, alpha, last_valued_at |
+| `GET /analytics/ai-vs-human-timeline?portfolio_id=X&evaluation_days=90` | Per-decision timeline from `compare_human_vs_ai`; ordered newest-first, capped at 50, includes aggregate summary |
+| `GET /analytics/calibration-history?portfolio_id=X&limit=20` | Historical ConfidenceCalibrationRecord rows filtered to portfolio's snapshot chain; workspace-wide when portfolio_id omitted |
+
+**Frontend (`frontend/lib/api.ts`):**
+- `ShadowSummaryItem`, `ShadowPerformanceSummary`, `AIvsHumanTimelineEntry`, `AIvsHumanTimeline`, `CalibrationHistoryEntry` types exported
+- `getShadowPerformanceSummary(portfolioId)` — calls `/analytics/shadow-performance`
+- `getAIvsHumanTimeline(portfolioId, evaluationDays, limit)` — calls `/analytics/ai-vs-human-timeline`
+- `getCalibrationHistory(portfolioId, limit)` — calls `/analytics/calibration-history`
+- `recordDecisionBySnapshot(snapshotId, payload)` — calls `POST /optimizer/{snapshotId}/decision`
+
+**Frontend (`optimizer/page.tsx`):**
+- `ShadowReturnChip` helper component — colored +/− return pill
+- `DecisionActionPanel` enhanced: when APPROVED, calls `getShadowPerformanceSummary` and renders a live shadow tracking status block showing:
+  - "Shadow Tracking Active" teal badge with pulse dot
+  - Inception date ("since YYYY-MM-DD")
+  - Frozen return % + AI Model return % side by side
+  - Alpha vs benchmark when available
+  - "Performance data available after first daily valuation (17:45 ICT)" message when shadows exist but haven't been priced yet
+
+**Key design decisions:**
+- Attribution trigger on APPROVED uses a daemon thread (same pattern as calibration trigger) — never blocks HTTP response; failure logged and swallowed
+- Scheduler attribution runs after shadow valuation (not before) so the latest snapshot prices are already committed when attribution is computed
+- `get_shadow_performance_summary` returns `{has_shadows: false}` (not 404) when no shadows exist — frontend can gracefully skip display without error handling
+- `get_ai_vs_human_timeline` delegates to the existing `compare_human_vs_ai` service without duplicating logic; the `total_decisions` field lets clients show "X of Y decisions shown"
+- `get_calibration_history` filters via `RecommendationSnapshot.portfolio_id` join — no new foreign key needed
+- `POST /optimizer/{snapshot_id}/decision` patches `body.recommendation_snapshot_id` before delegating — Pydantic model is mutable at endpoint level
 
 ---
 

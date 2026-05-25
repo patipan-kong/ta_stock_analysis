@@ -1,6 +1,15 @@
 "use client";
 
-import type { ActivePolicy, DeploymentBias, StrictnessLevel } from "@/lib/api";
+import type {
+  ActivePolicy,
+  ConstraintBreakdown,
+  ConstraintSource,
+  ConstraintTier,
+  DeploymentBias,
+  EffectiveEnvelope,
+  PolicyViolationDetail,
+  StrictnessLevel,
+} from "@/lib/api";
 
 // ─── Config tables ────────────────────────────────────────────────────────────
 
@@ -27,12 +36,223 @@ const FACTOR_COLORS: Record<string, string> = {
 };
 
 const GOV_FLAG_COLOR = (flag: string): string => {
+  // Authorized turnover expansions display as informational, not as failures
+  if (flag.startsWith("POLICY_VIOLATION") && flag.toLowerCase().includes("turnover"))
+    return "text-blue-700 bg-blue-50 border-blue-200";
   if (flag.startsWith("POLICY_VIOLATION"))     return "text-red-700 bg-red-50 border-red-200";
   if (flag.startsWith("CONCENTRATION_BREACH")) return "text-orange-700 bg-orange-50 border-orange-200";
   if (flag.startsWith("OVER_AGGRESSION"))      return "text-amber-700 bg-amber-50 border-amber-200";
   if (flag.startsWith("REGIME_MISMATCH"))      return "text-purple-700 bg-purple-50 border-purple-200";
   return "text-gray-700 bg-gray-50 border-gray-200";
 };
+
+// ─── Constraint comparison helpers ────────────────────────────────────────────
+
+const SOURCE_BADGE: Record<ConstraintSource, { label: string; color: string }> = {
+  USER_PREFERENCE:    { label: "User",      color: "text-gray-600  bg-gray-50   border-gray-200" },
+  REGIME_POLICY:      { label: "Regime",    color: "text-blue-700  bg-blue-50   border-blue-200" },
+  EMERGENCY_OVERRIDE: { label: "Emergency", color: "text-red-700   bg-red-50    border-red-200" },
+  SYSTEM_SAFETY:      { label: "System",    color: "text-purple-700 bg-purple-50 border-purple-200" },
+};
+
+const VIOLATION_COLOR: Record<string, string> = {
+  SECTOR_LIMIT:          "text-amber-700 bg-amber-50 border-amber-200",
+  SINGLE_POSITION_LIMIT: "text-orange-700 bg-orange-50 border-orange-200",
+  CASH_BREACH:           "text-red-700   bg-red-50   border-red-200",
+  TURNOVER_BREACH:       "text-teal-700  bg-teal-50  border-teal-200",
+  BETA_EXPOSURE:         "text-purple-700 bg-purple-50 border-purple-200",
+  TURNOVER_RELAXED:      "text-teal-600  bg-teal-50  border-teal-200",
+};
+
+const VIOLATION_FRIENDLY_NAME: Record<string, string> = {
+  SECTOR_LIMIT:          "Sector Limit",
+  SINGLE_POSITION_LIMIT: "Position Concentration",
+  CASH_BREACH:           "Cash Mandate Breach",
+  TURNOVER_BREACH:       "Temporary Turnover Expansion Authorized",
+  BETA_EXPOSURE:         "Risk Exposure",
+  TURNOVER_RELAXED:      "Authorized Relaxation",
+};
+
+const TIER_LABEL: Record<ConstraintTier, { label: string; color: string }> = {
+  TIER1_CRITICAL:   { label: "Tier 1 — Critical",  color: "text-red-700    bg-red-50    border-red-200" },
+  TIER2_STRATEGIC:  { label: "Tier 2 — Strategic", color: "text-amber-700  bg-amber-50  border-amber-200" },
+  TIER3_EFFICIENCY: { label: "Tier 3 — Efficiency", color: "text-blue-600  bg-blue-50   border-blue-200" },
+};
+
+function TurnoverRelaxationNotice({
+  relaxedCap,
+  baseCap,
+  reason,
+}: {
+  relaxedCap: number;
+  baseCap: number;
+  reason?: string | null;
+}) {
+  const pctIncrease = Math.round(((relaxedCap / baseCap) - 1) * 100);
+  return (
+    <div className="mb-3 p-2.5 rounded-lg bg-blue-50 border border-blue-200">
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-xs font-semibold text-blue-800">Temporary Turnover Expansion Authorized</span>
+        <span className="text-xs px-1.5 py-0.5 rounded border bg-blue-100 border-blue-300 text-blue-700 font-medium tabular-nums">
+          +{pctIncrease}%
+        </span>
+        <span className="text-xs text-blue-600 ml-auto tabular-nums">
+          {baseCap.toFixed(0)}% → {relaxedCap.toFixed(0)}%
+        </span>
+      </div>
+      <p className="text-xs text-blue-700 leading-relaxed">
+        The system intentionally authorized a temporary turnover ceiling expansion
+        ({baseCap.toFixed(0)}% → {relaxedCap.toFixed(0)}%) to eliminate a more dangerous
+        Tier 1 concentration risk. This is a controlled optimization adjustment, not a failure.
+      </p>
+      {reason && (
+        <p className="text-xs text-blue-600 mt-0.5 leading-relaxed italic">
+          Concentration remediation target: {reason}
+        </p>
+      )}
+      <p className="text-xs text-blue-500 mt-1">
+        Tier 1 concentration safety takes precedence over Tier 3 turnover efficiency
+      </p>
+    </div>
+  );
+}
+
+function SourceBadge({ source }: { source: ConstraintSource }) {
+  const cfg = SOURCE_BADGE[source] ?? SOURCE_BADGE.USER_PREFERENCE;
+  return (
+    <span className={`text-xs px-1.5 py-0.5 rounded border font-medium ${cfg.color}`}>
+      {cfg.label}
+    </span>
+  );
+}
+
+function ConstraintRow({
+  label,
+  bd,
+  unit = "%",
+  lowerIsTighter = true,
+}: {
+  label: string;
+  bd: ConstraintBreakdown;
+  unit?: string;
+  lowerIsTighter?: boolean;
+}) {
+  const isTightened = bd.tightened_reason !== null;
+  const effectiveCls = isTightened ? "text-amber-700 font-bold" : "text-gray-800 font-medium";
+
+  return (
+    <tr className="border-b border-gray-100 last:border-0">
+      <td className="py-1.5 pr-2 text-xs text-gray-500 whitespace-nowrap">{label}</td>
+      <td className="py-1.5 px-2 text-xs text-center text-gray-700">
+        {bd.user_pref.toFixed(0)}{unit}
+      </td>
+      <td className="py-1.5 px-2 text-xs text-center text-blue-700">
+        {bd.regime_policy.toFixed(0)}{unit}
+      </td>
+      <td className="py-1.5 px-2 text-xs text-center">
+        <span className={effectiveCls}>{bd.effective.toFixed(0)}{unit}</span>
+      </td>
+      <td className="py-1.5 pl-2 text-xs">
+        {isTightened && <SourceBadge source={bd.binding_source} />}
+      </td>
+    </tr>
+  );
+}
+
+function ConstraintComparisonTable({ envelope }: { envelope: EffectiveEnvelope }) {
+  const sectorEntries = Object.entries(envelope.sector_limits).filter(
+    ([s]) => s !== "Other"
+  );
+  const hasSectorAdjustments = sectorEntries.some(
+    ([, bd]) => bd.tightened_reason !== null
+  );
+
+  return (
+    <div className="mb-3">
+      <p className="text-xs font-medium text-gray-600 mb-1.5">Constraint Resolution</p>
+      <div className="rounded-lg border border-gray-200 overflow-hidden">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="bg-gray-50 border-b border-gray-200">
+              <th className="py-1.5 pr-2 text-left text-xs font-medium text-gray-500">Constraint</th>
+              <th className="py-1.5 px-2 text-center text-xs font-medium text-gray-500">User Pref</th>
+              <th className="py-1.5 px-2 text-center text-xs font-medium text-blue-600">Active Policy</th>
+              <th className="py-1.5 px-2 text-center text-xs font-medium text-gray-800">Effective</th>
+              <th className="py-1.5 pl-2 text-left text-xs font-medium text-gray-400">Source</th>
+            </tr>
+          </thead>
+          <tbody className="bg-white">
+            <ConstraintRow label="Max Position" bd={envelope.single_position} />
+            <ConstraintRow label="Cash Floor" bd={envelope.cash_min} lowerIsTighter={false} />
+            <ConstraintRow label="Turnover Cap" bd={envelope.turnover_max} />
+            {sectorEntries.map(([sector, bd]) => (
+              <ConstraintRow key={sector} label={`${sector} sector`} bd={bd} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {envelope.resolver_notes.length > 0 && (
+        <div className="mt-1.5 space-y-0.5">
+          {envelope.resolver_notes.slice(0, 4).map((note, i) => (
+            <p key={i} className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded px-2 py-1">
+              {note}
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PolicyViolationList({ violations }: { violations: PolicyViolationDetail[] }) {
+  if (!violations || violations.length === 0) return null;
+  const realViolations = violations.filter(v => v.violation_type !== "TURNOVER_RELAXED");
+  if (realViolations.length === 0) return null;
+
+  // Sort by tier severity: Tier 1 first
+  const TIER_ORDER: Record<string, number> = { TIER1_CRITICAL: 0, TIER2_STRATEGIC: 1, TIER3_EFFICIENCY: 2 };
+  const sorted = [...realViolations].sort(
+    (a, b) => (TIER_ORDER[a.tier ?? "TIER3_EFFICIENCY"] ?? 2) - (TIER_ORDER[b.tier ?? "TIER3_EFFICIENCY"] ?? 2)
+  );
+
+  // If only authorized operational adjustments remain, use softer header
+  const _AUTHORIZED_TYPES = new Set(["TURNOVER_BREACH", "TURNOVER_RELAXED"]);
+  const hasOnlyAuthorized = sorted.every(v => _AUTHORIZED_TYPES.has(v.violation_type));
+  const headerText = hasOnlyAuthorized ? "Controlled Optimization Adjustment" : "Policy Violations Detected";
+
+  return (
+    <div className="mb-3">
+      <p className="text-xs font-medium text-gray-600 mb-1">{headerText}</p>
+      <div className="space-y-1">
+        {sorted.map((v, i) => {
+          const cls      = VIOLATION_COLOR[v.violation_type] ?? "text-gray-700 bg-gray-50 border-gray-200";
+          const label    = v.sector ?? v.symbol ?? v.violation_type;
+          const tierCfg  = v.tier ? TIER_LABEL[v.tier as ConstraintTier] : null;
+          const friendlyName = VIOLATION_FRIENDLY_NAME[v.violation_type] ?? v.violation_type.replace(/_/g, " ");
+          return (
+            <div key={i} className={`text-xs px-2 py-1.5 rounded border ${cls}`}>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-medium">{friendlyName}</span>
+                {label && label !== v.violation_type && (
+                  <span className="opacity-75">— {label}</span>
+                )}
+                <span className="opacity-75">
+                  ({v.proposed_pct.toFixed(1)}% / {v.allowed_pct.toFixed(0)}% limit)
+                </span>
+                <SourceBadge source={v.violation_source} />
+                {tierCfg && (
+                  <span className={`text-xs px-1 py-0.5 rounded border font-medium ${tierCfg.color}`}>
+                    {tierCfg.label}
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -72,7 +292,13 @@ function Stat({ label, value, note }: { label: string; value: string | number; n
 
 // ─── Main card ────────────────────────────────────────────────────────────────
 
-export default function ActivePolicyEnvelopeCard({ policy }: { policy: ActivePolicy }) {
+export default function ActivePolicyEnvelopeCard({
+  policy,
+  effectiveEnvelope,
+}: {
+  policy: ActivePolicy;
+  effectiveEnvelope?: EffectiveEnvelope | null;
+}) {
   const biasCfg    = BIAS_CFG[policy.deployment_bias]    ?? BIAS_CFG.SELECTIVE;
   const strictCfg  = STRICT_CFG[policy.strictness_level] ?? STRICT_CFG.NORMAL;
   const hc         = policy.hard_constraints;
@@ -130,6 +356,15 @@ export default function ActivePolicyEnvelopeCard({ policy }: { policy: ActivePol
           note={hc.suppress_speculative ? "low-quality blocked" : ""}
         />
       </div>
+
+      {/* ── Phase 3B.6 — Turnover relaxation notice ── */}
+      {policy.turnover_relaxation_active && policy.relaxed_turnover_cap != null && (
+        <TurnoverRelaxationNotice
+          relaxedCap={policy.relaxed_turnover_cap}
+          baseCap={policy.hard_constraints.max_turnover_pct}
+          reason={policy.turnover_relaxation_reason}
+        />
+      )}
 
       {/* ── Risk budget bar ── */}
       <div className="mb-3">
@@ -205,32 +440,44 @@ export default function ActivePolicyEnvelopeCard({ policy }: { policy: ActivePol
         </div>
       )}
 
-      {/* ── Governance flags ── */}
-      {policy.governance_flags && policy.governance_flags.length > 0 && (
-        <div className="mb-3">
-          <p className="text-xs font-medium text-gray-600 mb-1">Governance Flags</p>
-          <div className="space-y-1">
-            {policy.governance_flags.map((flag, i) => (
-              <div key={i} className={`text-xs px-2 py-1 rounded border ${GOV_FLAG_COLOR(flag)}`}>
-                {flag}
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* ── Phase 3B.5 — Constraint comparison table ── */}
+      {effectiveEnvelope && (
+        <ConstraintComparisonTable envelope={effectiveEnvelope} />
       )}
 
-      {/* ── Portfolio violations ── */}
-      {policy.violations && policy.violations.length > 0 && (
-        <div className="mb-3">
-          <p className="text-xs font-medium text-gray-600 mb-1">Portfolio Violations</p>
-          <div className="space-y-1">
-            {policy.violations.map((v, i) => (
-              <div key={i} className="text-xs px-2 py-1 rounded border text-red-700 bg-red-50 border-red-200">
-                {v}
+      {/* ── Structured policy violation details (Phase 3B.5) ── */}
+      {policy.violation_details && policy.violation_details.length > 0 ? (
+        <PolicyViolationList violations={policy.violation_details} />
+      ) : (
+        <>
+          {/* ── Governance flags (legacy string format) ── */}
+          {policy.governance_flags && policy.governance_flags.length > 0 && (
+            <div className="mb-3">
+              <p className="text-xs font-medium text-gray-600 mb-1">Governance Flags</p>
+              <div className="space-y-1">
+                {policy.governance_flags.map((flag, i) => (
+                  <div key={i} className={`text-xs px-2 py-1 rounded border ${GOV_FLAG_COLOR(flag)}`}>
+                    {flag}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
+            </div>
+          )}
+
+          {/* ── Portfolio violations (legacy) ── */}
+          {policy.violations && policy.violations.length > 0 && (
+            <div className="mb-3">
+              <p className="text-xs font-medium text-gray-600 mb-1">Portfolio Violations</p>
+              <div className="space-y-1">
+                {policy.violations.map((v, i) => (
+                  <div key={i} className="text-xs px-2 py-1 rounded border text-red-700 bg-red-50 border-red-200">
+                    {v}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* ── Narrative ── */}

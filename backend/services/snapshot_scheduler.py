@@ -256,6 +256,57 @@ async def _run_snapshots_core(triggered_by: str) -> None:
                     _fmt_ms(ws_ms),
                 )
 
+            # Value active shadow portfolios for all workspaces (Phase 3B.7A).
+            shadow_t0 = time.perf_counter()
+            try:
+                from services.decision_memory.shadow_tracker import value_all_active_shadows
+                for ws in workspaces:
+                    shadow_results = value_all_active_shadows(db, ws.id)
+                    if shadow_results:
+                        log.info(
+                            "snapshot_scheduler: shadow portfolios valued — count=%d  workspace=%d  elapsed=%s",
+                            len(shadow_results),
+                            ws.id,
+                            _fmt_ms(_elapsed_ms(shadow_t0)),
+                        )
+            except Exception:
+                log.error(
+                    "snapshot_scheduler: shadow valuation failed\n%s",
+                    traceback.format_exc().rstrip(),
+                )
+
+            # Compute attribution metrics for portfolios with active shadows (Phase 3B.7C).
+            # Runs after shadow valuation so snapshots are fresh.
+            attr_t0 = time.perf_counter()
+            try:
+                from models.database import ShadowPortfolio
+                from services.analytics.attribution_engine import compute_portfolio_attribution
+                portfolio_ids_with_shadows: set[int] = set()
+                for ws in workspaces:
+                    rows = (
+                        db.query(ShadowPortfolio.portfolio_id)
+                        .filter_by(workspace_id=ws.id, is_active=True)
+                        .distinct()
+                        .all()
+                    )
+                    portfolio_ids_with_shadows.update(r.portfolio_id for r in rows if r.portfolio_id)
+                for pid in portfolio_ids_with_shadows:
+                    try:
+                        compute_portfolio_attribution(db, pid)
+                    except Exception:
+                        pass
+                if portfolio_ids_with_shadows:
+                    log.info(
+                        "snapshot_scheduler: attribution computed — portfolios=%d  elapsed=%s",
+                        len(portfolio_ids_with_shadows),
+                        _fmt_ms(_elapsed_ms(attr_t0)),
+                    )
+            except Exception:
+                log.error(
+                    "snapshot_scheduler: attribution computation failed\n%s",
+                    traceback.format_exc().rstrip(),
+                )
+
             # Fetch and store benchmark prices for today alongside portfolio snapshots.
             bench_t0 = time.perf_counter()
             try:

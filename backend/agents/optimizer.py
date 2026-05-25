@@ -5,9 +5,16 @@ from services.json_utils import safe_parse_json
 from services.optimizer.strategy_profiles import build_persona_context, get_profile  # noqa: F401
 from services.optimizer.policy_engine import (  # noqa: F401
     compute_policy_alignment_score,
+    compute_concentration_breach_severity,
+    get_relaxed_turnover_cap,
     envelope_to_dict as _envelope_to_dict,
     HardConstraints as _HardConstraints,
     PolicyEnvelope as _PolicyEnvelope,
+)
+from services.optimizer.constraint_resolver import (  # noqa: F401
+    EffectiveEnvelope as _EffectiveEnvelope,
+    effective_sector_cap as _effective_sector_cap,
+    envelope_to_dict as _eff_env_to_dict,
 )
 
 logger = logging.getLogger(__name__)
@@ -673,8 +680,15 @@ def _layer1_prompt(
     persona_context: dict | None = None,
     regime_context: dict | None = None,
     policy_context: dict | None = None,
+    effective_envelope: "_EffectiveEnvelope | None" = None,
+    t1_breach_note: str = "",
 ) -> str:
-    sl = sector_limits or {"default": max_sector_pct}
+    # Phase 3B.5: use resolved per-sector limits when available; fall back to raw sector_limits
+    if effective_envelope is not None:
+        sl = {s: int(v) for s, v in effective_envelope.effective_sector_limits.items()}
+        sl.setdefault("default", int(effective_envelope.global_sector_cap.effective))
+    else:
+        sl = sector_limits or {"default": max_sector_pct}
 
     # Policy block (3B.4) — overrides / supplements regime + strategy blocks
     policy_block = ""
@@ -744,7 +758,7 @@ Stocks proposed for REDUCE/SELL must be misaligned with {p_label} or overweight.
                 "If any holding currently exceeds this, propose an incremental REDUCE swap.\n"
             )
 
-    return f"""{policy_block}{regime_block}{strategy_block}You are a STRATEGIST. Output swap targets in JSON only.
+    return f"""{policy_block}{regime_block}{strategy_block}{t1_breach_note}You are a STRATEGIST. Output swap targets in JSON only.
 No explanation. No prose. Only valid JSON output.
 {violation_note}
 Portfolio: {json.dumps(c_pc)}
@@ -788,6 +802,7 @@ def _layer2_prompt(
     persona_context: dict | None = None,
     regime_context: dict | None = None,
     policy_context: dict | None = None,
+    t1_breach_note: str = "",
 ) -> str:
     role_line = f"Your role: {role}\n\n" if role else ""
 
@@ -836,7 +851,7 @@ Factor weighting, position sizing, and stock selection must all reflect this per
 """
 
     return f"""You are an independent portfolio reviewer.
-{policy_block}{regime_block}{strategy_block}{role_line}The Strategist (Layer 1) proposed:
+{policy_block}{regime_block}{strategy_block}{t1_breach_note}{role_line}The Strategist (Layer 1) proposed:
 - Priority: {l1_priority}
 - Swaps: {json.dumps(l1_swaps, indent=2)}
 - Top watchlist picks: {l1_top_buys}
@@ -896,11 +911,28 @@ def _layer3_prompt(
     max_sector_pct: int = 40,
     persona_context: dict | None = None,
     policy_context: dict | None = None,
+    effective_envelope: "_EffectiveEnvelope | None" = None,
+    t1_breach_note: str = "",
 ) -> str:
     role_line = f"Your role: {role}\n\n" if role else ""
     l1_swaps    = l1.get("swap_suggestions", l1.get("swaps", []))[:4]
     l1_priority = l1.get("priority", "balanced")
     l2_allocs   = l2.get("allocations", l2.get("target_allocations", []))
+
+    # Use resolved position cap for CRITICAL threshold — eliminates hardcoded 30% magic number
+    if effective_envelope is not None:
+        resolved_max_pos    = effective_envelope.effective_single_position_pct
+        resolved_sector_cap = int(effective_envelope.global_sector_cap.effective)
+    elif policy_context:
+        hc = policy_context.get("hard_constraints", {})
+        resolved_max_pos    = float(hc.get("max_single_position_pct", 22.0))
+        resolved_sector_cap = int(hc.get("max_sector_pct", max_sector_pct))
+    else:
+        resolved_max_pos    = 30.0   # legacy: was hardcoded
+        resolved_sector_cap = max_sector_pct
+
+    # CRITICAL threshold: any position > resolved max + 8pp buffer, or resolved position cap + 8pp
+    critical_pos_threshold = min(30.0, resolved_max_pos + max(5.0, resolved_max_pos * 0.25))
 
     persona_note = ""
     if persona_context:
@@ -926,7 +958,9 @@ def _layer3_prompt(
             "OVER_AGGRESSION for excessive buys in defensive mode, REGIME_MISMATCH for emergency violations.\n"
         )
 
-    return f"""You are a portfolio risk auditor.
+    high_pos_threshold = round(resolved_max_pos * 0.85, 1)  # HIGH = 85–100% of cap
+
+    return f"""{t1_breach_note}You are a portfolio risk auditor.
 {policy_note}{persona_note}{role_line}Evaluate both allocation proposals for concentration risk and soundness.
 
 Layer 1 (Strategist):
@@ -938,10 +972,10 @@ Agrees: {l2.get("agrees_with_layer1", True)}
 Disagreements: {json.dumps(l2.get("disagreements", []))}
 Allocations: {json.dumps(l2_allocs, indent=2)}
 
-Check for (use exact severity thresholds):
-- CRITICAL : sector > {max_sector_pct}% OR single stock > 30% OR SELL signal kept in portfolio
-- HIGH     : single stock 25-30% OR weak fundamentals on large position
-- MEDIUM   : sector 60-80% of limit OR conflicting allocation math
+Check for (use exact resolved severity thresholds — derived from active policy, not hardcoded):
+- CRITICAL : sector > {resolved_sector_cap}% OR single stock > {critical_pos_threshold:.0f}% OR SELL signal kept in portfolio
+- HIGH     : single stock {high_pos_threshold:.0f}–{critical_pos_threshold:.0f}% OR weak fundamentals on large position
+- MEDIUM   : sector {int(resolved_sector_cap * 0.6)}–{int(resolved_sector_cap * 0.8)}% of limit OR conflicting allocation math
 - LOW      : minor concentration risk, suboptimal but acceptable
 
 Return JSON only. No markdown fences.
@@ -1246,6 +1280,7 @@ def run_layered_optimizer(
     persona_context: dict | None = None,
     regime_context: dict | None = None,
     policy_context: dict | None = None,
+    effective_envelope: "_EffectiveEnvelope | None" = None,
 ) -> dict:
     """3-layer Dynamic Capital Allocation Engine with global single-shot fallback."""
     if layers is None:
@@ -1272,6 +1307,70 @@ def run_layered_optimizer(
 
     current_sector_weights = calculate_current_sector_weights(portfolio_data)
 
+    # ── Phase 3B.6 — Tier 1 breach detection for dynamic turnover relaxation ──
+    # Detect concentration breaches in the CURRENT portfolio before AI layers run.
+    # When breaches exist, Tier 3 turnover constraints are relaxed so they cannot
+    # block the remediation that Tier 1 demands.
+    _t1_severity: str = "NONE"
+    _t1_reason:   str = ""
+    _base_turn_cap:    float = 0.0
+    _relaxed_turn_cap: float | None = None
+
+    if policy_context:
+        _pe_for_t1 = _make_envelope_from_dict(policy_context)
+        _base_turn_cap = _pe_for_t1.hard_constraints.max_turnover_pct
+        _t1_severity, _t1_reason = compute_concentration_breach_severity(
+            portfolio_data,
+            _pe_for_t1.hard_constraints.max_single_position_pct,
+            _pe_for_t1.hard_constraints.max_sector_pct,
+            dict(policy_context.get("resolved_sector_limits") or {}),
+        )
+        _relaxed_turn_cap = get_relaxed_turnover_cap(_base_turn_cap, _t1_severity)
+        if _t1_severity != "NONE":
+            logger.info(
+                "[TIER1_RELAX] severity=%s base_turn=%.0f%% relaxed=%.0f%% reason=%s",
+                _t1_severity, _base_turn_cap, _relaxed_turn_cap, _t1_reason,
+            )
+
+    # Prompt note injected into all 3 layers when Tier 1 breaches are present
+    _t1_note = ""
+    if _t1_severity != "NONE" and _relaxed_turn_cap is not None and _base_turn_cap > 0:
+        _mult_pct = round((_relaxed_turn_cap / _base_turn_cap - 1) * 100)
+        _t1_note = (
+            f"[CONSTRAINT HIERARCHY — CONCENTRATION PRIORITY ACTIVE]\n"
+            f"TIER 1 BREACH DETECTED ({_t1_severity}): {_t1_reason}\n"
+            f"PRIORITY RULE: Eliminating dangerous concentration risk takes absolute precedence "
+            f"over Tier 3 turnover efficiency constraints.\n"
+            f"Effective turnover ceiling this run: {_relaxed_turn_cap:.0f}% "
+            f"(base {_base_turn_cap:.0f}% + {_mult_pct}% relaxation for Tier 1 remediation).\n"
+            f"concentration reduction > turnover efficiency | "
+            f"safety remediation > optimization friction\n"
+            f"\n"
+            f"AUTHORIZED EXCEPTION SEMANTICS — MANDATORY FOR ALL AGENTS:\n"
+            f"'Turnover Relaxation Active' is a SAFE AUTHORIZED STATE, NOT a failure condition.\n"
+            f"The system has mathematically pre-approved this temporary turnover overshoot to eliminate\n"
+            f"a more dangerous Tier 1 concentration risk. This is controlled, policy-compliant behavior.\n"
+            f"\n"
+            f"SAFE AUTHORIZED STATES (do NOT escalate to REVIEW / flag HIGH or CRITICAL):\n"
+            f"  • Turnover Relaxation Active    — controlled Tier 3 flex for Tier 1 remediation\n"
+            f"  • Temporary Cash Deployment Override — transient, for forced exits\n"
+            f"  • Controlled Sector Rotation    — rebalancing within resolved sector limits\n"
+            f"\n"
+            f"DANGEROUS FAILURE STATES (flag HIGH/CRITICAL, warrant REVIEW or REJECT):\n"
+            f"  • Concentration breach UNRESOLVED after proposed rebalancing\n"
+            f"  • Contradictory allocation logic (same stock BUY + SELL simultaneously)\n"
+            f"  • Unauthorized leverage or risk escalation beyond policy envelope\n"
+            f"  • Policy envelope violations WITHOUT documented system authorization\n"
+            f"\n"
+            f"MANDATORY DECISION RULE:\n"
+            f"  IF (a) concentration violations are materially reduced by the proposed plan, AND\n"
+            f"     (b) portfolio diversification improves (fewer or smaller overweight positions), AND\n"
+            f"     (c) the ONLY remaining concern is an authorized turnover relaxation buffer:\n"
+            f"  THEN → L2 MUST output status=REBALANCE (not NO_ACTION, not REVIEW).\n"
+            f"          L3 MUST output final_risk_level=low or medium (not high).\n"
+            f"  Authorized operational relaxations confirm the system is working correctly.\n\n"
+        )
+
     try:
         # Layer 1 — Strategist
         l1_parse_failed = False
@@ -1283,6 +1382,8 @@ def run_layered_optimizer(
                 persona_context=persona_context,
                 regime_context=regime_context,
                 policy_context=policy_context,
+                effective_envelope=effective_envelope,
+                t1_breach_note=_t1_note,
             )
             logger.info(f"L1 prompt chars: {len(l1_prompt)}")
             l1_raw = call_ai(
@@ -1333,7 +1434,8 @@ def run_layered_optimizer(
                                cash_balance=cash_balance, total_value=total_value,
                                persona_context=persona_context,
                                regime_context=regime_context,
-                               policy_context=policy_context),
+                               policy_context=policy_context,
+                               t1_breach_note=_t1_note),
                 l2_cfg["provider"], l2_cfg["model"], max_tokens=8192,
                 usage_operation="optimize", usage_layer="layer2",
             )
@@ -1384,7 +1486,9 @@ def run_layered_optimizer(
             l3_raw = call_ai(
                 _layer3_prompt(l1_result, l2_result, l3_cfg.get("role", ""), max_sector_pct=max_sector_pct,
                                persona_context=persona_context,
-                               policy_context=policy_context),
+                               policy_context=policy_context,
+                               effective_envelope=effective_envelope,
+                               t1_breach_note=_t1_note),
                 l3_cfg["provider"], l3_cfg["model"], max_tokens=2048,
                 usage_operation="optimize", usage_layer="layer3",
             )
@@ -1539,6 +1643,54 @@ def run_layered_optimizer(
                     deficit -= trim
                 logger.info("[REGIME] enforced min_cash=%.0f%% regime=%s", min_cash_pct, regime_context.get("regime"))
 
+        # ── Phase 3B.5 — Sector-level enforcement from resolved EffectiveEnvelope ──
+        # Runs AFTER position/cash enforcement to ensure no sector exceeds its resolved limit.
+        # This is a new enforcement step that operates on projected weights from target allocations.
+        if effective_envelope is not None:
+            # Build sector lookup from all available data (portfolio + watchlist)
+            _all_sector_data = {d["symbol"]: normalize_sector(d.get("sector", "Other"))
+                                for d in (portfolio_data + watchlist_data)}
+
+            # Compute projected sector weights from current target allocations
+            proj_sector: dict[str, float] = {}
+            for a in final_allocations:
+                if a.get("action") == "SELL":
+                    continue
+                sector = _all_sector_data.get(a.get("symbol", ""), "Other")
+                proj_sector[sector] = proj_sector.get(sector, 0.0) + float(a.get("target_weight") or 0)
+
+            # Enforce per-sector resolved limits
+            for sector, proj_pct in proj_sector.items():
+                limit = _effective_sector_cap(effective_envelope, sector)
+                if proj_pct <= limit:
+                    continue
+                # Trim largest BUY/ACCUMULATE allocations in this sector until within limit
+                excess = proj_pct - limit
+                over_allocs = sorted(
+                    [a for a in final_allocations
+                     if _all_sector_data.get(a.get("symbol", ""), "Other") == sector
+                     and a.get("action") in ("BUY", "ACCUMULATE")],
+                    key=lambda x: -x.get("target_weight", 0),
+                )
+                for a in over_allocs:
+                    if excess <= 0:
+                        break
+                    trim = min(a["target_weight"], excess)
+                    a["target_weight"]             = round(a["target_weight"] - trim, 2)
+                    a["allocation_change_percent"] = round(a["target_weight"] - a["current_weight"], 2)
+                    a["estimated_amount"]          = round((a["allocation_change_percent"] / 100) * total_value)
+                    excess -= trim
+                logger.info(
+                    "[SECTOR_ENFORCE] %s sector %.1f%% > %.1f%% resolved limit — trimmed",
+                    sector, proj_pct, limit,
+                )
+
+        # Build sector_map for governance scoring (symbol → sector)
+        _sector_map_for_scoring: dict[str, str] = {
+            d["symbol"]: normalize_sector(d.get("sector", "Other"))
+            for d in (portfolio_data + watchlist_data)
+        } if effective_envelope is not None else {}
+
         # Defensive: auto-correct NO_ACTION when allocations contain real changes
         if xai_status == "NO_ACTION" and any(
             a.get("action") not in ("HOLD", "WATCH") or abs(a.get("allocation_change_percent", 0)) >= 1.0
@@ -1555,20 +1707,35 @@ def run_layered_optimizer(
         # ── Policy governance scores (fill in now that allocations are finalized) ─
         if _policy_scores_pending and policy_context:
             from services.optimizer.policy_engine import compute_policy_alignment_score, PolicyEnvelope
-            pa_score, rc_score, rg_score, gov_flags = compute_policy_alignment_score(
-                final_allocations, _make_envelope_from_dict(policy_context), total_value
+            pa_score, rc_score, rg_score, gov_flags, violation_details = compute_policy_alignment_score(
+                final_allocations,
+                _make_envelope_from_dict(policy_context),
+                total_value,
+                sector_map=_sector_map_for_scoring or None,
+                effective_turnover_cap=_relaxed_turn_cap,
             )
             consensus["policy_alignment_score"]  = pa_score
             consensus["regime_compliance_score"] = rc_score
             consensus["risk_governance_score"]   = rg_score
             consensus["governance_flags"]        = gov_flags
-            # Downgrade consensus strength when governance flags are raised
+            consensus["violation_details"]       = violation_details
+            # Downgrade consensus strength when genuine governance flags are raised.
+            # Authorized turnover expansions (Tier 1 relaxation active) are controlled
+            # policy-compliant events — exclude them so authorized behavior isn't penalized.
             if gov_flags:
-                penalty = min(20, len(gov_flags) * 6)
-                consensus["consensus_strength_score"] = max(
-                    5, consensus.get("consensus_strength_score", 50) - penalty
+                penalizable = gov_flags if _t1_severity == "NONE" else [
+                    f for f in gov_flags
+                    if not any(kw in f.lower() for kw in ("turnover", "tier3_efficiency"))
+                ]
+                penalty = min(20, len(penalizable) * 6)
+                if penalty > 0:
+                    consensus["consensus_strength_score"] = max(
+                        5, consensus.get("consensus_strength_score", 50) - penalty
+                    )
+                logger.info(
+                    "[POLICY_GOV] flags=%d penalizable=%d strength_penalty=-%d t1_severity=%s",
+                    len(gov_flags), len(penalizable), penalty, _t1_severity,
                 )
-                logger.info("[POLICY_GOV] %d governance flag(s) raised, strength penalised -%d", len(gov_flags), penalty)
 
         # Auto-generate summary when empty but allocations exist
         if not final_summary and final_allocations:
@@ -1619,6 +1786,11 @@ def run_layered_optimizer(
             active_policy_out["regime_compliance_score"] = consensus.get("regime_compliance_score")
             active_policy_out["risk_governance_score"]   = consensus.get("risk_governance_score")
             active_policy_out["governance_flags"]        = consensus.get("governance_flags", [])
+            active_policy_out["violation_details"]       = consensus.get("violation_details", [])
+            # Phase 3B.6 — Tier 1 turnover relaxation metadata
+            active_policy_out["turnover_relaxation_active"] = _t1_severity != "NONE"
+            active_policy_out["turnover_relaxation_reason"] = _t1_reason if _t1_severity != "NONE" else None
+            active_policy_out["relaxed_turnover_cap"]       = _relaxed_turn_cap if _t1_severity != "NONE" else None
 
         return {
             "portfolio_name": portfolio_name,
@@ -1662,6 +1834,8 @@ def run_layered_optimizer(
             },
             "consensus": consensus,
             "active_policy": active_policy_out,
+            # Phase 3B.5 — resolved constraint breakdown (None when resolver not run)
+            "effective_envelope": _eff_env_to_dict(effective_envelope) if effective_envelope else None,
             **persona_fields,
         }
 

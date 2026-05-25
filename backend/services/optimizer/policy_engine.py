@@ -25,7 +25,10 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from services.optimizer.constraint_resolver import EffectiveEnvelope
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +54,30 @@ _EMERGENCY_VOL_Z            = 2.5    # vol z-score ≥ this → emergency
 _EMERGENCY_DRAWDOWN         = 15.0   # drawdown_score ≤ this → emergency
 _EMERGENCY_HIGH_VOL_CONF    = 0.65   # HIGH_VOLATILITY regime + conf ≥ this → emergency
 _EMERGENCY_VOLATILE_CONF    = 0.40   # VOLATILE stability + conf < this → emergency
+
+# ─── Constraint priority tiers ────────────────────────────────────────────────
+# Turnover (Tier 3) must NEVER block remediation of Tier 1 concentration breaches.
+
+TIER1_CRITICAL   = "TIER1_CRITICAL"    # Single position, sector concentration, catastrophic exposure
+TIER2_STRATEGIC  = "TIER2_STRATEGIC"   # Regime alignment, beta ceilings, cash mandates
+TIER3_EFFICIENCY = "TIER3_EFFICIENCY"  # Turnover limits, transaction friction, optimization efficiency
+
+CONSTRAINT_TIERS: dict[str, str] = {
+    "SINGLE_POSITION_LIMIT": TIER1_CRITICAL,
+    "SECTOR_LIMIT":          TIER1_CRITICAL,
+    "CASH_BREACH":           TIER2_STRATEGIC,
+    "BETA_EXPOSURE":         TIER2_STRATEGIC,
+    "TURNOVER_BREACH":       TIER3_EFFICIENCY,
+    "TURNOVER_RELAXED":      TIER3_EFFICIENCY,
+}
+
+# Turnover cap multipliers applied when Tier 1 concentration breaches are active
+_TURNOVER_RELAXATION_MULTIPLIERS: dict[str, float] = {
+    "NONE":     1.00,
+    "MILD":     1.10,   # 1 position slightly over, no sector breach
+    "MODERATE": 1.25,   # multiple positions or sector breach
+    "SEVERE":   1.50,   # CRITICAL exposure or position/sector ≥ 1.5× limit
+}
 
 # ─── Regime factor tilt deltas ────────────────────────────────────────────────
 # Applied on top of persona factor weights when a regime bias is active.
@@ -99,6 +126,8 @@ class PolicyEnvelope:
     policy_narrative: str                  # one-sentence human-readable summary
     confidence_discount: float             # 0-1: how much constraints were tightened for uncertainty
     violations: list[str]                  # existing policy violations in current portfolio
+    # Phase 3B.5 — per-sector resolved limits (populated when EffectiveEnvelope is available)
+    resolved_sector_limits: dict[str, float] = field(default_factory=dict)
 
 
 # ─── Emergency detection ──────────────────────────────────────────────────────
@@ -286,11 +315,29 @@ def _risk_budget(portfolio_risk: float, disc: float, bias: str, emergency: bool)
 
 # ─── Violation detection ──────────────────────────────────────────────────────
 
-def _detect_violations(portfolio_data: list[dict], hard: HardConstraints) -> list[str]:
+def _norm_sector(raw: str | None) -> str:
+    """Lightweight sector normalizer — avoids circular import with optimizer.py."""
+    s = (raw or "Other").strip()
+    _known = {"Technology", "Financial", "Energy", "Healthcare",
+              "Consumer", "Industrial", "Real Estate", "Utilities"}
+    if s in _known:
+        return s
+    if "Financial" in s or "Bank" in s:
+        return "Financial"
+    return "Other"
+
+
+def _detect_violations(
+    portfolio_data: list[dict],
+    hard: HardConstraints,
+    resolved_sector_limits: dict[str, float] | None = None,
+) -> list[str]:
     """Check current portfolio holdings for existing policy violations."""
     violations: list[str] = []
+
+    # ── Per-position checks ───────────────────────────────────────────────────
     for item in portfolio_data:
-        w = item.get("weight_pct") or 0
+        w   = item.get("weight_pct") or 0
         sym = item.get("symbol", "?")
         if w > hard.max_single_position_pct:
             violations.append(
@@ -298,8 +345,8 @@ def _detect_violations(portfolio_data: list[dict], hard: HardConstraints) -> lis
                 f"{hard.max_single_position_pct:.0f}% single-position policy limit"
             )
         if hard.suppress_speculative:
-            fa = item.get("fa_score") or 0
-            ta = item.get("ta_score") or 0
+            fa  = item.get("fa_score") or 0
+            ta  = item.get("ta_score") or 0
             sig = (item.get("signal") or "HOLD").upper()
             if fa < 35 and ta < 35 and sig not in ("SELL", "REDUCE") and w > 4:
                 violations.append(
@@ -310,7 +357,89 @@ def _detect_violations(portfolio_data: list[dict], hard: HardConstraints) -> lis
             violations.append(
                 f"POLICY_VIOLATION: {sym} has a SELL signal but remains held at {w:.1f}%"
             )
+
+    # ── Sector concentration checks (when resolved limits available) ──────────
+    if resolved_sector_limits:
+        total_mv = sum(d.get("market_value") or 0 for d in portfolio_data)
+        if total_mv > 0:
+            sector_weights: dict[str, float] = {}
+            for item in portfolio_data:
+                sector = _norm_sector(item.get("sector"))
+                mv     = item.get("market_value") or 0
+                sector_weights[sector] = sector_weights.get(sector, 0.0) + mv / total_mv * 100
+
+            for sector, w_pct in sector_weights.items():
+                limit = resolved_sector_limits.get(sector, hard.max_sector_pct)
+                if w_pct > limit:
+                    violations.append(
+                        f"SECTOR_BREACH: {sector} at {w_pct:.1f}% exceeds "
+                        f"{limit:.0f}% resolved sector limit"
+                    )
+
     return violations
+
+
+# ─── Concentration breach detection (Phase 3B.6) ─────────────────────────────
+
+def compute_concentration_breach_severity(
+    portfolio_data: list[dict],
+    max_position_pct: float,
+    max_sector_pct: float,
+    resolved_sector_limits: dict[str, float] | None = None,
+) -> tuple[str, str]:
+    """Assess Tier 1 concentration breach severity from current portfolio holdings.
+
+    Called before AI layers run so turnover relaxation can be pre-computed.
+    Returns (severity, reason) where severity ∈ NONE | MILD | MODERATE | SEVERE.
+    """
+    pos_breaches: list[tuple[str, float, float]] = []
+    for item in portfolio_data:
+        w   = float(item.get("weight_pct") or 0)
+        sym = item.get("symbol", "?")
+        if w > max_position_pct:
+            pos_breaches.append((sym, w, w / max_position_pct))
+
+    sector_breaches: list[tuple[str, float, float]] = []
+    total_mv = sum(float(d.get("market_value") or 0) for d in portfolio_data)
+    if total_mv > 0:
+        sw: dict[str, float] = {}
+        for item in portfolio_data:
+            sec = _norm_sector(item.get("sector"))
+            sw[sec] = sw.get(sec, 0.0) + float(item.get("market_value") or 0) / total_mv * 100
+        for sec, w_pct in sw.items():
+            limit = (resolved_sector_limits or {}).get(sec, max_sector_pct)
+            if w_pct > limit:
+                sector_breaches.append((sec, w_pct, w_pct / limit))
+
+    if not pos_breaches and not sector_breaches:
+        return "NONE", ""
+
+    all_ratios = [r for _, _, r in pos_breaches] + [r for _, _, r in sector_breaches]
+    max_ratio  = max(all_ratios)
+    total      = len(pos_breaches) + len(sector_breaches)
+
+    parts: list[str] = []
+    for sym, w, r in pos_breaches[:2]:
+        parts.append(f"{sym} at {w:.1f}% ({r:.1f}× position cap)")
+    for sec, w, r in sector_breaches[:2]:
+        parts.append(f"{sec} sector at {w:.1f}% ({r:.1f}× sector limit)")
+    reason = "; ".join(parts)
+
+    if max_ratio >= 1.5 or total >= 3:
+        return "SEVERE", reason
+    elif max_ratio >= 1.25 or total >= 2:
+        return "MODERATE", reason
+    return "MILD", reason
+
+
+def get_relaxed_turnover_cap(base_cap: float, severity: str) -> float:
+    """Effective turnover ceiling for a run where Tier 1 breaches must be cured.
+
+    Tier 3 (efficiency) constraints must never block Tier 1 (concentration) remediation.
+    Returns the expanded cap — may exceed base_cap when severity > NONE.
+    """
+    multiplier = _TURNOVER_RELAXATION_MULTIPLIERS.get(severity, 1.0)
+    return round(base_cap * multiplier, 1)
 
 
 # ─── Narrative ────────────────────────────────────────────────────────────────
@@ -353,18 +482,21 @@ def compute_policy(
     portfolio_data: list[dict],
     consensus: dict | None = None,
     max_sector_pct: int = 40,
+    effective_envelope: "EffectiveEnvelope | None" = None,
 ) -> PolicyEnvelope:
     """Build a PolicyEnvelope from persona + regime + portfolio risk + confidence state.
 
-    This is the single authoritative source of truth for optimizer constraints.
-    All hard limits come from here — not from AI output.
+    When effective_envelope is provided (Phase 3B.5), the resolver's pre-computed
+    min() values are used as the baseline before confidence-discount is applied.
+    This eliminates duplicated constraint merging logic between the resolver and policy engine.
 
     Args:
-        persona_ctx    : from build_persona_context()
-        regime_ctx     : from detect_regime()
-        portfolio_data : current holdings enriched with weight_pct, signal, fa_score, ta_score
-        consensus      : optional output of _consensus_engine() — used for confidence modulation
-        max_sector_pct : portfolio setting for sector concentration cap
+        persona_ctx        : from build_persona_context()
+        regime_ctx         : from detect_regime()
+        portfolio_data     : holdings enriched with weight_pct, signal, fa_score, ta_score
+        consensus          : optional _consensus_engine() output — used for confidence modulation
+        max_sector_pct     : portfolio setting for sector concentration cap (legacy fallback)
+        effective_envelope : resolved constraint set from constraint_resolver (Phase 3B.5)
     """
     # ── 1. Persona parameters ─────────────────────────────────────────────────
     pc = persona_ctx or {}
@@ -374,15 +506,14 @@ def compute_policy(
     persona_aggr         = float(pc.get("rebalance_aggressiveness", 0.50))
     persona_turnover     = float(pc.get("turnover_tolerance", 0.40))
     persona_vol_tol      = float(pc.get("volatility_tolerance", 0.50))
-    # Persona max-position: 20% base, ±10% scaled by volatility tolerance
     persona_max_pos = 20.0 + persona_vol_tol * 10.0  # 20–30% range
 
     # ── 2. Regime parameters ──────────────────────────────────────────────────
     rc = regime_ctx or {}
-    regime            = rc.get("regime", "SIDEWAYS")
-    regime_conf       = float(rc.get("confidence", 0.50))
-    stability         = rc.get("transition_stability", "STABLE")
-    vol_z             = float(rc.get("vol_z_score", 0.0))
+    regime             = rc.get("regime", "SIDEWAYS")
+    regime_conf        = float(rc.get("confidence", 0.50))
+    stability          = rc.get("transition_stability", "STABLE")
+    vol_z              = float(rc.get("vol_z_score", 0.0))
     drawdown_score_val = float(rc.get("drawdown_score", 50.0))
 
     rcon = rc.get("constraints", {})
@@ -393,9 +524,9 @@ def compute_policy(
     stance           = str(rcon.get("deployment_stance", "selective"))
 
     regime_biases = {
-        "quality_bias":        bool(rcon.get("quality_bias", False)),
-        "dividend_bias":       bool(rcon.get("dividend_bias", False)),
-        "momentum_bias":       bool(rcon.get("momentum_bias", False)),
+        "quality_bias":         bool(rcon.get("quality_bias", False)),
+        "dividend_bias":        bool(rcon.get("dividend_bias", False)),
+        "momentum_bias":        bool(rcon.get("momentum_bias", False)),
         "suppress_speculative": suppress_spec,
     }
 
@@ -411,19 +542,36 @@ def compute_policy(
     disc = _confidence_discount(regime_conf, stability, cons_strength)
 
     # ── 6. Hard constraints ───────────────────────────────────────────────────
-    cash_boost  = disc * 8.0                          # up to +8% for uncertainty
-    min_cash    = max(persona_cash_pct, regime_min_cash) + cash_boost
+    # When an EffectiveEnvelope is available (Phase 3B.5), use its pre-resolved
+    # values as the baseline. The policy engine then applies confidence-discount
+    # on top — the resolver handles cross-source min(), we handle dynamic discount.
+    if effective_envelope is not None:
+        base_min_cash   = effective_envelope.effective_cash_min_pct
+        base_max_pos    = effective_envelope.effective_single_position_pct
+        base_turn_ceil  = effective_envelope.effective_turnover_max_pct
+        resolved_sector_limits = effective_envelope.effective_sector_limits
+        global_sector_cap = effective_envelope.global_sector_cap.effective
+    else:
+        # Legacy: compute cross-source min/max inline
+        base_min_cash  = max(persona_cash_pct, regime_min_cash)
+        base_max_pos   = min(persona_max_pos, regime_max_pos)
+        base_turn_ceil = persona_turnover * 100 * regime_turn_mult
+        resolved_sector_limits = {}
+        global_sector_cap = float(max_sector_pct)
+
+    # Apply confidence discount on top of the resolved base values
+    cash_boost = disc * 8.0                           # up to +8% more cash when uncertain
+    min_cash   = base_min_cash + cash_boost
     if emergency:
         min_cash = max(min_cash, 20.0)
 
-    max_pos = min(persona_max_pos, regime_max_pos)
+    max_pos = base_max_pos
     if disc > 0.38:
         max_pos = max_pos * 0.85                      # tighten by 15% when uncertain
     if emergency:
         max_pos = min(max_pos, 15.0)
 
-    # Turnover ceiling: persona tolerance × regime multiplier × confidence adjustment
-    turn_ceil = persona_turnover * 100 * regime_turn_mult * (1 - disc * 0.40)
+    turn_ceil = base_turn_ceil * (1 - disc * 0.40)
     if emergency:
         turn_ceil = min(turn_ceil, 15.0)
 
@@ -435,13 +583,13 @@ def compute_policy(
         max_new = max(0, min(3, int(persona_aggr * 4)))
 
     hard = HardConstraints(
-        min_cash_pct              = round(min(35.0, max(2.0, min_cash)), 1),
-        max_single_position_pct   = round(max(8.0, max_pos), 1),
-        max_sector_pct            = float(max_sector_pct),
-        max_turnover_pct          = round(max(5.0, min(100.0, turn_ceil)), 1),
-        suppress_speculative      = suppress_spec or emergency,
-        beta_ceiling              = None,
-        max_new_positions         = max_new,
+        min_cash_pct            = round(min(35.0, max(2.0, min_cash)), 1),
+        max_single_position_pct = round(max(8.0, max_pos), 1),
+        max_sector_pct          = float(global_sector_cap),
+        max_turnover_pct        = round(max(5.0, min(100.0, turn_ceil)), 1),
+        suppress_speculative    = suppress_spec or emergency,
+        beta_ceiling            = None,
+        max_new_positions       = max_new,
     )
 
     # ── 7. Soft factor tilts ──────────────────────────────────────────────────
@@ -460,30 +608,31 @@ def compute_policy(
     if emergency:
         rebal_aggr = min(rebal_aggr, 0.12)
 
-    violations = _detect_violations(portfolio_data, hard)
+    violations = _detect_violations(portfolio_data, hard, resolved_sector_limits or None)
     narrative  = _narrative(bias, strictness, hard, tilts, emergency, emergency_reason,
                             disc, persona_label, regime)
 
     log.info(
         "policy_engine: persona=%s regime=%s bias=%s strict=%s "
-        "cash=%.1f%% max_pos=%.1f%% budget=%.0f emergency=%s violations=%d",
+        "cash=%.1f%% max_pos=%.1f%% budget=%.0f emergency=%s violations=%d resolver=%s",
         persona_label, regime, bias, strictness,
         hard.min_cash_pct, hard.max_single_position_pct,
-        budget, emergency, len(violations),
+        budget, emergency, len(violations), effective_envelope is not None,
     )
 
     return PolicyEnvelope(
-        hard_constraints       = hard,
-        soft_factor_tilts      = tilts,
-        deployment_bias        = bias,
-        risk_budget            = round(budget, 1),
+        hard_constraints         = hard,
+        soft_factor_tilts        = tilts,
+        deployment_bias          = bias,
+        risk_budget              = round(budget, 1),
         rebalance_aggressiveness = round(rebal_aggr, 3),
-        strictness_level       = strictness,
-        emergency_override     = emergency,
-        emergency_reason       = emergency_reason,
-        policy_narrative       = narrative,
-        confidence_discount    = disc,
-        violations             = violations,
+        strictness_level         = strictness,
+        emergency_override       = emergency,
+        emergency_reason         = emergency_reason,
+        policy_narrative         = narrative,
+        confidence_discount      = disc,
+        violations               = violations,
+        resolved_sector_limits   = dict(resolved_sector_limits),
     )
 
 
@@ -511,17 +660,32 @@ def build_policy_prompt_block(envelope: PolicyEnvelope) -> str:
 
     suppress_note = "YES — avoid low-quality or high-beta positions" if hard.suppress_speculative else "NO"
 
+    # Per-sector resolved limits block (shown when resolver has run)
+    sector_block = ""
+    if envelope.resolved_sector_limits:
+        sector_lines = "  ".join(
+            f"{s}:{v:.0f}%" for s, v in sorted(envelope.resolved_sector_limits.items())
+            if s != "Other"
+        )
+        sector_block = f"\nRESOLVED_SECTOR_LIMITS: {sector_lines}\n"
+    else:
+        sector_block = f"\nMAX_SECTOR_LIMIT: {hard.max_sector_pct:.0f}% per sector\n"
+
     return f"""[ACTIVE OPTIMIZATION POLICY — MANDATORY GOVERNANCE]{emergency_block}
 DEPLOYMENT_MODE:        {envelope.deployment_bias}
 STRICTNESS_LEVEL:       {envelope.strictness_level}
 RISK_BUDGET:            {envelope.risk_budget:.0f}/100
 
 CURRENT_CASH_MANDATE:   minimum {hard.min_cash_pct:.0f}% must remain undeployed
-MAX_SINGLE_STOCK_LIMIT: {hard.max_single_position_pct:.0f}% of portfolio per stock
-MAX_SECTOR_LIMIT:       {hard.max_sector_pct:.0f}% per sector
-TURNOVER_CEILING:       {hard.max_turnover_pct:.0f}% of portfolio value this rebalance
+MAX_SINGLE_STOCK_LIMIT: {hard.max_single_position_pct:.0f}% of portfolio per stock{sector_block}TURNOVER_CEILING:       {hard.max_turnover_pct:.0f}% of portfolio value this rebalance
 MAX_NEW_POSITIONS:      {hard.max_new_positions} new stock(s) maximum
 SUPPRESS_SPECULATIVE:   {suppress_note}
+
+CONSTRAINT PRIORITY HIERARCHY (Tier 1 > Tier 2 > Tier 3):
+  Tier 1 — CRITICAL (enforce first): Single position limits, sector concentration, catastrophic exposure
+  Tier 2 — STRATEGIC (enforce second): Cash mandates, regime alignment, beta ceilings
+  Tier 3 — EFFICIENCY (flex when needed): Turnover limits, transaction friction
+  Rule: Tier 1 breaches MUST be remediated; Tier 3 constraints may flex to achieve this.
 
 ACTIVE_FACTOR_TILT:     {tilt_str}
 {violation_block}
@@ -538,78 +702,178 @@ def compute_policy_alignment_score(
     final_allocations: list[dict],
     envelope: PolicyEnvelope,
     total_value: float,
-) -> tuple[float, float, float, list[str]]:
+    sector_map: dict[str, str] | None = None,
+    effective_turnover_cap: float | None = None,
+) -> tuple[float, float, float, list[str], list[dict]]:
     """Score how well the final allocation plan complies with the policy envelope.
+
+    Args:
+        final_allocations    : L2 target allocations after post-AI enforcement
+        envelope             : resolved PolicyEnvelope
+        total_value          : total portfolio value (used for sector weight projection)
+        sector_map           : {symbol → sector} for sector compliance checks (Phase 3B.5)
+        effective_turnover_cap: relaxed turnover ceiling when Tier 1 breaches are active (Phase 3B.6).
+                               When > hard.max_turnover_pct the turnover BREACH threshold is raised so
+                               minor Tier 3 overshoots do not block Tier 1 concentration remediation.
 
     Returns:
         policy_alignment_score  : 0-100 (constraint compliance)
         regime_compliance_score : 0-100 (regime/bias alignment)
         risk_governance_score   : 0-100 (composite)
         governance_flags        : list of flag strings (POLICY_VIOLATION etc.)
+        violation_details       : list of structured violation dicts for transparent display
     """
     flags: list[str] = []
+    violation_details: list[dict] = []
     hard = envelope.hard_constraints
 
-    # Cash compliance
+    # ── Cash compliance ───────────────────────────────────────────────────────
     total_deployed = sum(
         a.get("target_weight", 0) for a in final_allocations
         if a.get("action") not in ("SELL",)
     )
     implied_cash = max(0.0, 100.0 - total_deployed)
-    cash_ok = implied_cash >= hard.min_cash_pct
-    if not cash_ok:
+    if implied_cash < hard.min_cash_pct:
         flags.append(
             f"POLICY_VIOLATION: implied cash {implied_cash:.1f}% < required {hard.min_cash_pct:.1f}%"
         )
-    cash_score = min(100.0, implied_cash / max(hard.min_cash_pct, 0.1) * 100) if hard.min_cash_pct > 0 else 100.0
+        violation_details.append({
+            "violation_type":   "CASH_BREACH",
+            "proposed_pct":     round(implied_cash, 1),
+            "allowed_pct":      hard.min_cash_pct,
+            "violation_source": "REGIME_POLICY" if hard.min_cash_pct > 5 else "USER_PREFERENCE",
+            "tier":             TIER2_STRATEGIC,
+        })
+    cash_score = (
+        min(100.0, implied_cash / max(hard.min_cash_pct, 0.1) * 100)
+        if hard.min_cash_pct > 0 else 100.0
+    )
 
-    # Position concentration
+    # ── Position concentration ────────────────────────────────────────────────
     conc_violations = 0
     for a in final_allocations:
-        tw = float(a.get("target_weight") or 0)
+        tw  = float(a.get("target_weight") or 0)
+        sym = a.get("symbol", "?")
         if tw > hard.max_single_position_pct and a.get("action") not in ("SELL",):
             conc_violations += 1
             flags.append(
-                f"CONCENTRATION_BREACH: {a.get('symbol','?')} target {tw:.1f}% > "
+                f"CONCENTRATION_BREACH: {sym} target {tw:.1f}% > "
                 f"{hard.max_single_position_pct:.0f}% limit"
             )
+            violation_details.append({
+                "violation_type":   "SINGLE_POSITION_LIMIT",
+                "symbol":           sym,
+                "proposed_pct":     round(tw, 1),
+                "allowed_pct":      hard.max_single_position_pct,
+                "violation_source": "REGIME_POLICY",
+                "tier":             TIER1_CRITICAL,
+            })
     conc_score = max(0.0, 100.0 - conc_violations * 25)
 
-    # Over-aggression in defensive modes
+    # ── Sector concentration (Phase 3B.5 — requires sector_map) ──────────────
+    sector_violations = 0
+    if sector_map and (envelope.resolved_sector_limits or hard.max_sector_pct):
+        # Compute projected sector weights from target allocations
+        proj_sector: dict[str, float] = {}
+        for a in final_allocations:
+            if a.get("action") == "SELL":
+                continue
+            sector = _norm_sector(sector_map.get(a.get("symbol", ""), "Other"))
+            proj_sector[sector] = proj_sector.get(sector, 0.0) + float(a.get("target_weight") or 0)
+
+        for sector, proj_pct in proj_sector.items():
+            limit = (
+                envelope.resolved_sector_limits.get(sector, hard.max_sector_pct)
+                if envelope.resolved_sector_limits
+                else hard.max_sector_pct
+            )
+            if proj_pct > limit:
+                sector_violations += 1
+                # Determine which source set this limit
+                source = "USER_PREFERENCE"
+                if envelope.resolved_sector_limits:
+                    source = "REGIME_POLICY"
+                if envelope.emergency_override:
+                    source = "EMERGENCY_OVERRIDE"
+                flags.append(
+                    f"SECTOR_LIMIT: {sector} projected {proj_pct:.1f}% > {limit:.0f}% limit"
+                )
+                violation_details.append({
+                    "violation_type":   "SECTOR_LIMIT",
+                    "sector":           sector,
+                    "proposed_pct":     round(proj_pct, 1),
+                    "allowed_pct":      round(limit, 1),
+                    "violation_source": source,
+                    "tier":             TIER1_CRITICAL,
+                })
+    sector_score = max(0.0, 100.0 - sector_violations * 20)
+
+    # ── Over-aggression in defensive modes ────────────────────────────────────
     buy_count = sum(1 for a in final_allocations if a.get("action") in ("BUY", "ACCUMULATE"))
     if envelope.deployment_bias in (DEPLOY_DEFENSIVE, DEPLOY_PRESERVATION) and buy_count > 1:
         flags.append(
             f"OVER_AGGRESSION: {buy_count} BUY/ACCUMULATE allocation(s) in "
             f"{envelope.deployment_bias} mode"
         )
-    aggr_score = 100.0 if envelope.deployment_bias not in (DEPLOY_DEFENSIVE, DEPLOY_PRESERVATION) \
+        violation_details.append({
+            "violation_type":   "BETA_EXPOSURE",
+            "proposed_pct":     buy_count,
+            "allowed_pct":      1,
+            "violation_source": "REGIME_POLICY",
+            "tier":             TIER2_STRATEGIC,
+        })
+    aggr_score = (
+        100.0 if envelope.deployment_bias not in (DEPLOY_DEFENSIVE, DEPLOY_PRESERVATION)
         else max(0.0, 100.0 - buy_count * 15)
+    )
 
-    # Emergency compliance
+    # ── Emergency compliance ───────────────────────────────────────────────────
     if envelope.emergency_override and buy_count > 0:
         flags.append(
             f"REGIME_MISMATCH: {buy_count} new allocation(s) proposed during EMERGENCY override"
         )
-    regime_mismatch_ok = not (envelope.emergency_override and buy_count > 0)
+        violation_details.append({
+            "violation_type":   "BETA_EXPOSURE",
+            "proposed_pct":     buy_count,
+            "allowed_pct":      0,
+            "violation_source": "EMERGENCY_OVERRIDE",
+            "tier":             TIER2_STRATEGIC,
+        })
+    regime_mismatch_ok    = not (envelope.emergency_override and buy_count > 0)
     regime_mismatch_score = 0.0 if not regime_mismatch_ok else 100.0
 
-    # Turnover compliance
-    total_change = sum(abs(a.get("allocation_change_percent") or 0) for a in final_allocations)
-    if total_change > hard.max_turnover_pct:
-        flags.append(
-            f"POLICY_VIOLATION: total turnover {total_change:.1f}% exceeds ceiling {hard.max_turnover_pct:.0f}%"
-        )
+    # ── Turnover compliance (Tier 3 — efficiency) ─────────────────────────────
+    # When effective_turnover_cap is provided (Tier 1 relaxation mode), the breach
+    # threshold is raised so minor Tier 3 overshoots do not block concentration cures.
+    total_change    = sum(abs(a.get("allocation_change_percent") or 0) for a in final_allocations)
+    turn_cap        = effective_turnover_cap if effective_turnover_cap is not None else hard.max_turnover_pct
+    turn_relaxed    = (effective_turnover_cap is not None and effective_turnover_cap > hard.max_turnover_pct)
 
-    # Aggregate scores
-    policy_alignment   = cash_score * 0.40 + conc_score * 0.35 + aggr_score * 0.25
-    regime_compliance  = regime_mismatch_score * 0.60 + conc_score * 0.40
-    risk_governance    = policy_alignment * 0.60 + regime_compliance * 0.40
+    if total_change > turn_cap:
+        # Exceeds even the relaxed cap — flag it
+        ceiling_label = f"relaxed ceiling {turn_cap:.0f}%" if turn_relaxed else f"ceiling {turn_cap:.0f}%"
+        flags.append(
+            f"POLICY_VIOLATION: total turnover {total_change:.1f}% exceeds {ceiling_label}"
+        )
+        violation_details.append({
+            "violation_type":   "TURNOVER_BREACH",
+            "proposed_pct":     round(total_change, 1),
+            "allowed_pct":      turn_cap,
+            "violation_source": "REGIME_POLICY",
+            "tier":             TIER3_EFFICIENCY,
+        })
+
+    # ── Aggregate scores ──────────────────────────────────────────────────────
+    policy_alignment  = cash_score * 0.35 + conc_score * 0.30 + sector_score * 0.20 + aggr_score * 0.15
+    regime_compliance = regime_mismatch_score * 0.55 + conc_score * 0.30 + sector_score * 0.15
+    risk_governance   = policy_alignment * 0.60 + regime_compliance * 0.40
 
     return (
         round(min(100.0, policy_alignment), 1),
         round(min(100.0, regime_compliance), 1),
         round(min(100.0, risk_governance), 1),
         flags,
+        violation_details,
     )
 
 
@@ -628,15 +892,17 @@ def envelope_to_dict(env: PolicyEnvelope) -> dict:
             "beta_ceiling":            h.beta_ceiling,
             "max_new_positions":       h.max_new_positions,
         },
-        "soft_factor_tilts":       env.soft_factor_tilts,
-        "deployment_bias":         env.deployment_bias,
-        "risk_budget":             env.risk_budget,
+        "soft_factor_tilts":        env.soft_factor_tilts,
+        "deployment_bias":          env.deployment_bias,
+        "risk_budget":              env.risk_budget,
         "rebalance_aggressiveness": env.rebalance_aggressiveness,
-        "strictness_level":        env.strictness_level,
-        "emergency_override":      env.emergency_override,
-        "emergency_reason":        env.emergency_reason,
-        "policy_narrative":        env.policy_narrative,
-        "confidence_discount":     env.confidence_discount,
-        "violations":              env.violations,
-        "prompt_block":            build_policy_prompt_block(env),
+        "strictness_level":         env.strictness_level,
+        "emergency_override":       env.emergency_override,
+        "emergency_reason":         env.emergency_reason,
+        "policy_narrative":         env.policy_narrative,
+        "confidence_discount":      env.confidence_discount,
+        "violations":               env.violations,
+        # Phase 3B.5 — resolved per-sector limits (empty dict when resolver not run)
+        "resolved_sector_limits":   env.resolved_sector_limits,
+        "prompt_block":             build_policy_prompt_block(env),
     }

@@ -6,17 +6,21 @@ import { usePortfolio } from "@/lib/PortfolioContext";
 import {
   runOptimizer, listOptimizerHistory, getOptimizerHistory,
   listStrategyProfiles, getPortfolioPersona, updatePortfolioPersona,
+  recordExecutionDecision, listExecutionDecisions,
+  getDecisionMemoryTimeline, getShadowPerformanceSummary,
 } from "@/lib/api";
 import SignalBadge from "@/components/SignalBadge";
 import AIBadge from "@/components/AIBadge";
 import MarketRegimeCard from "@/components/MarketRegimeCard";
 import ActivePolicyEnvelopeCard from "@/components/ActivePolicyEnvelopeCard";
+import AttributionPanel from "@/components/AttributionPanel";
 import type {
   OptimizerResult, OptimizerHistoryItem, TargetAllocation, AllocationAction,
   WatchlistRanking, Layer2Result, Layer3Result, OptimizerConsensus, RiskFlag, SectorWarning,
   BlockedOpportunity, NoActionReason, SwapSuggestion, ConsensusType,
   StrategyPersona, StrategyProfile, PortfolioDNA, DriftSeverity, MarketRegime,
-  ActivePolicy,
+  ActivePolicy, ExecutionDecision, ExecutionDecisionType, DecisionMemoryEntry,
+  ShadowPerformanceSummary,
 } from "@/lib/api";
 
 const TZ = "Asia/Bangkok";
@@ -1159,12 +1163,338 @@ function PortfolioMetricsBar({ result }: { result: OptimizerResult }) {
   );
 }
 
+// ─── Decision Action Panel ────────────────────────────────────────────────────
+
+const DECISION_CFG: Record<ExecutionDecisionType, { label: string; cls: string; icon: string }> = {
+  APPROVED:         { label: "Approved",         icon: "✓", cls: "bg-green-600 text-white hover:bg-green-700" },
+  REJECTED:         { label: "Rejected",         icon: "✗", cls: "border border-red-300 text-red-700 hover:bg-red-50" },
+  MANUAL_OVERRIDE:  { label: "Manual Override",  icon: "✎", cls: "border border-gray-300 text-gray-600 hover:bg-gray-50" },
+  PARTIAL_EXECUTION:{ label: "Partial",          icon: "½", cls: "border border-amber-300 text-amber-700 hover:bg-amber-50" },
+};
+
+const DECISION_BADGE: Record<ExecutionDecisionType, string> = {
+  APPROVED:          "bg-green-100 text-green-800 border-green-200",
+  REJECTED:          "bg-red-100 text-red-800 border-red-200",
+  MANUAL_OVERRIDE:   "bg-gray-100 text-gray-700 border-gray-200",
+  PARTIAL_EXECUTION: "bg-amber-100 text-amber-800 border-amber-200",
+};
+
+function ShadowReturnChip({ label, value }: { label: string; value: number | null }) {
+  if (value === null) return null;
+  const positive = value >= 0;
+  return (
+    <div className="text-xs">
+      <span className="text-gray-400">{label}: </span>
+      <span className={`font-semibold ${positive ? "text-green-600" : "text-red-600"}`}>
+        {positive ? "+" : ""}{value.toFixed(2)}%
+      </span>
+    </div>
+  );
+}
+
+function DecisionActionPanel({
+  snapshotId,
+  portfolioId,
+}: {
+  snapshotId: number;
+  portfolioId: number;
+}) {
+  const [existing, setExisting] = useState<ExecutionDecision | null | undefined>(undefined);
+  const [confirming, setConfirming] = useState<ExecutionDecisionType | null>(null);
+  const [notes, setNotes] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [shadowPerf, setShadowPerf] = useState<ShadowPerformanceSummary | null>(null);
+
+  useEffect(() => {
+    listExecutionDecisions(portfolioId, undefined, 50)
+      .then((ds) => {
+        const match = ds.find((d) => d.recommendation_snapshot_id === snapshotId);
+        setExisting(match ?? null);
+      })
+      .catch(() => setExisting(null));
+  }, [snapshotId, portfolioId]);
+
+  // Fetch shadow performance once we know an APPROVED decision exists
+  useEffect(() => {
+    if (existing?.decision === "APPROVED") {
+      getShadowPerformanceSummary(portfolioId)
+        .then(setShadowPerf)
+        .catch(() => setShadowPerf(null));
+    }
+  }, [existing, portfolioId]);
+
+  if (existing === undefined) return null; // still loading
+
+  const handleConfirm = async () => {
+    if (!confirming) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await recordExecutionDecision({
+        portfolio_id: portfolioId,
+        recommendation_snapshot_id: snapshotId,
+        decision: confirming,
+        override_notes: notes.trim() || undefined,
+        create_static_shadow: confirming !== "APPROVED",
+      });
+      const ds = await listExecutionDecisions(portfolioId, undefined, 50);
+      const match = ds.find((d) => d.recommendation_snapshot_id === snapshotId);
+      setExisting(match ?? null);
+      setConfirming(null);
+      setNotes("");
+    } catch {
+      setError("Failed to record decision. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (existing) {
+    const cfg = DECISION_CFG[existing.decision] ?? DECISION_CFG.MANUAL_OVERRIDE;
+    const badgeCls = DECISION_BADGE[existing.decision] ?? DECISION_BADGE.MANUAL_OVERRIDE;
+    const staticShadow = shadowPerf?.summary?.static_frozen ?? null;
+    const activeShadow = shadowPerf?.summary?.active_model ?? null;
+    const trackingActive = shadowPerf?.has_shadows && shadowPerf.shadows.length > 0;
+
+    return (
+      <section className="bg-white border rounded-xl p-4 shadow-sm">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Decision Recorded</span>
+          <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${badgeCls}`}>
+            {cfg.icon} {cfg.label}
+          </span>
+          {existing.override_notes && (
+            <span className="text-xs text-gray-500 italic">"{existing.override_notes}"</span>
+          )}
+          <span className="text-xs text-gray-400 ml-auto">
+            {new Date(existing.executed_at).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short", timeZone: TZ })}
+          </span>
+        </div>
+
+        {/* Shadow tracking status */}
+        {existing.decision === "APPROVED" && (
+          <div className="mt-2.5 pt-2.5 border-t border-gray-100">
+            {trackingActive ? (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full">
+                    <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse" />
+                    Shadow Tracking Active
+                  </span>
+                  {shadowPerf?.summary?.tracking_since && (
+                    <span className="text-xs text-gray-400">
+                      since {shadowPerf.summary.tracking_since}
+                    </span>
+                  )}
+                </div>
+                {(staticShadow?.inception_return_pct !== undefined || activeShadow?.inception_return_pct !== undefined) && (
+                  <div className="flex gap-4 flex-wrap">
+                    <ShadowReturnChip label="Frozen" value={staticShadow?.inception_return_pct ?? null} />
+                    <ShadowReturnChip label="AI Model" value={activeShadow?.inception_return_pct ?? null} />
+                    {(staticShadow?.latest_alpha !== undefined || activeShadow?.latest_alpha !== undefined) && (
+                      <div className="text-xs text-gray-400">
+                        α {(activeShadow?.latest_alpha ?? staticShadow?.latest_alpha ?? 0) >= 0 ? "+" : ""}
+                        {((activeShadow?.latest_alpha ?? staticShadow?.latest_alpha) ?? 0).toFixed(2)}% vs benchmark
+                      </div>
+                    )}
+                  </div>
+                )}
+                {!staticShadow?.inception_return_pct && !activeShadow?.inception_return_pct && (
+                  <p className="text-xs text-gray-400">Performance data available after first daily valuation (17:45 ICT).</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-gray-400">
+                Shadow portfolios are being initialized — data will appear after the next daily valuation.
+              </p>
+            )}
+          </div>
+        )}
+        {existing.decision !== "APPROVED" && (
+          <p className="text-xs text-gray-400 mt-1.5">
+            Performance impact tracked. See Attribution panel below.
+          </p>
+        )}
+      </section>
+    );
+  }
+
+  return (
+    <section className="bg-white border rounded-xl p-4 shadow-sm">
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
+        Record Execution Decision
+      </p>
+
+      {confirming ? (
+        <div className="space-y-3">
+          <p className="text-sm text-gray-700">
+            You are recording{" "}
+            <span className={`font-semibold ${confirming === "APPROVED" ? "text-green-700" : confirming === "REJECTED" ? "text-red-700" : "text-gray-700"}`}>
+              {DECISION_CFG[confirming]?.label}
+            </span>{" "}
+            for this optimizer recommendation.
+            {confirming === "APPROVED" && (
+              <span className="text-gray-500"> Two shadow portfolios will be created automatically to track performance over time.</span>
+            )}
+          </p>
+
+          {(confirming === "MANUAL_OVERRIDE" || confirming === "APPROVED" || confirming === "PARTIAL_EXECUTION") && (
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Notes (optional) — e.g. partial fill, adjusted sizing…"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-blue-400"
+              rows={2}
+            />
+          )}
+
+          {error && <p className="text-xs text-red-500">{error}</p>}
+
+          <div className="flex gap-2">
+            <button
+              onClick={handleConfirm}
+              disabled={submitting}
+              className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                confirming === "APPROVED"
+                  ? "bg-green-600 text-white hover:bg-green-700"
+                  : confirming === "REJECTED"
+                  ? "bg-red-600 text-white hover:bg-red-700"
+                  : "bg-blue-600 text-white hover:bg-blue-700"
+              } disabled:opacity-50`}
+            >
+              {submitting ? "Saving…" : "Confirm"}
+            </button>
+            <button
+              onClick={() => { setConfirming(null); setNotes(""); setError(null); }}
+              className="px-4 py-2 text-sm border rounded-lg text-gray-600 hover:bg-gray-50 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex gap-2 flex-wrap items-center">
+          {(["APPROVED", "REJECTED", "MANUAL_OVERRIDE"] as ExecutionDecisionType[]).map((d) => {
+            const cfg = DECISION_CFG[d];
+            return (
+              <button
+                key={d}
+                onClick={() => setConfirming(d)}
+                className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${cfg.cls}`}
+              >
+                {cfg.icon} {cfg.label}
+              </button>
+            );
+          })}
+          <p className="text-xs text-gray-400 ml-1">
+            Recording a decision activates shadow portfolio tracking.
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ─── Decision Memory Timeline ─────────────────────────────────────────────────
+
+function DecisionMemoryTimeline({ portfolioId }: { portfolioId: number }) {
+  const [entries, setEntries] = useState<DecisionMemoryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    getDecisionMemoryTimeline(portfolioId, 10)
+      .then(setEntries)
+      .catch(() => setEntries([]))
+      .finally(() => setLoading(false));
+  }, [portfolioId]);
+
+  if (loading || entries.length === 0) return null;
+
+  return (
+    <section className="bg-white border rounded-xl shadow-sm overflow-hidden">
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3 border-b">
+        Decision History
+      </p>
+      <ul className="divide-y divide-gray-50">
+        {entries.map((e) => {
+          const badgeCls = DECISION_BADGE[e.decision] ?? DECISION_BADGE.MANUAL_OVERRIDE;
+          const cfg = DECISION_CFG[e.decision] ?? DECISION_CFG.MANUAL_OVERRIDE;
+          const shadows = e.shadows ?? [];
+          const staticShadow = shadows.find((s) => s.shadow_type === "STATIC_FROZEN");
+          const activeShadow = shadows.find((s) => s.shadow_type === "ACTIVE_MODEL");
+
+          return (
+            <li key={e.decision_id} className="px-4 py-3">
+              <div className="flex items-start gap-3 flex-wrap">
+                <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border whitespace-nowrap ${badgeCls}`}>
+                  {cfg.icon} {cfg.label}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {e.recommendation_snapshot?.persona && (
+                      <span className="text-xs text-gray-500">
+                        {e.recommendation_snapshot.persona}
+                      </span>
+                    )}
+                    {e.recommendation_snapshot?.consensus?.consensus_type && (
+                      <span className="text-xs bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">
+                        {e.recommendation_snapshot.consensus.consensus_type.replace(/_/g, " ")}
+                      </span>
+                    )}
+                    {e.recommendation_snapshot?.total_portfolio_value && (
+                      <span className="text-xs text-gray-400">
+                        ฿{e.recommendation_snapshot.total_portfolio_value.toLocaleString("th-TH", { maximumFractionDigits: 0 })}
+                      </span>
+                    )}
+                  </div>
+                  {e.override_notes && (
+                    <p className="text-xs text-gray-500 italic mt-0.5">"{e.override_notes}"</p>
+                  )}
+                </div>
+                <span className="text-xs text-gray-400 whitespace-nowrap">
+                  {new Date(e.executed_at).toLocaleDateString("en-GB", { dateStyle: "short", timeZone: TZ })}
+                </span>
+              </div>
+
+              {(staticShadow || activeShadow) && (
+                <div className="mt-2 flex gap-4 flex-wrap">
+                  {staticShadow && staticShadow.inception_return_pct !== null && (
+                    <div className="text-xs">
+                      <span className="text-gray-400">Frozen: </span>
+                      <span className={`font-semibold ${(staticShadow.inception_return_pct ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                        {(staticShadow.inception_return_pct ?? 0) >= 0 ? "+" : ""}
+                        {staticShadow.inception_return_pct?.toFixed(2)}%
+                      </span>
+                    </div>
+                  )}
+                  {activeShadow && activeShadow.inception_return_pct !== null && (
+                    <div className="text-xs">
+                      <span className="text-gray-400">AI Model: </span>
+                      <span className={`font-semibold ${(activeShadow.inception_return_pct ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                        {(activeShadow.inception_return_pct ?? 0) >= 0 ? "+" : ""}
+                        {activeShadow.inception_return_pct?.toFixed(2)}%
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 // ─── Result Panel ─────────────────────────────────────────────────────────────
 
-function ResultPanel({ result, loading, profiles }: {
+function ResultPanel({ result, loading, profiles, portfolioId }: {
   result: OptimizerResult | null;
   loading: boolean;
   profiles: StrategyProfile[];
+  portfolioId: number | null;
 }) {
   if (loading) {
     return (
@@ -1214,9 +1544,12 @@ function ResultPanel({ result, loading, profiles }: {
         <MarketRegimeCard regime={result.market_regime as MarketRegime} />
       )}
 
-      {/* Active Policy Envelope (3B.4) */}
+      {/* Active Policy Envelope (3B.4 + 3B.5 constraint comparison) */}
       {result.active_policy && (
-        <ActivePolicyEnvelopeCard policy={result.active_policy as ActivePolicy} />
+        <ActivePolicyEnvelopeCard
+          policy={result.active_policy as ActivePolicy}
+          effectiveEnvelope={result.effective_envelope}
+        />
       )}
 
       {/* Strategy Persona — DNA + Drift cards */}
@@ -1265,9 +1598,9 @@ function ResultPanel({ result, loading, profiles }: {
           <h3 className="font-semibold">Watchlist Ranking</h3>
           {totalValue > 0 && <span className="text-xs text-gray-500">Total: ฿{totalValue.toLocaleString("th-TH")}</span>}
         </div>
-        <div className="bg-white border rounded-xl overflow-x-auto shadow-sm">
+        <div className="bg-white border rounded-xl overflow-x-auto overflow-y-auto max-h-[200px] shadow-sm">
           <table className="min-w-full text-sm">
-            <thead>
+            <thead className="sticky top-0 bg-white z-10">
               <tr className="border-b text-left text-xs text-gray-500">
                 <th className="py-2 pl-4 pr-3">#</th>
                 <th className="py-2 pr-3">Symbol</th>
@@ -1289,6 +1622,20 @@ function ResultPanel({ result, loading, profiles }: {
           </table>
         </div>
       </section>
+
+      {/* Decision Action — record Approve / Reject / Override */}
+      {result.recommendation_snapshot_id && portfolioId && (
+        <DecisionActionPanel
+          snapshotId={result.recommendation_snapshot_id}
+          portfolioId={portfolioId}
+        />
+      )}
+
+      {/* Attribution Analytics — Phase 3B.7B */}
+      {portfolioId && <AttributionPanel portfolioId={portfolioId} evaluationWindowDays={30} />}
+
+      {/* Decision Memory Timeline */}
+      {portfolioId && <DecisionMemoryTimeline portfolioId={portfolioId} />}
     </div>
   );
 }
@@ -1520,7 +1867,7 @@ export default function OptimizerPage() {
             />
           </div>
           <div className="flex-1 min-w-0">
-            <ResultPanel result={result} loading={loadingDetail} profiles={profiles} />
+            <ResultPanel result={result} loading={loadingDetail} profiles={profiles} portfolioId={selectedPortfolioId} />
           </div>
         </div>
       )}

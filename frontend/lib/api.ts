@@ -638,6 +638,7 @@ export interface OptimizerConsensus {
   regime_compliance_score?: number | null;
   risk_governance_score?: number | null;
   governance_flags?: string[];
+  violation_details?: PolicyViolationDetail[];
   // Legacy fields (preserved for backward compat with old history rows)
   agrees: boolean;
   consensus_decision?: "REBALANCE" | "NO_ACTION" | "REVIEW";
@@ -692,11 +693,75 @@ export interface ActivePolicy {
   policy_narrative: string;
   confidence_discount: number;
   violations: string[];
+  resolved_sector_limits?: Record<string, number>;
   // Governance scores — populated after constraint enforcement
   policy_alignment_score?: number | null;
   regime_compliance_score?: number | null;
   risk_governance_score?: number | null;
   governance_flags?: string[];
+  violation_details?: PolicyViolationDetail[];
+  // Phase 3B.6 — Dynamic Tier 1 turnover relaxation
+  turnover_relaxation_active?: boolean;
+  relaxed_turnover_cap?: number | null;
+  turnover_relaxation_reason?: string | null;
+}
+
+// ─── Phase 3B.5 — Constraint Resolution Layer ────────────────────────────────
+
+export type ConstraintSource =
+  | "USER_PREFERENCE"
+  | "REGIME_POLICY"
+  | "EMERGENCY_OVERRIDE"
+  | "SYSTEM_SAFETY";
+
+export interface ConstraintBreakdown {
+  user_pref: number;
+  regime_policy: number;
+  emergency_limit: number | null;
+  system_safety: number;
+  effective: number;
+  binding_source: ConstraintSource;
+  tightened_reason: string | null;
+}
+
+export interface EffectiveEnvelope {
+  single_position: ConstraintBreakdown;
+  cash_min: ConstraintBreakdown;
+  turnover_max: ConstraintBreakdown;
+  beta_ceiling: number | null;
+  sector_limits: Record<string, ConstraintBreakdown>;
+  global_sector_cap: ConstraintBreakdown;
+  effective_single_position_pct: number;
+  effective_cash_min_pct: number;
+  effective_turnover_max_pct: number;
+  effective_sector_limits: Record<string, number>;
+  emergency_active: boolean;
+  regime_name: string;
+  resolver_notes: string[];
+}
+
+export type PolicyViolationType =
+  | "SECTOR_LIMIT"
+  | "SINGLE_POSITION_LIMIT"
+  | "CASH_BREACH"
+  | "TURNOVER_BREACH"
+  | "TURNOVER_RELAXED"
+  | "BETA_EXPOSURE";
+
+export type ConstraintTier =
+  | "TIER1_CRITICAL"
+  | "TIER2_STRATEGIC"
+  | "TIER3_EFFICIENCY";
+
+export interface PolicyViolationDetail {
+  violation_type: PolicyViolationType;
+  sector?: string;
+  symbol?: string;
+  proposed_pct: number;
+  allowed_pct: number;
+  violation_source: ConstraintSource;
+  tier?: ConstraintTier;
+  base_cap?: number;
 }
 
 export interface StrategyProfile {
@@ -772,6 +837,10 @@ export interface OptimizerResult {
   > | null;
   // Phase 3B.4 — Active Policy Envelope
   active_policy?: ActivePolicy | null;
+  // Phase 3B.5 — Resolved constraint breakdown
+  effective_envelope?: EffectiveEnvelope | null;
+  // Phase 3B.7A — Decision Memory
+  recommendation_snapshot_id?: number | null;
 }
 
 export interface OptimizerHistoryItem {
@@ -1598,3 +1667,587 @@ export const getPerformanceStats = (
   });
   return apiFetch<PerformanceStatsResult>(`/analytics/performance-stats?${params}`);
 };
+
+// ─── Decision Memory System (Phase 3B.7A) ────────────────────────────────────
+
+export type ExecutionDecisionType =
+  | "APPROVED"
+  | "REJECTED"
+  | "PARTIAL_EXECUTION"
+  | "MANUAL_OVERRIDE";
+
+export type ShadowPortfolioType = "STATIC_FROZEN" | "ACTIVE_MODEL";
+
+export interface ExecutionDecision {
+  id: number;
+  portfolio_id: number;
+  recommendation_snapshot_id: number;
+  optimizer_history_id: number | null;
+  decision: ExecutionDecisionType;
+  override_notes: string | null;
+  executed_at: string;
+  created_at: string | null;
+}
+
+export interface ExecutionDecisionDetail extends ExecutionDecision {
+  approved_allocations: Array<{ symbol: string; target_weight: number; action: string }> | null;
+  rejected_symbols: string[] | null;
+  recommendation_snapshot: {
+    id: number;
+    persona: string | null;
+    total_portfolio_value: number | null;
+    created_at: string | null;
+    regime: Record<string, unknown> | null;
+    consensus: Record<string, unknown> | null;
+    projected_allocations: Array<{ symbol: string; target_weight: number; action: string }> | null;
+  } | null;
+}
+
+export interface RecordDecisionPayload {
+  portfolio_id: number;
+  recommendation_snapshot_id: number;
+  decision: ExecutionDecisionType;
+  approved_allocations?: Array<{ symbol: string; target_weight: number; action: string }>;
+  rejected_symbols?: string[];
+  override_notes?: string;
+  create_static_shadow?: boolean;
+}
+
+export interface RecordDecisionResult {
+  decision_id: number;
+  decision: ExecutionDecisionType;
+  recommendation_snapshot_id: number;
+  portfolio_id: number;
+  executed_at: string;
+  static_shadow?: Record<string, unknown>;
+}
+
+export interface RecommendationSnapshotFull {
+  id: number;
+  optimizer_history_id: number;
+  portfolio_id: number;
+  persona: string | null;
+  total_portfolio_value: number | null;
+  regime: Record<string, unknown> | null;
+  constraint_envelope: Record<string, unknown> | null;
+  active_policy: Record<string, unknown> | null;
+  layer1: Record<string, unknown> | null;
+  layer2: Record<string, unknown> | null;
+  layer3: Record<string, unknown> | null;
+  consensus: Record<string, unknown> | null;
+  portfolio_dna: Record<string, unknown> | null;
+  style_drift: Record<string, unknown> | null;
+  projected_allocations: Array<{ symbol: string; target_weight: number; action: string }> | null;
+  created_at: string | null;
+}
+
+export interface ShadowPortfolioSummary {
+  id: number;
+  portfolio_id: number;
+  shadow_type: ShadowPortfolioType;
+  name: string;
+  inception_date: string;
+  inception_value: number | null;
+  current_value: number | null;
+  inception_return_pct: number | null;
+  is_active: boolean;
+  last_valued_at: string | null;
+  recommendation_snapshot_id: number | null;
+  execution_decision_id: number | null;
+  created_at: string | null;
+}
+
+export interface ShadowDailySnapshot {
+  date: string;
+  total_value: number;
+  return_pct_since_inception: number | null;
+  daily_return_pct: number | null;
+  benchmark_return_pct: number | null;
+  alpha: number | null;
+}
+
+export interface ShadowValuationResult {
+  shadow_id: number;
+  shadow_type: string;
+  snapshot_date: string;
+  total_value: number;
+  inception_return_pct: number | null;
+  daily_return_pct: number | null;
+  alpha: number | null;
+  benchmark_symbol: string;
+  benchmark_return_pct: number | null;
+}
+
+export interface ShadowPortfolioPerformance extends ShadowPortfolioSummary {
+  today_valuation: ShadowValuationResult;
+  history: ShadowDailySnapshot[];
+}
+
+export interface AttributionPeriodResult {
+  status: string;
+  evaluation_period_start: string;
+  evaluation_period_end: string;
+  portfolio_return: number | null;
+  benchmark_return: number | null;
+  selection_alpha: number | null;
+  allocation_alpha: number | null;
+  interaction_effect: number | null;
+  total_alpha: number | null;
+  breakdown_by_sector: Record<string, unknown>;
+  note?: string;
+}
+
+export interface AttributionHistoryItem {
+  id: number;
+  evaluation_period_start: string;
+  evaluation_period_end: string;
+  portfolio_return: number | null;
+  benchmark_return: number | null;
+  total_alpha: number | null;
+  computed_at: string | null;
+}
+
+export interface AttributionResult {
+  shadow_id: number;
+  current: AttributionPeriodResult;
+  history: AttributionHistoryItem[];
+}
+
+export interface CalibrationDetail {
+  id: number;
+  lookback_days: number;
+  calibration_score: number | null;
+  consensus_strength_calibration: number | null;
+  policy_alignment_calibration: number | null;
+  regime_confidence_calibration: number | null;
+  feedback_context: {
+    calibration_period: string;
+    lookback_days: number;
+    calibration_score: number | null;
+    signal_accuracy: Record<string, unknown>;
+    regime_stability: Record<string, unknown>;
+    policy_compliance: Record<string, unknown>;
+    insights: string[];
+    recommended_adjustments: Record<string, unknown>;
+  } | null;
+  computed_at: string | null;
+}
+
+export interface CalibrationResponse {
+  source: "cached" | "computed";
+  calibration: CalibrationDetail;
+}
+
+export const recordExecutionDecision = (payload: RecordDecisionPayload) =>
+  apiFetch<RecordDecisionResult>("/optimizer/decisions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+export const listExecutionDecisions = (
+  portfolioId?: number,
+  decision?: ExecutionDecisionType,
+  limit = 50,
+) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (portfolioId) params.set("portfolio_id", String(portfolioId));
+  if (decision) params.set("decision", decision);
+  return apiFetch<ExecutionDecision[]>(`/optimizer/decisions?${params}`);
+};
+
+export const getExecutionDecision = (decisionId: number) =>
+  apiFetch<ExecutionDecisionDetail>(`/optimizer/decisions/${decisionId}`);
+
+export const getRecommendationSnapshot = (snapshotId: number) =>
+  apiFetch<RecommendationSnapshotFull>(`/optimizer/snapshots/${snapshotId}`);
+
+export const createShadowPortfolio = (payload: {
+  portfolio_id: number;
+  shadow_type: ShadowPortfolioType;
+  execution_decision_id?: number;
+  recommendation_snapshot_id?: number;
+}) =>
+  apiFetch<{ shadow_id: number; shadow_type: ShadowPortfolioType; action?: string; inception_date?: string }>(
+    "/analytics/shadow-portfolios",
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+
+export const listShadowPortfolios = (
+  portfolioId?: number,
+  shadowType?: ShadowPortfolioType,
+  activeOnly = true,
+) => {
+  const params = new URLSearchParams({ active_only: String(activeOnly) });
+  if (portfolioId) params.set("portfolio_id", String(portfolioId));
+  if (shadowType) params.set("shadow_type", shadowType);
+  return apiFetch<ShadowPortfolioSummary[]>(`/analytics/shadow-portfolios?${params}`);
+};
+
+export const getShadowPortfolioPerformance = (shadowId: number) =>
+  apiFetch<ShadowPortfolioPerformance>(`/analytics/shadow-portfolios/${shadowId}/performance`);
+
+export const triggerShadowValuation = (shadowId: number) =>
+  apiFetch<ShadowValuationResult>(
+    `/analytics/shadow-portfolios/${shadowId}/value`,
+    { method: "POST" },
+  );
+
+export const getAttribution = (shadowId: number, start?: string, end?: string) => {
+  const params = new URLSearchParams();
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  const qs = params.toString();
+  return apiFetch<AttributionResult>(`/analytics/attribution/${shadowId}${qs ? `?${qs}` : ""}`);
+};
+
+export const getCalibration = (
+  portfolioId?: number,
+  lookbackDays = 30,
+  refresh = false,
+) => {
+  const params = new URLSearchParams({
+    lookback_days: String(lookbackDays),
+    refresh: String(refresh),
+  });
+  if (portfolioId) params.set("portfolio_id", String(portfolioId));
+  return apiFetch<CalibrationResponse>(`/analytics/calibration?${params}`);
+};
+
+// ── Phase 3B.7B — Attribution Analytics & Human-vs-AI Benchmark Engine ────────
+
+export interface ShadowMetrics {
+  shadow_id: number | null;
+  return_pct: number | null;
+  max_drawdown_pct: number;
+  annualized_volatility: number | null;
+}
+
+export interface PortfolioMetrics {
+  return_pct: number | null;
+  max_drawdown_pct: number;
+  annualized_volatility: number | null;
+  snapshot_count: number;
+}
+
+export interface PortfolioAttributionResult {
+  portfolio_id: number;
+  evaluation_window_days: number;
+  period_start: string;
+  period_end: string;
+  actual: PortfolioMetrics;
+  static_shadow: ShadowMetrics | null;
+  ai_model_shadow: ShadowMetrics | null;
+  avoided_drawdown_pct: number | null;
+  regret_score: number | null;
+  ai_outperformed: boolean | null;
+  interpretation: string;
+  computed_at: string;
+}
+
+export interface AttributionHistoryRecord {
+  id: number;
+  evaluation_window_days: number | null;
+  period_start: string;
+  period_end: string;
+  actual_return_pct: number | null;
+  static_shadow_return_pct: number | null;
+  ai_model_return_pct: number | null;
+  avoided_drawdown_pct: number | null;
+  regret_score: number | null;
+  ai_outperformed: boolean | null;
+  total_alpha: number | null;
+  computed_at: string | null;
+}
+
+export interface AttributionSummaryResponse {
+  portfolio_id: number;
+  current: PortfolioAttributionResult;
+  history: AttributionHistoryRecord[];
+}
+
+export interface DecisionComparison {
+  decision_id: number;
+  decision_type: string;
+  executed_at: string | null;
+  shadow_id: number | null;
+  shadow_type: string | null;
+  since_date: string;
+  actual_return_pct: number | null;
+  shadow_return_pct: number | null;
+  actual_max_drawdown_pct: number;
+  shadow_max_drawdown_pct: number;
+  return_delta: number | null;
+  ai_better: boolean | null;
+  vol_delta: number | null;
+  drawdown_delta: number | null;
+}
+
+export interface HumanVsAISummary {
+  total_decisions: number;
+  decisions_with_data: number;
+  hit_rate_pct: number | null;
+  mean_return_delta: number | null;
+  mean_volatility_delta: number | null;
+  mean_drawdown_delta: number | null;
+  ai_wins: number;
+  human_wins: number;
+  verdict: string;
+}
+
+export interface HumanVsAIResponse {
+  portfolio_id: number;
+  evaluation_days: number;
+  decisions: DecisionComparison[];
+  summary: HumanVsAISummary;
+  status: string;
+}
+
+export interface RegimeStats {
+  regime: string;
+  label: string;
+  color: string;
+  trading_days: number;
+  avg_daily_return_pct: number;
+  total_return_pct: number;
+  annualized_volatility: number | null;
+  min_daily_return_pct: number;
+  max_daily_return_pct: number;
+}
+
+export interface RegimeOptimizerStats {
+  runs: number;
+  rebalance_count: number;
+  label: string;
+  avg_opportunity_score: number | null;
+  rebalance_rate_pct: number | null;
+}
+
+export interface RegimeAttributionResponse {
+  portfolio_id: number;
+  lookback_days: number;
+  period_start: string;
+  period_end: string;
+  regimes: Record<string, RegimeStats>;
+  best_regime: string | null;
+  worst_regime: string | null;
+  total_days: number;
+  matched_days: number;
+  coverage_pct: number;
+  optimizer_by_regime: Record<string, RegimeOptimizerStats>;
+  status: string;
+}
+
+export interface CalibrationBucket {
+  correct: number;
+  total: number;
+  accuracy_pct: number | null;
+  score_range: string;
+}
+
+export interface EnhancedCalibrationDetail extends CalibrationDetail {
+  signal_accuracy?: {
+    total_signals: number;
+    evaluated: number;
+    symbols_with_price: number;
+    directionally_correct: number | null;
+    accuracy_pct: number | null;
+    buckets: Record<string, CalibrationBucket>;
+    note: string;
+  };
+}
+
+// ── Phase 3B.7B API functions ──────────────────────────────────────────────────
+
+export const getAttributionSummary = (
+  portfolioId: number,
+  evaluationWindowDays = 30,
+) => {
+  const params = new URLSearchParams({
+    portfolio_id: String(portfolioId),
+    evaluation_window_days: String(evaluationWindowDays),
+  });
+  return apiFetch<AttributionSummaryResponse>(`/analytics/attribution-summary?${params}`);
+};
+
+export const getHumanVsAI = (portfolioId: number, evaluationDays = 90) => {
+  const params = new URLSearchParams({
+    portfolio_id: String(portfolioId),
+    evaluation_days: String(evaluationDays),
+  });
+  return apiFetch<HumanVsAIResponse>(`/analytics/human-vs-ai?${params}`);
+};
+
+export const getRegimeAttribution = (portfolioId: number, lookbackDays = 90) => {
+  const params = new URLSearchParams({
+    portfolio_id: String(portfolioId),
+    lookback_days: String(lookbackDays),
+  });
+  return apiFetch<RegimeAttributionResponse>(`/analytics/regime-attribution?${params}`);
+};
+
+export const getConfidenceCalibrationV2 = (
+  portfolioId?: number,
+  lookbackDays = 30,
+  refresh = false,
+) => {
+  const params = new URLSearchParams({
+    lookback_days: String(lookbackDays),
+    refresh: String(refresh),
+  });
+  if (portfolioId) params.set("portfolio_id", String(portfolioId));
+  return apiFetch<{ source: "cached" | "computed"; calibration: EnhancedCalibrationDetail }>(
+    `/analytics/confidence-calibration?${params}`,
+  );
+};
+
+// ─── Decision Memory Timeline (Phase 3B.7C) ──────────────────────────────────
+
+export interface DecisionMemoryShadowSummary {
+  shadow_id: number;
+  shadow_type: ShadowPortfolioType;
+  name: string;
+  inception_date: string;
+  inception_value: number | null;
+  current_value: number | null;
+  inception_return_pct: number | null;
+  is_active: boolean;
+  last_valued_at: string | null;
+}
+
+export interface DecisionMemoryEntry {
+  decision_id: number;
+  decision: ExecutionDecisionType;
+  portfolio_id: number;
+  override_notes: string | null;
+  executed_at: string;
+  recommendation_snapshot: {
+    id: number;
+    persona: string | null;
+    total_portfolio_value: number | null;
+    created_at: string | null;
+    consensus: {
+      consensus_type: string | null;
+      consensus_strength_score: number | null;
+      consensus_decision: string | null;
+    } | null;
+    regime: { regime: string | null; confidence_pct: number | null } | null;
+  } | null;
+  shadows: DecisionMemoryShadowSummary[];
+}
+
+export interface ConfidenceHistoryEntry {
+  id: number;
+  lookback_days: number;
+  calibration_score: number | null;
+  consensus_strength_calibration: number | null;
+  policy_alignment_calibration: number | null;
+  regime_confidence_calibration: number | null;
+  optimizer_history_id: number | null;
+  recommendation_snapshot_id: number | null;
+  computed_at: string;
+}
+
+export const getDecisionMemoryTimeline = (portfolioId: number, limit = 20) =>
+  apiFetch<DecisionMemoryEntry[]>(
+    `/analytics/decision-memory?portfolio_id=${portfolioId}&limit=${limit}`,
+  );
+
+export const getConfidenceHistory = (limit = 20) =>
+  apiFetch<ConfidenceHistoryEntry[]>(`/analytics/confidence-history?limit=${limit}`);
+
+// ─── Phase 3B.7C — Execution Lifecycle ───────────────────────────────────────
+
+export interface ShadowSummaryItem {
+  shadow_id: number;
+  shadow_type: "STATIC_FROZEN" | "ACTIVE_MODEL";
+  name: string;
+  inception_date: string;
+  inception_value: number | null;
+  current_value: number | null;
+  inception_return_pct: number | null;
+  last_valued_at: string | null;
+  latest_alpha: number | null;
+  latest_benchmark_return_pct: number | null;
+  snapshot_count: number;
+}
+
+export interface ShadowPerformanceSummary {
+  portfolio_id: number;
+  has_shadows: boolean;
+  shadows: ShadowSummaryItem[];
+  summary: {
+    static_frozen: ShadowSummaryItem | null;
+    active_model: ShadowSummaryItem | null;
+    tracking_since: string | null;
+  } | null;
+}
+
+export interface AIvsHumanTimelineEntry {
+  decision_id: number;
+  decision: ExecutionDecisionType;
+  executed_at: string;
+  shadow_return_pct: number | null;
+  actual_return_pct: number | null;
+  return_delta: number | null;
+  ai_better: boolean | null;
+  vol_delta: number | null;
+  drawdown_delta: number | null;
+}
+
+export interface AIvsHumanTimeline {
+  portfolio_id: number;
+  evaluation_days: number;
+  total_decisions: number;
+  timeline: AIvsHumanTimelineEntry[];
+  summary: {
+    hit_rate_pct: number | null;
+    mean_return_delta: number | null;
+    ai_wins: number;
+    human_wins: number;
+    verdict: string;
+  } | null;
+}
+
+export interface CalibrationHistoryEntry {
+  id: number;
+  lookback_days: number;
+  calibration_score: number | null;
+  consensus_strength_calibration: number | null;
+  policy_alignment_calibration: number | null;
+  regime_confidence_calibration: number | null;
+  optimizer_history_id: number | null;
+  recommendation_snapshot_id: number | null;
+  computed_at: string;
+}
+
+/** Portfolio-level aggregate shadow performance */
+export const getShadowPerformanceSummary = (portfolioId: number) =>
+  apiFetch<ShadowPerformanceSummary>(
+    `/analytics/shadow-performance?portfolio_id=${portfolioId}`,
+  );
+
+/** Per-decision AI vs human timeline */
+export const getAIvsHumanTimeline = (
+  portfolioId: number,
+  evaluationDays = 90,
+  limit = 20,
+) =>
+  apiFetch<AIvsHumanTimeline>(
+    `/analytics/ai-vs-human-timeline?portfolio_id=${portfolioId}&evaluation_days=${evaluationDays}&limit=${limit}`,
+  );
+
+/** Historical calibration records for a portfolio */
+export const getCalibrationHistory = (portfolioId: number, limit = 20) =>
+  apiFetch<CalibrationHistoryEntry[]>(
+    `/analytics/calibration-history?portfolio_id=${portfolioId}&limit=${limit}`,
+  );
+
+/** Record a decision via the per-snapshot convenience endpoint */
+export const recordDecisionBySnapshot = (
+  snapshotId: number,
+  payload: RecordDecisionPayload,
+) =>
+  apiFetch<RecordDecisionResult>(
+    `/optimizer/${snapshotId}/decision`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );

@@ -47,6 +47,11 @@ class Workspace(Base):
     analysis_history_items = relationship("AnalysisHistory", back_populates="workspace", cascade="all, delete-orphan")
     optimizer_history_items = relationship("OptimizerHistory", back_populates="workspace", cascade="all, delete-orphan")
     signal_history_items = relationship("SignalHistory", back_populates="workspace", cascade="all, delete-orphan")
+    recommendation_snapshots = relationship("RecommendationSnapshot", back_populates="workspace", cascade="all, delete-orphan")
+    execution_decisions = relationship("UserExecutionDecision", back_populates="workspace", cascade="all, delete-orphan")
+    shadow_portfolios = relationship("ShadowPortfolio", back_populates="workspace", cascade="all, delete-orphan")
+    attribution_metrics = relationship("AttributionMetric", back_populates="workspace", cascade="all, delete-orphan")
+    calibration_records = relationship("ConfidenceCalibrationRecord", back_populates="workspace", cascade="all, delete-orphan")
 
 
 class Portfolio(Base):
@@ -331,6 +336,161 @@ class RegimeSnapshot(Base):
     __table_args__ = (UniqueConstraint("snapshot_date", name="uq_regime_snapshot_date"),)
 
 
+class RecommendationSnapshot(Base):
+    """Full context of a 3-layer optimizer run — regime, constraints, L1/L2/L3 outputs, DNA."""
+    __tablename__ = "recommendation_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    optimizer_history_id = Column(Integer, ForeignKey("optimizer_history.id", ondelete="CASCADE"), nullable=False, index=True, unique=True)
+    portfolio_id = Column(Integer, ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False, index=True)
+    persona = Column(String, nullable=True)                        # strategy persona at run time
+    total_portfolio_value = Column(Float, nullable=True)           # total equity value at run time
+    regime_snapshot_json = Column(Text, nullable=True)             # MarketRegime dict
+    constraint_envelope_json = Column(Text, nullable=True)         # EffectiveEnvelope dict
+    active_policy_json = Column(Text, nullable=True)               # PolicyEnvelope dict
+    layer1_output_json = Column(Text, nullable=True)               # raw L1 strategist output
+    layer2_output_json = Column(Text, nullable=True)               # raw L2 challenger output (allocations)
+    layer3_output_json = Column(Text, nullable=True)               # raw L3 risk audit output
+    consensus_json = Column(Text, nullable=True)                   # consensus result dict
+    portfolio_dna_json = Column(Text, nullable=True)               # PortfolioDNA at snapshot time
+    style_drift_json = Column(Text, nullable=True)                 # StyleDrift metrics at snapshot time
+    scores_map_json = Column(Text, nullable=True)                  # per-symbol scores used by optimizer
+    projected_allocations_json = Column(Text, nullable=True)       # L2 target allocations list
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    workspace = relationship("Workspace", back_populates="recommendation_snapshots")
+    decisions = relationship("UserExecutionDecision", back_populates="snapshot", cascade="all, delete-orphan")
+    shadow_portfolios = relationship("ShadowPortfolio", back_populates="recommendation_snapshot")
+
+
+class UserExecutionDecision(Base):
+    """Records the explicit action a user took after reviewing an optimizer recommendation."""
+    __tablename__ = "user_execution_decisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    recommendation_snapshot_id = Column(Integer, ForeignKey("recommendation_snapshots.id", ondelete="CASCADE"), nullable=False, index=True)
+    optimizer_history_id = Column(Integer, ForeignKey("optimizer_history.id", ondelete="SET NULL"), nullable=True, index=True)
+    portfolio_id = Column(Integer, ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False, index=True)
+    # APPROVED | REJECTED | MANUAL_OVERRIDE
+    decision = Column(String, nullable=False, index=True)
+    approved_allocations_json = Column(Text, nullable=True)        # what the user actually executed
+    rejected_symbols_json = Column(Text, nullable=True)            # symbols user explicitly declined
+    override_notes = Column(Text, nullable=True)                   # free-text note for MANUAL_OVERRIDE
+    executed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    workspace = relationship("Workspace", back_populates="execution_decisions")
+    snapshot = relationship("RecommendationSnapshot", back_populates="decisions")
+    shadow_portfolios = relationship("ShadowPortfolio", back_populates="execution_decision")
+
+
+class ShadowPortfolio(Base):
+    """Paper portfolio for tracking hypothetical performance of optimizer recommendations."""
+    __tablename__ = "shadow_portfolios"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    portfolio_id = Column(Integer, ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False, index=True)
+    # STATIC_FROZEN: frozen snapshot of state at decision time
+    # ACTIVE_MODEL:  hypothetical 100%-compliant 3L portfolio, updated each run
+    shadow_type = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    inception_date = Column(String, nullable=False)                # "YYYY-MM-DD"
+    inception_value = Column(Float, nullable=True)
+    recommendation_snapshot_id = Column(Integer, ForeignKey("recommendation_snapshots.id", ondelete="SET NULL"), nullable=True)
+    execution_decision_id = Column(Integer, ForeignKey("user_execution_decisions.id", ondelete="SET NULL"), nullable=True)
+    inception_holdings_json = Column(Text, nullable=True)          # holdings[] at creation time
+    paper_cash_balance = Column(Float, nullable=False, default=0.0)
+    is_active = Column(Boolean, nullable=False, default=True)
+    last_valued_at = Column(DateTime, nullable=True)
+    current_value = Column(Float, nullable=True)
+    inception_return_pct = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    workspace = relationship("Workspace", back_populates="shadow_portfolios")
+    recommendation_snapshot = relationship("RecommendationSnapshot", back_populates="shadow_portfolios")
+    execution_decision = relationship("UserExecutionDecision", back_populates="shadow_portfolios")
+    daily_snapshots = relationship("ShadowPortfolioSnapshot", back_populates="shadow_portfolio", cascade="all, delete-orphan")
+    attribution_metrics = relationship("AttributionMetric", back_populates="shadow_portfolio", cascade="all, delete-orphan")
+
+
+class ShadowPortfolioSnapshot(Base):
+    """Daily paper-trading valuation for a shadow portfolio."""
+    __tablename__ = "shadow_portfolio_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    shadow_portfolio_id = Column(Integer, ForeignKey("shadow_portfolios.id", ondelete="CASCADE"), nullable=False, index=True)
+    snapshot_date = Column(String, nullable=False, index=True)     # "YYYY-MM-DD"
+    total_value = Column(Float, nullable=False)
+    return_pct_since_inception = Column(Float, nullable=True)      # cumulative %
+    daily_return_pct = Column(Float, nullable=True)
+    holdings_json = Column(Text, nullable=True)                    # per-holding values
+    benchmark_symbol = Column(String, nullable=True)               # e.g. "^SET.BK" or "^GSPC"
+    benchmark_return_pct = Column(Float, nullable=True)            # benchmark cumulative return same period
+    alpha = Column(Float, nullable=True)                           # shadow return - benchmark return
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    shadow_portfolio = relationship("ShadowPortfolio", back_populates="daily_snapshots")
+
+    __table_args__ = (UniqueConstraint("shadow_portfolio_id", "snapshot_date", name="uq_shadow_snapshot_date"),)
+
+
+class AttributionMetric(Base):
+    """Brinson-Hood-Beebower alpha attribution — selection vs allocation effects + human-vs-AI comparison."""
+    __tablename__ = "attribution_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    shadow_portfolio_id = Column(Integer, ForeignKey("shadow_portfolios.id", ondelete="CASCADE"), nullable=False, index=True)
+    portfolio_id = Column(Integer, ForeignKey("portfolios.id", ondelete="SET NULL"), nullable=True, index=True)
+    recommendation_snapshot_id = Column(Integer, ForeignKey("recommendation_snapshots.id", ondelete="SET NULL"), nullable=True, index=True)
+    evaluation_period_start = Column(String, nullable=False)       # "YYYY-MM-DD"
+    evaluation_period_end = Column(String, nullable=False)         # "YYYY-MM-DD"
+    evaluation_window_days = Column(Integer, nullable=True, default=30)
+    # BHB alpha decomposition
+    portfolio_return = Column(Float, nullable=True)                # shadow portfolio total return
+    benchmark_return = Column(Float, nullable=True)                # benchmark total return same period
+    selection_alpha = Column(Float, nullable=True)                 # alpha from stock selection vs sector peers
+    allocation_alpha = Column(Float, nullable=True)                # alpha from sector/weight tilts
+    interaction_effect = Column(Float, nullable=True)              # cross-term (selection × allocation)
+    total_alpha = Column(Float, nullable=True)                     # selection + allocation + interaction
+    attribution_breakdown_json = Column(Text, nullable=True)       # per-sector BHB components JSON
+    # Human-vs-AI comparison fields (Phase 3B.7B)
+    actual_return_pct = Column(Float, nullable=True)               # real portfolio return over evaluation window
+    static_shadow_return_pct = Column(Float, nullable=True)        # STATIC_FROZEN shadow return same window
+    ai_model_return_pct = Column(Float, nullable=True)             # ACTIVE_MODEL shadow return same window
+    avoided_drawdown_pct = Column(Float, nullable=True)            # static_drawdown − actual_drawdown (+ = AI had more DD)
+    regret_score = Column(Float, nullable=True)                    # ai_model_return − actual_return (+ = AI better)
+    ai_outperformed = Column(Boolean, nullable=True)               # regret_score > 0
+    computed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    workspace = relationship("Workspace", back_populates="attribution_metrics")
+    shadow_portfolio = relationship("ShadowPortfolio", back_populates="attribution_metrics")
+
+
+class ConfidenceCalibrationRecord(Base):
+    """Feedback loop: maps past consensus/policy scores to realized outcomes for re-injection."""
+    __tablename__ = "confidence_calibration_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    optimizer_history_id = Column(Integer, ForeignKey("optimizer_history.id", ondelete="SET NULL"), nullable=True, index=True)
+    recommendation_snapshot_id = Column(Integer, ForeignKey("recommendation_snapshots.id", ondelete="SET NULL"), nullable=True, index=True)
+    lookback_days = Column(Integer, nullable=False, default=30)    # evaluation window
+    # Calibration scores: did the AI confidence predict real outcomes?
+    consensus_strength_calibration = Column(Float, nullable=True)  # predicted vs realized direction accuracy
+    policy_alignment_calibration = Column(Float, nullable=True)    # policy score vs realized compliance
+    regime_confidence_calibration = Column(Float, nullable=True)   # regime confidence vs realized regime
+    signal_accuracy_json = Column(Text, nullable=True)             # per-symbol {predicted, actual, correct}
+    calibration_score = Column(Float, nullable=True)               # 0-100 overall calibration quality
+    feedback_context_json = Column(Text, nullable=True)            # structured block to inject into AI prompts
+    computed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    workspace = relationship("Workspace", back_populates="calibration_records")
+
+
 class UserUsage(Base):
     __tablename__ = "user_usage"
 
@@ -566,6 +726,175 @@ def migrate_legacy_data() -> None:
                     """))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_regime_snapshots_date ON regime_snapshots (snapshot_date)"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_regime_snapshots_regime ON regime_snapshots (regime)"))
+
+            # ── Phase 3B.7 Decision Memory tables ─────────────────────────────
+            if "recommendation_snapshots" not in tables:
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS recommendation_snapshots (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            workspace_id INTEGER NOT NULL DEFAULT 1,
+                            optimizer_history_id INTEGER NOT NULL,
+                            portfolio_id INTEGER NOT NULL,
+                            persona TEXT,
+                            total_portfolio_value REAL,
+                            regime_snapshot_json TEXT,
+                            constraint_envelope_json TEXT,
+                            active_policy_json TEXT,
+                            layer1_output_json TEXT,
+                            layer2_output_json TEXT,
+                            layer3_output_json TEXT,
+                            consensus_json TEXT,
+                            portfolio_dna_json TEXT,
+                            style_drift_json TEXT,
+                            scores_map_json TEXT,
+                            projected_allocations_json TEXT,
+                            created_at DATETIME,
+                            UNIQUE (optimizer_history_id)
+                        )
+                    """))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_rec_snap_ws ON recommendation_snapshots (workspace_id)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_rec_snap_portfolio ON recommendation_snapshots (portfolio_id)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_rec_snap_oh ON recommendation_snapshots (optimizer_history_id)"))
+
+            if "user_execution_decisions" not in tables:
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS user_execution_decisions (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            workspace_id INTEGER NOT NULL DEFAULT 1,
+                            recommendation_snapshot_id INTEGER NOT NULL,
+                            optimizer_history_id INTEGER,
+                            portfolio_id INTEGER NOT NULL,
+                            decision TEXT NOT NULL,
+                            approved_allocations_json TEXT,
+                            rejected_symbols_json TEXT,
+                            override_notes TEXT,
+                            executed_at DATETIME NOT NULL,
+                            created_at DATETIME
+                        )
+                    """))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ued_ws ON user_execution_decisions (workspace_id)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ued_snapshot ON user_execution_decisions (recommendation_snapshot_id)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ued_decision ON user_execution_decisions (decision)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ued_portfolio ON user_execution_decisions (portfolio_id)"))
+
+            if "shadow_portfolios" not in tables:
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS shadow_portfolios (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            workspace_id INTEGER NOT NULL DEFAULT 1,
+                            portfolio_id INTEGER NOT NULL,
+                            shadow_type TEXT NOT NULL,
+                            name TEXT NOT NULL,
+                            inception_date TEXT NOT NULL,
+                            inception_value REAL,
+                            recommendation_snapshot_id INTEGER,
+                            execution_decision_id INTEGER,
+                            inception_holdings_json TEXT,
+                            paper_cash_balance REAL NOT NULL DEFAULT 0,
+                            is_active INTEGER NOT NULL DEFAULT 1,
+                            last_valued_at DATETIME,
+                            current_value REAL,
+                            inception_return_pct REAL,
+                            created_at DATETIME
+                        )
+                    """))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_sp_ws ON shadow_portfolios (workspace_id)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_sp_portfolio ON shadow_portfolios (portfolio_id)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_sp_type ON shadow_portfolios (shadow_type)"))
+
+            if "shadow_portfolio_snapshots" not in tables:
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS shadow_portfolio_snapshots (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            shadow_portfolio_id INTEGER NOT NULL,
+                            snapshot_date TEXT NOT NULL,
+                            total_value REAL NOT NULL,
+                            return_pct_since_inception REAL,
+                            daily_return_pct REAL,
+                            holdings_json TEXT,
+                            benchmark_symbol TEXT,
+                            benchmark_return_pct REAL,
+                            alpha REAL,
+                            created_at DATETIME,
+                            UNIQUE (shadow_portfolio_id, snapshot_date)
+                        )
+                    """))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_sps_shadow ON shadow_portfolio_snapshots (shadow_portfolio_id)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_sps_date ON shadow_portfolio_snapshots (snapshot_date)"))
+
+            if "attribution_metrics" not in tables:
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS attribution_metrics (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            workspace_id INTEGER NOT NULL DEFAULT 1,
+                            shadow_portfolio_id INTEGER NOT NULL,
+                            portfolio_id INTEGER,
+                            recommendation_snapshot_id INTEGER,
+                            evaluation_period_start TEXT NOT NULL,
+                            evaluation_period_end TEXT NOT NULL,
+                            evaluation_window_days INTEGER DEFAULT 30,
+                            portfolio_return REAL,
+                            benchmark_return REAL,
+                            selection_alpha REAL,
+                            allocation_alpha REAL,
+                            interaction_effect REAL,
+                            total_alpha REAL,
+                            attribution_breakdown_json TEXT,
+                            actual_return_pct REAL,
+                            static_shadow_return_pct REAL,
+                            ai_model_return_pct REAL,
+                            avoided_drawdown_pct REAL,
+                            regret_score REAL,
+                            ai_outperformed INTEGER,
+                            computed_at DATETIME
+                        )
+                    """))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_am_ws ON attribution_metrics (workspace_id)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_am_shadow ON attribution_metrics (shadow_portfolio_id)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_am_portfolio ON attribution_metrics (portfolio_id)"))
+            else:
+                # Add new columns to existing attribution_metrics table
+                with engine.begin() as conn:
+                    am_cols = {c["name"] for c in inspector.get_columns("attribution_metrics")}
+                    for col, typedef in [
+                        ("portfolio_id", "INTEGER"),
+                        ("recommendation_snapshot_id", "INTEGER"),
+                        ("evaluation_window_days", "INTEGER"),
+                        ("actual_return_pct", "REAL"),
+                        ("static_shadow_return_pct", "REAL"),
+                        ("ai_model_return_pct", "REAL"),
+                        ("avoided_drawdown_pct", "REAL"),
+                        ("regret_score", "REAL"),
+                        ("ai_outperformed", "INTEGER"),
+                    ]:
+                        if col not in am_cols:
+                            conn.execute(text(f"ALTER TABLE attribution_metrics ADD COLUMN {col} {typedef}"))
+
+            if "confidence_calibration_records" not in tables:
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS confidence_calibration_records (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            workspace_id INTEGER NOT NULL DEFAULT 1,
+                            optimizer_history_id INTEGER,
+                            recommendation_snapshot_id INTEGER,
+                            lookback_days INTEGER NOT NULL DEFAULT 30,
+                            consensus_strength_calibration REAL,
+                            policy_alignment_calibration REAL,
+                            regime_confidence_calibration REAL,
+                            signal_accuracy_json TEXT,
+                            calibration_score REAL,
+                            feedback_context_json TEXT,
+                            computed_at DATETIME
+                        )
+                    """))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ccr_ws ON confidence_calibration_records (workspace_id)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ccr_oh ON confidence_calibration_records (optimizer_history_id)"))
 
             # benchmark_prices: create if missing (SQLite has no CREATE TABLE IF NOT EXISTS in ALTER path)
             if "benchmark_prices" not in tables:

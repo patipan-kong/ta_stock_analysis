@@ -22,6 +22,9 @@ from models.database import (
     AgentCache, AnalysisCache, AnalysisHistory, OptimizerHistory, SignalHistory,
     Settings, UserUsage, Transaction, PortfolioSnapshot, BenchmarkPrice,
     MarketDataCache,
+    RecommendationSnapshot, UserExecutionDecision,
+    ShadowPortfolio, ShadowPortfolioSnapshot,
+    AttributionMetric, ConfidenceCalibrationRecord,
 )
 from agents.technical import analyze_technical
 from agents.fundamental import analyze_fundamental
@@ -1943,6 +1946,25 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     except Exception as _re:
         _log.warning("analyze_optimizer: regime detection failed — continuing without regime context: %s", _re)
 
+    # ── Phase 3B.5 — Constraint Resolution Layer ─────────────────────────────
+    # Merge user preferences + regime policy + emergency + system safety into a
+    # single deterministic EffectiveEnvelope before any AI agent is called.
+    effective_env: object | None = None
+    effective_env_dict: dict | None = None
+    try:
+        from services.optimizer.constraint_resolver import (
+            resolve_constraints as _resolve_constraints,
+            envelope_to_dict as _eff_env_to_dict,
+        )
+        effective_env = _resolve_constraints(ps, sector_limits, regime_ctx, persona_ctx)
+        effective_env_dict = _eff_env_to_dict(effective_env)
+        _log.info(
+            "analyze_optimizer: constraint_resolver ran — %d adjustment(s), emergency=%s",
+            len(effective_env.resolver_notes), effective_env.emergency_active,
+        )
+    except Exception as _cre:
+        _log.warning("analyze_optimizer: constraint_resolver failed — continuing without: %s", _cre)
+
     # ── Phase 3B.4 — Build unified Policy Envelope ────────────────────────────
     policy_ctx: dict | None = None
     try:
@@ -1950,6 +1972,7 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         _policy_env = compute_policy(
             persona_ctx, regime_ctx, pd_with_weights,
             consensus=None, max_sector_pct=max_sector_pct,
+            effective_envelope=effective_env,
         )
         policy_ctx = _env_to_dict(_policy_env)
     except Exception as _pe:
@@ -1961,6 +1984,7 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         portfolio.cash_balance or 0.0,
         fallback_cfg["provider"], fallback_cfg["model"],
         persona_ctx, regime_ctx, policy_ctx,
+        effective_env,
     )
 
     # Surface regime in optimizer result for frontend display
@@ -2064,6 +2088,58 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     if signal_rows:
         db.add_all(signal_rows)
         db.commit()
+
+    # ── Phase 3B.7 — Decision Memory: write RecommendationSnapshot ───────────
+    # Persisted automatically after every successful optimizer run.
+    # Failure is swallowed — never blocks the HTTP response.
+    _snap_id: int | None = None
+    try:
+        from services.decision_memory.snapshot_writer import write_recommendation_snapshot
+        total_mv = sum(
+            (h.get("shares") or 0) * (h.get("current_price") or h.get("avg_cost") or 0)
+            for h in portfolio_data
+        )
+        _snap_id = write_recommendation_snapshot(
+            db,
+            workspace_id=ws,
+            portfolio_id=body.portfolio_id,
+            optimizer_history_id=entry.id,
+            optimizer_result=result,
+            persona=persona,
+            total_portfolio_value=total_mv,
+            scores_map=scores_map,
+        )
+        if _snap_id:
+            result["recommendation_snapshot_id"] = _snap_id
+    except Exception as _dm_exc:
+        _log.warning("analyze_optimizer: decision_memory snapshot write failed: %s", _dm_exc)
+
+    # ── Phase 3B.7 — Confidence calibration: update after every optimizer run ─
+    # Runs in a background thread so it never delays the HTTP response.
+    # Captures a new ConfidenceCalibrationRecord linking back to this run.
+    def _run_calibration_bg(workspace_id: int, oh_id: int, snap_id: int | None) -> None:
+        try:
+            from services.decision_memory.calibration import compute_calibration
+            _bg_db = SessionLocal()
+            try:
+                compute_calibration(
+                    _bg_db,
+                    workspace_id=workspace_id,
+                    lookback_days=30,
+                    optimizer_history_id=oh_id,
+                    recommendation_snapshot_id=snap_id,
+                )
+            finally:
+                _bg_db.close()
+        except Exception as _cal_exc:
+            _log.debug("analyze_optimizer: background calibration failed: %s", _cal_exc)
+
+    import threading
+    threading.Thread(
+        target=_run_calibration_bg,
+        args=(ws, entry.id, _snap_id),
+        daemon=True,
+    ).start()
 
     return result
 
@@ -3685,3 +3761,832 @@ async def get_market_regime(
 
     result = await asyncio.to_thread(detect_regime, db)
     return result
+
+
+# ─── Phase 3B.7 — Decision Memory System ─────────────────────────────────────
+
+class ExecutionDecisionRequest(BaseModel):
+    portfolio_id: int
+    recommendation_snapshot_id: int
+    decision: str                          # APPROVED | REJECTED | MANUAL_OVERRIDE
+    approved_allocations: list[dict] | None = None
+    rejected_symbols: list[str] | None = None
+    override_notes: str | None = None
+    create_static_shadow: bool = False     # auto-create a STATIC_FROZEN shadow
+
+
+@app.post("/optimizer/decisions")
+async def record_execution_decision(
+    body: ExecutionDecisionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Record the action a user took after reviewing an optimizer recommendation.
+
+    decision: APPROVED | REJECTED | MANUAL_OVERRIDE
+    Optionally creates a STATIC_FROZEN shadow portfolio to track what would
+    have happened had the recommendation been followed exactly.
+    """
+    ws = _ws_id(db)
+    _VALID_DECISIONS = {"APPROVED", "REJECTED", "PARTIAL_EXECUTION", "MANUAL_OVERRIDE"}
+    if body.decision.upper() not in _VALID_DECISIONS:
+        raise HTTPException(status_code=400, detail=f"decision must be one of: {_VALID_DECISIONS}")
+
+    snap = db.query(RecommendationSnapshot).filter_by(
+        id=body.recommendation_snapshot_id,
+        workspace_id=ws,
+    ).first()
+    if not snap:
+        raise HTTPException(status_code=404, detail="recommendation_snapshot not found")
+
+    oh = db.query(OptimizerHistory).filter_by(
+        id=snap.optimizer_history_id,
+        workspace_id=ws,
+    ).first()
+
+    now = datetime.utcnow()
+    decision = UserExecutionDecision(
+        workspace_id=ws,
+        recommendation_snapshot_id=body.recommendation_snapshot_id,
+        optimizer_history_id=snap.optimizer_history_id,
+        portfolio_id=body.portfolio_id,
+        decision=body.decision.upper(),
+        approved_allocations_json=_json.dumps(body.approved_allocations) if body.approved_allocations else None,
+        rejected_symbols_json=_json.dumps(body.rejected_symbols) if body.rejected_symbols else None,
+        override_notes=body.override_notes,
+        executed_at=now,
+        created_at=now,
+    )
+    db.add(decision)
+    db.commit()
+    db.refresh(decision)
+
+    result: dict = {
+        "decision_id": decision.id,
+        "decision": decision.decision,
+        "recommendation_snapshot_id": body.recommendation_snapshot_id,
+        "portfolio_id": body.portfolio_id,
+        "executed_at": now.isoformat() + "Z",
+    }
+
+    # On APPROVED: always create both STATIC_FROZEN and ACTIVE_MODEL shadows
+    if decision.decision == "APPROVED":
+        from services.decision_memory.shadow_tracker import (
+            create_static_frozen_shadow, create_active_model_shadow,
+        )
+        try:
+            static_result = create_static_frozen_shadow(db, decision.id, ws)
+            result["static_shadow"] = static_result
+        except Exception as exc:
+            _log.warning("record_execution_decision: STATIC_FROZEN creation failed: %s", exc)
+            result["static_shadow"] = {"error": str(exc)}
+        try:
+            active_result = create_active_model_shadow(
+                db, body.portfolio_id, body.recommendation_snapshot_id, ws
+            )
+            result["active_model_shadow"] = active_result
+        except Exception as exc:
+            _log.warning("record_execution_decision: ACTIVE_MODEL creation failed: %s", exc)
+            result["active_model_shadow"] = {"error": str(exc)}
+    elif body.create_static_shadow:
+        # Explicit flag on non-APPROVED decisions (REJECTED / MANUAL_OVERRIDE)
+        try:
+            from services.decision_memory.shadow_tracker import create_static_frozen_shadow
+            static_result = create_static_frozen_shadow(db, decision.id, ws)
+            result["static_shadow"] = static_result
+        except Exception as exc:
+            _log.warning("record_execution_decision: shadow creation failed: %s", exc)
+            result["static_shadow"] = {"error": str(exc)}
+
+    # On APPROVED: trigger attribution computation in background (after shadows are created)
+    if decision.decision == "APPROVED":
+        def _run_attribution_bg(portfolio_id: int) -> None:
+            try:
+                from services.analytics.attribution_engine import compute_portfolio_attribution
+                _bg_db = SessionLocal()
+                try:
+                    compute_portfolio_attribution(_bg_db, portfolio_id)
+                finally:
+                    _bg_db.close()
+            except Exception as _attr_exc:
+                _log.debug("record_execution_decision: attribution bg failed: %s", _attr_exc)
+
+        import threading as _threading
+        _threading.Thread(
+            target=_run_attribution_bg,
+            args=(body.portfolio_id,),
+            daemon=True,
+        ).start()
+
+    return result
+
+
+@app.get("/optimizer/decisions")
+async def list_execution_decisions(
+    portfolio_id: int | None = None,
+    decision: str | None = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """List user execution decisions, optionally filtered by portfolio or decision type."""
+    ws = _ws_id(db)
+    q = db.query(UserExecutionDecision).filter(UserExecutionDecision.workspace_id == ws)
+    if portfolio_id:
+        q = q.filter(UserExecutionDecision.portfolio_id == portfolio_id)
+    if decision:
+        q = q.filter(UserExecutionDecision.decision == decision.upper())
+    rows = q.order_by(UserExecutionDecision.executed_at.desc()).limit(min(limit, 200)).all()
+    return [
+        {
+            "id": r.id,
+            "portfolio_id": r.portfolio_id,
+            "recommendation_snapshot_id": r.recommendation_snapshot_id,
+            "optimizer_history_id": r.optimizer_history_id,
+            "decision": r.decision,
+            "override_notes": r.override_notes,
+            "executed_at": r.executed_at.isoformat() + "Z" if r.executed_at else None,
+            "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+@app.get("/optimizer/decisions/{decision_id}")
+async def get_execution_decision(decision_id: int, db: Session = Depends(get_db)) -> dict:
+    """Return a single execution decision with its linked recommendation snapshot metadata."""
+    ws = _ws_id(db)
+    row = db.query(UserExecutionDecision).filter_by(id=decision_id, workspace_id=ws).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Decision not found")
+
+    snap = db.query(RecommendationSnapshot).filter_by(
+        id=row.recommendation_snapshot_id
+    ).first()
+
+    return {
+        "id": row.id,
+        "portfolio_id": row.portfolio_id,
+        "decision": row.decision,
+        "override_notes": row.override_notes,
+        "approved_allocations": _json.loads(row.approved_allocations_json) if row.approved_allocations_json else None,
+        "rejected_symbols": _json.loads(row.rejected_symbols_json) if row.rejected_symbols_json else None,
+        "executed_at": row.executed_at.isoformat() + "Z" if row.executed_at else None,
+        "recommendation_snapshot": {
+            "id": snap.id,
+            "persona": snap.persona,
+            "total_portfolio_value": snap.total_portfolio_value,
+            "created_at": snap.created_at.isoformat() + "Z" if snap.created_at else None,
+            "regime": _json.loads(snap.regime_snapshot_json) if snap.regime_snapshot_json else None,
+            "consensus": _json.loads(snap.consensus_json) if snap.consensus_json else None,
+            "projected_allocations": _json.loads(snap.projected_allocations_json) if snap.projected_allocations_json else None,
+        } if snap else None,
+    }
+
+
+@app.get("/optimizer/snapshots/{snapshot_id}")
+async def get_recommendation_snapshot(snapshot_id: int, db: Session = Depends(get_db)) -> dict:
+    """Return the full RecommendationSnapshot for a given optimizer run."""
+    ws = _ws_id(db)
+    snap = db.query(RecommendationSnapshot).filter_by(id=snapshot_id, workspace_id=ws).first()
+    if not snap:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+
+    return {
+        "id": snap.id,
+        "optimizer_history_id": snap.optimizer_history_id,
+        "portfolio_id": snap.portfolio_id,
+        "persona": snap.persona,
+        "total_portfolio_value": snap.total_portfolio_value,
+        "regime": _json.loads(snap.regime_snapshot_json) if snap.regime_snapshot_json else None,
+        "constraint_envelope": _json.loads(snap.constraint_envelope_json) if snap.constraint_envelope_json else None,
+        "active_policy": _json.loads(snap.active_policy_json) if snap.active_policy_json else None,
+        "layer1": _json.loads(snap.layer1_output_json) if snap.layer1_output_json else None,
+        "layer2": _json.loads(snap.layer2_output_json) if snap.layer2_output_json else None,
+        "layer3": _json.loads(snap.layer3_output_json) if snap.layer3_output_json else None,
+        "consensus": _json.loads(snap.consensus_json) if snap.consensus_json else None,
+        "portfolio_dna": _json.loads(snap.portfolio_dna_json) if snap.portfolio_dna_json else None,
+        "style_drift": _json.loads(snap.style_drift_json) if snap.style_drift_json else None,
+        "projected_allocations": _json.loads(snap.projected_allocations_json) if snap.projected_allocations_json else None,
+        "created_at": snap.created_at.isoformat() + "Z" if snap.created_at else None,
+    }
+
+
+# ─── Shadow Portfolio endpoints ───────────────────────────────────────────────
+
+class ShadowPortfolioRequest(BaseModel):
+    portfolio_id: int
+    shadow_type: str                       # STATIC_FROZEN | ACTIVE_MODEL
+    execution_decision_id: int | None = None
+    recommendation_snapshot_id: int | None = None
+
+
+@app.post("/analytics/shadow-portfolios")
+async def create_shadow_portfolio(
+    body: ShadowPortfolioRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Create a shadow portfolio for paper-trading tracking.
+
+    STATIC_FROZEN: requires execution_decision_id — freezes state at decision time.
+    ACTIVE_MODEL:  requires recommendation_snapshot_id — hypothetical 100% compliant portfolio.
+    """
+    ws = _ws_id(db)
+    shadow_type = body.shadow_type.upper()
+    if shadow_type not in {"STATIC_FROZEN", "ACTIVE_MODEL"}:
+        raise HTTPException(status_code=400, detail="shadow_type must be STATIC_FROZEN or ACTIVE_MODEL")
+
+    if shadow_type == "STATIC_FROZEN":
+        if not body.execution_decision_id:
+            raise HTTPException(status_code=400, detail="execution_decision_id required for STATIC_FROZEN")
+        from services.decision_memory.shadow_tracker import create_static_frozen_shadow
+        result = await asyncio.to_thread(create_static_frozen_shadow, db, body.execution_decision_id, ws)
+    else:
+        if not body.recommendation_snapshot_id:
+            raise HTTPException(status_code=400, detail="recommendation_snapshot_id required for ACTIVE_MODEL")
+        from services.decision_memory.shadow_tracker import create_active_model_shadow
+        result = await asyncio.to_thread(
+            create_active_model_shadow, db, body.portfolio_id, body.recommendation_snapshot_id, ws
+        )
+
+    if result.get("error"):
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@app.get("/analytics/shadow-portfolios")
+async def list_shadow_portfolios(
+    portfolio_id: int | None = None,
+    shadow_type: str | None = None,
+    active_only: bool = True,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """List shadow portfolios for the workspace."""
+    ws = _ws_id(db)
+    q = db.query(ShadowPortfolio).filter(ShadowPortfolio.workspace_id == ws)
+    if portfolio_id:
+        q = q.filter(ShadowPortfolio.portfolio_id == portfolio_id)
+    if shadow_type:
+        q = q.filter(ShadowPortfolio.shadow_type == shadow_type.upper())
+    if active_only:
+        q = q.filter(ShadowPortfolio.is_active == True)  # noqa: E712
+    rows = q.order_by(ShadowPortfolio.created_at.desc()).all()
+    return [
+        {
+            "id": r.id,
+            "portfolio_id": r.portfolio_id,
+            "shadow_type": r.shadow_type,
+            "name": r.name,
+            "inception_date": r.inception_date,
+            "inception_value": r.inception_value,
+            "current_value": r.current_value,
+            "inception_return_pct": r.inception_return_pct,
+            "is_active": r.is_active,
+            "last_valued_at": r.last_valued_at.isoformat() + "Z" if r.last_valued_at else None,
+            "recommendation_snapshot_id": r.recommendation_snapshot_id,
+            "execution_decision_id": r.execution_decision_id,
+            "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+@app.get("/analytics/shadow-portfolios/{shadow_id}/performance")
+async def get_shadow_portfolio_performance(
+    shadow_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return performance data for a shadow portfolio including daily snapshot history."""
+    ws = _ws_id(db)
+    shadow = db.query(ShadowPortfolio).filter_by(id=shadow_id, workspace_id=ws).first()
+    if not shadow:
+        raise HTTPException(status_code=404, detail="Shadow portfolio not found")
+
+    # Trigger a fresh valuation for today
+    from services.decision_memory.shadow_tracker import value_shadow_portfolio
+    today_valuation = await asyncio.to_thread(value_shadow_portfolio, db, shadow_id)
+
+    snapshots = (
+        db.query(ShadowPortfolioSnapshot)
+        .filter_by(shadow_portfolio_id=shadow_id)
+        .order_by(ShadowPortfolioSnapshot.snapshot_date)
+        .all()
+    )
+
+    return {
+        "shadow_id": shadow_id,
+        "shadow_type": shadow.shadow_type,
+        "name": shadow.name,
+        "inception_date": shadow.inception_date,
+        "inception_value": shadow.inception_value,
+        "current_value": shadow.current_value,
+        "inception_return_pct": shadow.inception_return_pct,
+        "today_valuation": today_valuation,
+        "history": [
+            {
+                "date": s.snapshot_date,
+                "total_value": s.total_value,
+                "return_pct_since_inception": s.return_pct_since_inception,
+                "daily_return_pct": s.daily_return_pct,
+                "benchmark_return_pct": s.benchmark_return_pct,
+                "alpha": s.alpha,
+            }
+            for s in snapshots
+        ],
+    }
+
+
+@app.post("/analytics/shadow-portfolios/{shadow_id}/value")
+async def trigger_shadow_valuation(
+    shadow_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Trigger an immediate paper-valuation for a shadow portfolio."""
+    ws = _ws_id(db)
+    shadow = db.query(ShadowPortfolio).filter_by(id=shadow_id, workspace_id=ws).first()
+    if not shadow:
+        raise HTTPException(status_code=404, detail="Shadow portfolio not found")
+
+    from services.decision_memory.shadow_tracker import value_shadow_portfolio
+    result = await asyncio.to_thread(value_shadow_portfolio, db, shadow_id)
+    return result
+
+
+# ─── Attribution & Calibration endpoints (structural stubs) ──────────────────
+
+@app.get("/analytics/attribution/{shadow_id}")
+async def get_attribution(
+    shadow_id: int,
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Compute Brinson-Hood-Beebower alpha attribution for a shadow portfolio.
+
+    Returns selection alpha, allocation alpha, and interaction effect.
+    Sector-level decomposition is a structural stub pending per-sector benchmark data.
+
+    Query params:
+      start: "YYYY-MM-DD" (default: shadow inception_date)
+      end:   "YYYY-MM-DD" (default: today)
+    """
+    ws = _ws_id(db)
+    shadow = db.query(ShadowPortfolio).filter_by(id=shadow_id, workspace_id=ws).first()
+    if not shadow:
+        raise HTTPException(status_code=404, detail="Shadow portfolio not found")
+
+    from services.decision_memory.attribution import compute_attribution, get_attribution_summary
+    period_start = start or shadow.inception_date
+    period_end = end or datetime.utcnow().strftime("%Y-%m-%d")
+
+    result = await asyncio.to_thread(compute_attribution, db, shadow_id, period_start, period_end)
+    history = get_attribution_summary(db, shadow_id)
+
+    return {
+        "shadow_id": shadow_id,
+        "current": result,
+        "history": history,
+    }
+
+
+@app.get("/analytics/calibration")
+async def get_confidence_calibration(
+    portfolio_id: int | None = None,
+    lookback_days: int = 30,
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return confidence calibration results for the workspace.
+
+    Evaluates whether consensus_strength_score, policy_alignment_score, and
+    regime confidence predicted real outcomes over the lookback window.
+
+    Set refresh=true to recompute (otherwise returns the latest stored record).
+
+    Structural stub: full calibration math requires accumulated SignalHistory
+    with realized price data.  Current output includes regime stability and
+    skeleton signal accuracy.
+    """
+    ws = _ws_id(db)
+    from services.decision_memory.calibration import compute_calibration, get_latest_calibration
+
+    if not refresh:
+        latest = get_latest_calibration(db, ws)
+        if latest:
+            return {"source": "cached", "calibration": latest}
+
+    result = await asyncio.to_thread(compute_calibration, db, ws, lookback_days)
+    return {"source": "computed", "calibration": result}
+
+
+# ─── Phase 3B.7B — Attribution Analytics & Human-vs-AI Benchmark Engine ──────
+
+@app.get("/analytics/attribution-summary")
+async def get_attribution_summary(
+    portfolio_id: int,
+    evaluation_window_days: int = 30,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Compute portfolio attribution vs shadow benchmarks.
+
+    Returns actual portfolio returns vs STATIC_FROZEN and ACTIVE_MODEL shadow
+    portfolios over the given window. Computes regret_score (AI model return −
+    actual return), avoided_drawdown (how much more drawdown the frozen baseline
+    experienced), and ai_outperformed flag.
+
+    Requires at least one shadow portfolio to exist for this portfolio. Shadow
+    portfolios are created automatically when execution decisions are recorded
+    (STATIC_FROZEN) or when the ACTIVE_MODEL is initialized after an optimizer run.
+
+    Query params:
+      portfolio_id           : required
+      evaluation_window_days : 7 | 14 | 30 | 60 | 90 (default 30)
+    """
+    ws = _ws_id(db)
+    from services.analytics.attribution_engine import (
+        compute_portfolio_attribution,
+        get_attribution_summary as _get_summary,
+    )
+
+    current = await asyncio.to_thread(
+        compute_portfolio_attribution, db, portfolio_id, evaluation_window_days
+    )
+    history = _get_summary(db, portfolio_id, limit=10)
+
+    return {
+        "portfolio_id": portfolio_id,
+        "current": current,
+        "history": history,
+    }
+
+
+@app.get("/analytics/human-vs-ai")
+async def get_human_vs_ai_comparison(
+    portfolio_id: int,
+    evaluation_days: int = 90,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Compare human execution decisions against AI model recommendations.
+
+    For each UserExecutionDecision in the evaluation window, measures:
+      - actual portfolio return since decision date
+      - shadow portfolio return since decision date
+      - return_delta (shadow − actual): positive = AI was better
+      - hit_rate: % of decisions where AI shadow outperformed actual execution
+      - mean return/volatility/drawdown deltas across all decisions
+
+    Null-safe for portfolios with no decisions or insufficient snapshot data.
+    """
+    _ws_id(db)
+    from services.analytics.human_vs_ai import compare_human_vs_ai
+
+    result = await asyncio.to_thread(compare_human_vs_ai, db, portfolio_id, evaluation_days)
+    return result
+
+
+@app.get("/analytics/regime-attribution")
+async def get_regime_attribution(
+    portfolio_id: int,
+    lookback_days: int = 90,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Group portfolio daily returns by market regime.
+
+    Joins PortfolioSnapshot daily_return_pct with RegimeSnapshot labels to
+    show which market conditions the portfolio performed best/worst in.
+    Also surfaces optimizer run statistics per regime (avg opportunity score,
+    rebalance rate).
+
+    Null-safe: returns status='no_snapshot_data' or 'no_regime_overlap'
+    when data is insufficient.
+    """
+    _ws_id(db)
+    from services.analytics.regime_attribution import compute_regime_attribution
+
+    result = await asyncio.to_thread(compute_regime_attribution, db, portfolio_id, lookback_days)
+    return result
+
+
+@app.get("/analytics/decision-memory")
+async def get_decision_memory_timeline(
+    portfolio_id: int,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Return an execution decision timeline for a portfolio.
+
+    Each entry includes: decision type, timestamp, snapshot summary
+    (persona, consensus, total value), and associated shadow portfolio
+    performance summaries (if any exist).
+
+    Ordered newest-first.  Max 50 rows.
+    """
+    ws = _ws_id(db)
+    decisions = (
+        db.query(UserExecutionDecision)
+        .filter(
+            UserExecutionDecision.workspace_id == ws,
+            UserExecutionDecision.portfolio_id == portfolio_id,
+        )
+        .order_by(UserExecutionDecision.executed_at.desc())
+        .limit(min(limit, 50))
+        .all()
+    )
+
+    timeline = []
+    for d in decisions:
+        snap = db.query(RecommendationSnapshot).filter_by(
+            id=d.recommendation_snapshot_id
+        ).first()
+
+        shadows = (
+            db.query(ShadowPortfolio)
+            .filter(
+                (ShadowPortfolio.execution_decision_id == d.id) |
+                (
+                    (ShadowPortfolio.recommendation_snapshot_id == d.recommendation_snapshot_id) &
+                    (ShadowPortfolio.portfolio_id == d.portfolio_id)
+                )
+            )
+            .filter(ShadowPortfolio.workspace_id == ws)
+            .all()
+        )
+
+        shadow_summaries = [
+            {
+                "shadow_id": s.id,
+                "shadow_type": s.shadow_type,
+                "name": s.name,
+                "inception_date": s.inception_date,
+                "inception_value": s.inception_value,
+                "current_value": s.current_value,
+                "inception_return_pct": s.inception_return_pct,
+                "is_active": s.is_active,
+                "last_valued_at": s.last_valued_at.isoformat() + "Z" if s.last_valued_at else None,
+            }
+            for s in shadows
+        ]
+
+        consensus = None
+        regime = None
+        if snap:
+            if snap.consensus_json:
+                try:
+                    c = _json.loads(snap.consensus_json)
+                    consensus = {
+                        "consensus_type": c.get("consensus_type"),
+                        "consensus_strength_score": c.get("consensus_strength_score"),
+                        "consensus_decision": c.get("consensus_decision"),
+                    }
+                except Exception:
+                    pass
+            if snap.regime_snapshot_json:
+                try:
+                    r = _json.loads(snap.regime_snapshot_json)
+                    regime = {"regime": r.get("regime"), "confidence_pct": r.get("confidence_pct")}
+                except Exception:
+                    pass
+
+        timeline.append({
+            "decision_id": d.id,
+            "decision": d.decision,
+            "portfolio_id": d.portfolio_id,
+            "override_notes": d.override_notes,
+            "executed_at": d.executed_at.isoformat() + "Z" if d.executed_at else None,
+            "recommendation_snapshot": {
+                "id": snap.id,
+                "persona": snap.persona,
+                "total_portfolio_value": snap.total_portfolio_value,
+                "created_at": snap.created_at.isoformat() + "Z" if snap.created_at else None,
+                "consensus": consensus,
+                "regime": regime,
+            } if snap else None,
+            "shadows": shadow_summaries,
+        })
+
+    return timeline
+
+
+@app.get("/analytics/confidence-history")
+async def get_confidence_history(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Return historical confidence calibration records for the workspace.
+
+    Records are written automatically after each optimizer run.
+    Ordered newest-first.  Max 50 rows.
+    """
+    ws = _ws_id(db)
+    from models.database import ConfidenceCalibrationRecord
+
+    rows = (
+        db.query(ConfidenceCalibrationRecord)
+        .filter_by(workspace_id=ws)
+        .order_by(ConfidenceCalibrationRecord.computed_at.desc())
+        .limit(min(limit, 50))
+        .all()
+    )
+
+    return [
+        {
+            "id": r.id,
+            "lookback_days": r.lookback_days,
+            "calibration_score": r.calibration_score,
+            "consensus_strength_calibration": r.consensus_strength_calibration,
+            "policy_alignment_calibration": r.policy_alignment_calibration,
+            "regime_confidence_calibration": r.regime_confidence_calibration,
+            "optimizer_history_id": r.optimizer_history_id,
+            "recommendation_snapshot_id": r.recommendation_snapshot_id,
+            "computed_at": r.computed_at.isoformat() + "Z" if r.computed_at else None,
+        }
+        for r in rows
+    ]
+
+
+@app.get("/analytics/confidence-calibration")
+async def get_confidence_calibration_v2(
+    portfolio_id: int | None = None,
+    lookback_days: int = 30,
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Enhanced confidence calibration with first-pass signal accuracy.
+
+    Evaluates:
+      1. Regime stability: were high-confidence regime calls stable?
+      2. Signal directional accuracy: did BUY/ACCUMULATE signals go up?
+         Grouped by confidence bucket (HIGH ≥70 / MEDIUM 40-69 / LOW <40)
+      3. Policy compliance: stub — requires consecutive optimizer history.
+
+    Set refresh=true to recompute (otherwise returns the latest stored record).
+    Signals are evaluated only after ≥14 days (minimum holding period before
+    an outcome is meaningful).
+    """
+    ws = _ws_id(db)
+    from services.decision_memory.calibration import compute_calibration, get_latest_calibration
+
+    if not refresh:
+        latest = get_latest_calibration(db, ws)
+        if latest:
+            return {"source": "cached", "calibration": latest}
+
+    result = await asyncio.to_thread(compute_calibration, db, ws, lookback_days)
+    return {"source": "computed", "calibration": result}
+
+
+# ─── Phase 3B.7C — Execution Lifecycle Endpoints ─────────────────────────────
+
+@app.post("/optimizer/{snapshot_id}/decision")
+async def record_decision_by_snapshot(
+    snapshot_id: int,
+    body: ExecutionDecisionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Convenience endpoint — record an execution decision for a specific snapshot.
+
+    Accepts snapshot_id from URL path; delegates to POST /optimizer/decisions.
+    """
+    body.recommendation_snapshot_id = snapshot_id
+    return await record_execution_decision(body, db)
+
+
+@app.get("/analytics/shadow-performance")
+async def get_shadow_performance_summary(
+    portfolio_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Portfolio-level shadow performance summary.
+
+    Aggregates all active shadow portfolios for a portfolio into a single
+    response with inception return, current value, last valued date, and
+    benchmark alpha for each shadow type.  Null-safe for new portfolios.
+    """
+    ws = _ws_id(db)
+    rows = (
+        db.query(ShadowPortfolio)
+        .filter_by(workspace_id=ws, portfolio_id=portfolio_id, is_active=True)
+        .all()
+    )
+    if not rows:
+        return {"portfolio_id": portfolio_id, "shadows": [], "has_shadows": False}
+
+    shadows = []
+    for s in rows:
+        latest_snap = (
+            db.query(ShadowPortfolioSnapshot)
+            .filter_by(shadow_portfolio_id=s.id)
+            .order_by(ShadowPortfolioSnapshot.snapshot_date.desc())
+            .first()
+        )
+        shadows.append({
+            "shadow_id": s.id,
+            "shadow_type": s.shadow_type,
+            "name": s.name,
+            "inception_date": s.inception_date,
+            "inception_value": s.inception_value,
+            "current_value": s.current_value,
+            "inception_return_pct": s.inception_return_pct,
+            "last_valued_at": s.last_valued_at.isoformat() + "Z" if s.last_valued_at else None,
+            "latest_alpha": latest_snap.alpha if latest_snap else None,
+            "latest_benchmark_return_pct": latest_snap.benchmark_return_pct if latest_snap else None,
+            "snapshot_count": (
+                db.query(ShadowPortfolioSnapshot)
+                .filter_by(shadow_portfolio_id=s.id)
+                .count()
+            ),
+        })
+
+    static = next((s for s in shadows if s["shadow_type"] == "STATIC_FROZEN"), None)
+    active = next((s for s in shadows if s["shadow_type"] == "ACTIVE_MODEL"), None)
+
+    return {
+        "portfolio_id": portfolio_id,
+        "has_shadows": True,
+        "shadows": shadows,
+        "summary": {
+            "static_frozen": static,
+            "active_model": active,
+            "tracking_since": min(
+                (s["inception_date"] for s in shadows if s["inception_date"]), default=None
+            ),
+        },
+    }
+
+
+@app.get("/analytics/ai-vs-human-timeline")
+async def get_ai_vs_human_timeline(
+    portfolio_id: int,
+    evaluation_days: int = 90,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Per-decision AI vs human performance timeline.
+
+    Returns an ordered list of execution decisions each annotated with shadow
+    return, actual return, and whether AI outperformed.  Null-safe: decisions
+    without linked shadows are included with null deltas.
+    Ordered newest-first, capped at min(limit, 50).
+    """
+    from services.analytics.human_vs_ai import compare_human_vs_ai
+
+    try:
+        comparison = await asyncio.to_thread(compare_human_vs_ai, db, portfolio_id, evaluation_days)
+    except Exception as exc:
+        _log.warning("ai_vs_human_timeline: compare failed: %s", exc)
+        comparison = {"decisions": [], "summary": None}
+
+    decisions = comparison.get("decisions", [])
+    limited = decisions[:min(limit, 50)]
+
+    return {
+        "portfolio_id": portfolio_id,
+        "evaluation_days": evaluation_days,
+        "total_decisions": len(decisions),
+        "timeline": limited,
+        "summary": comparison.get("summary"),
+    }
+
+
+@app.get("/analytics/calibration-history")
+async def get_calibration_history(
+    portfolio_id: int | None = None,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Historical confidence calibration records, optionally filtered by portfolio.
+
+    When portfolio_id is provided, filters records linked to that portfolio's
+    recommendation snapshots.  Without it, returns workspace-wide records.
+    Ordered newest-first.  Cap at min(limit, 100).
+    """
+    ws = _ws_id(db)
+    q = (
+        db.query(ConfidenceCalibrationRecord)
+        .filter(ConfidenceCalibrationRecord.workspace_id == ws)
+    )
+    if portfolio_id:
+        snapshot_ids = [
+            r[0]
+            for r in db.query(RecommendationSnapshot.id)
+            .filter_by(workspace_id=ws, portfolio_id=portfolio_id)
+            .all()
+        ]
+        if not snapshot_ids:
+            return []
+        q = q.filter(ConfidenceCalibrationRecord.recommendation_snapshot_id.in_(snapshot_ids))
+
+    rows = q.order_by(ConfidenceCalibrationRecord.computed_at.desc()).limit(min(limit, 100)).all()
+
+    return [
+        {
+            "id": r.id,
+            "lookback_days": r.lookback_days,
+            "calibration_score": r.calibration_score,
+            "consensus_strength_calibration": r.consensus_strength_calibration,
+            "policy_alignment_calibration": r.policy_alignment_calibration,
+            "regime_confidence_calibration": r.regime_confidence_calibration,
+            "optimizer_history_id": r.optimizer_history_id,
+            "recommendation_snapshot_id": r.recommendation_snapshot_id,
+            "computed_at": r.computed_at.isoformat() + "Z" if r.computed_at else None,
+        }
+        for r in rows
+    ]
