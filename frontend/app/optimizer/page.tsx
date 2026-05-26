@@ -6,7 +6,7 @@ import { usePortfolio } from "@/lib/PortfolioContext";
 import {
   runOptimizer, listOptimizerHistory, getOptimizerHistory,
   listStrategyProfiles, getPortfolioPersona, updatePortfolioPersona,
-  recordExecutionDecision, listExecutionDecisions,
+  recordDecisionBySnapshot, listExecutionDecisions,
   getDecisionMemoryTimeline, getShadowPerformanceSummary,
 } from "@/lib/api";
 import SignalBadge from "@/components/SignalBadge";
@@ -20,7 +20,7 @@ import type {
   BlockedOpportunity, NoActionReason, SwapSuggestion, ConsensusType,
   StrategyPersona, StrategyProfile, PortfolioDNA, DriftSeverity, MarketRegime,
   ActivePolicy, ExecutionDecision, ExecutionDecisionType, DecisionMemoryEntry,
-  ShadowPerformanceSummary,
+  ShadowPerformanceSummary, ExecutionRisk,
 } from "@/lib/api";
 
 const TZ = "Asia/Bangkok";
@@ -297,6 +297,49 @@ function ActionBadge({ action }: { action: AllocationAction }) {
   );
 }
 
+// ─── Execution warning badge ──────────────────────────────────────────────────
+
+const EXEC_RISK_CLS: Record<ExecutionRisk, string> = {
+  LOW:      "bg-gray-100 text-gray-500 border-gray-200",
+  MEDIUM:   "bg-yellow-50 text-yellow-700 border-yellow-200",
+  HIGH:     "bg-orange-50 text-orange-700 border-orange-200",
+  CRITICAL: "bg-red-50 text-red-700 border-red-200",
+};
+
+function ExecutionWarningBadges({
+  warnings,
+  risk,
+  slippage,
+  capped,
+}: {
+  warnings: string[];
+  risk: ExecutionRisk;
+  slippage?: number;
+  capped?: boolean;
+}) {
+  if (!warnings || warnings.length === 0) return null;
+  const cls = EXEC_RISK_CLS[risk] ?? EXEC_RISK_CLS.MEDIUM;
+  return (
+    <span className="flex flex-wrap gap-1 mt-0.5">
+      {warnings.map((w) => (
+        <span key={w} className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${cls}`}>
+          {w}
+        </span>
+      ))}
+      {slippage != null && slippage >= 0.3 && (
+        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${cls}`}>
+          ~{slippage.toFixed(1)}% slip
+        </span>
+      )}
+      {capped && (
+        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded border bg-purple-50 text-purple-700 border-purple-200">
+          cap applied
+        </span>
+      )}
+    </span>
+  );
+}
+
 // ─── Allocation Table ─────────────────────────────────────────────────────────
 
 function AllocationTable({
@@ -343,10 +386,20 @@ function AllocationTable({
               return (
                 <tr key={a.symbol} className="border-b hover:bg-gray-50">
                   <td className="py-1.5 pr-3">
-                    <Link href={`/stock/${encodeURIComponent(a.symbol)}`} className="text-blue-600 hover:underline font-medium">
-                      {a.symbol.replace(".BK", "")}
-                      {a.symbol.endsWith(".BK") && <span className="text-gray-400 ml-0.5">.BK</span>}
-                    </Link>
+                    <div className="flex flex-col gap-0.5">
+                      <Link href={`/stock/${encodeURIComponent(a.symbol)}`} className="text-blue-600 hover:underline font-medium">
+                        {a.symbol.replace(".BK", "")}
+                        {a.symbol.endsWith(".BK") && <span className="text-gray-400 ml-0.5">.BK</span>}
+                      </Link>
+                      {a.execution_warnings && a.execution_warnings.length > 0 && (
+                        <ExecutionWarningBadges
+                          warnings={a.execution_warnings}
+                          risk={a.execution_risk ?? "LOW"}
+                          slippage={a.slippage_est_pct}
+                          capped={a.execution_capped}
+                        />
+                      )}
+                    </div>
                   </td>
                   <td className="py-1.5 pr-3"><ActionBadge action={a.action as AllocationAction} /></td>
                   <td className="py-1.5 pr-3 text-right text-gray-500">{a.current_weight.toFixed(1)}%</td>
@@ -1166,8 +1219,8 @@ function PortfolioMetricsBar({ result }: { result: OptimizerResult }) {
 // ─── Decision Action Panel ────────────────────────────────────────────────────
 
 const DECISION_CFG: Record<ExecutionDecisionType, { label: string; cls: string; icon: string }> = {
-  APPROVED:         { label: "Approved",         icon: "✓", cls: "bg-green-600 text-white hover:bg-green-700" },
-  REJECTED:         { label: "Rejected",         icon: "✗", cls: "border border-red-300 text-red-700 hover:bg-red-50" },
+  APPROVED:         { label: "Approve Rebalance", icon: "✓", cls: "bg-green-600 text-white hover:bg-green-700" },
+  REJECTED:         { label: "Reject Recommendation", icon: "✗", cls: "border border-red-300 text-red-700 hover:bg-red-50" },
   MANUAL_OVERRIDE:  { label: "Manual Override",  icon: "✎", cls: "border border-gray-300 text-gray-600 hover:bg-gray-50" },
   PARTIAL_EXECUTION:{ label: "Partial",          icon: "½", cls: "border border-amber-300 text-amber-700 hover:bg-amber-50" },
 };
@@ -1231,7 +1284,7 @@ function DecisionActionPanel({
     setSubmitting(true);
     setError(null);
     try {
-      await recordExecutionDecision({
+      await recordDecisionBySnapshot(snapshotId, {
         portfolio_id: portfolioId,
         recommendation_snapshot_id: snapshotId,
         decision: confirming,
@@ -1241,6 +1294,9 @@ function DecisionActionPanel({
       const ds = await listExecutionDecisions(portfolioId, undefined, 50);
       const match = ds.find((d) => d.recommendation_snapshot_id === snapshotId);
       setExisting(match ?? null);
+      window.dispatchEvent(new CustomEvent("execution-decision-recorded", {
+        detail: { portfolioId, snapshotId, decision: confirming },
+      }));
       setConfirming(null);
       setNotes("");
     } catch {
@@ -1867,7 +1923,7 @@ export default function OptimizerPage() {
             />
           </div>
           <div className="flex-1 min-w-0">
-            <ResultPanel result={result} loading={loadingDetail} profiles={profiles} portfolioId={selectedPortfolioId} />
+            <ResultPanel result={result} loading={loadingDetail} profiles={profiles} portfolioId={portfolioId} />
           </div>
         </div>
       )}

@@ -20,8 +20,16 @@ function pctColor(val: number | null | undefined, invert = false): string {
   return positive ? "text-green-700" : val === 0 ? "text-gray-500" : "text-red-600";
 }
 
+/**
+ * Format a return percentage for display.
+ * Returns "—" for null values.
+ * Returns "Insuff. data" for values outside plausible bounds (< -99% or > 999%).
+ * This prevents corrupted shadow baselines (zero NAV during price outage) from
+ * displaying -100% or extreme numbers to the user.
+ */
 function fmt(val: number | null | undefined, decimals = 2, suffix = "%"): string {
   if (val == null) return "—";
+  if (val <= -99.5 || val > 999) return "Insuff. data";
   const sign = val > 0 ? "+" : "";
   return `${sign}${val.toFixed(decimals)}${suffix}`;
 }
@@ -29,6 +37,18 @@ function fmt(val: number | null | undefined, decimals = 2, suffix = "%"): string
 function fmtAbs(val: number | null | undefined, decimals = 1, suffix = "%"): string {
   if (val == null) return "—";
   return `${val.toFixed(decimals)}${suffix}`;
+}
+
+/** Returns null for values outside plausible return bounds (corruption guard). */
+function safeReturn(val: number | null | undefined): number | null {
+  if (val == null) return null;
+  if (val <= -99.5 || val > 999) return null;
+  return val;
+}
+
+function isInsufficientData(val: number | null | undefined): boolean {
+  if (val == null) return false;
+  return val <= -99.5 || val > 999;
 }
 
 // ── Attribution Card — actual vs shadow returns ────────────────────────────────
@@ -53,6 +73,12 @@ function AttributionCard({
 
   const cur = data?.current;
 
+  // Determine display state
+  const trackingStarted = cur != null;
+  const hasSufficientHistory = cur?.has_sufficient_history !== false;
+  const hasComparisonData =
+    cur?.static_shadow != null || cur?.ai_model_shadow != null;
+
   return (
     <div className="border rounded-lg p-4 bg-white">
       <h3 className="text-sm font-semibold text-gray-700 mb-3">
@@ -63,12 +89,31 @@ function AttributionCard({
       {loading && <div className="text-xs text-gray-400">Loading…</div>}
 
       {!loading && !cur && (
-        <p className="text-xs text-gray-400">
-          No shadow portfolio found. Record an execution decision to start tracking.
-        </p>
+        <div className="space-y-1">
+          <p className="text-xs text-gray-400">
+            No shadow portfolio found. Record an execution decision to start tracking.
+          </p>
+          <p className="text-xs text-gray-300">
+            After recording an APPROVED decision, shadow portfolios are created automatically.
+          </p>
+        </div>
       )}
 
-      {!loading && cur && (
+      {!loading && cur && !hasSufficientHistory && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+            <span className="text-xs text-blue-600 font-medium">Tracking Started</span>
+          </div>
+          <p className="text-xs text-gray-400">
+            Shadow portfolio is active. Performance data will be available after the first
+            daily valuation (17:45 ICT).
+          </p>
+          <p className="text-xs text-gray-300">Snapshot count: {cur.actual.snapshot_count ?? 0}</p>
+        </div>
+      )}
+
+      {!loading && cur && hasSufficientHistory && (
         <>
           {/* 3-column return comparison */}
           <div className="grid grid-cols-3 gap-2 mb-3">
@@ -110,8 +155,17 @@ function AttributionCard({
             )}
           </div>
 
+          {/* No shadow data yet (shadows exist but haven't been priced) */}
+          {!hasComparisonData && (
+            <p className="text-xs text-gray-400 mt-2">
+              Shadow portfolios created — daily valuations begin at 17:45 ICT.
+            </p>
+          )}
+
           {/* Interpretation */}
-          <p className="text-xs text-gray-500 mt-2 leading-relaxed">{cur.interpretation}</p>
+          {cur.interpretation && (
+            <p className="text-xs text-gray-500 mt-2 leading-relaxed">{cur.interpretation}</p>
+          )}
         </>
       )}
     </div>
@@ -127,9 +181,13 @@ function ReturnCell({
   value: number | null;
   dim?: boolean;
 }) {
+  const corrupted = isInsufficientData(value);
+  const safe = safeReturn(value);
   return (
     <div className={`text-center ${dim ? "opacity-40" : ""}`}>
-      <div className={`text-base font-semibold ${pctColor(value)}`}>{fmt(value)}</div>
+      <div className={`text-base font-semibold ${corrupted ? "text-gray-400" : pctColor(safe)}`}>
+        {corrupted ? "—" : fmt(safe)}
+      </div>
       <div className="text-xs text-gray-500 mt-0.5">{label}</div>
     </div>
   );
@@ -144,9 +202,10 @@ function MetricPill({
   value: number | null | undefined;
   tooltip?: string;
 }) {
+  const safe = safeReturn(value);
   return (
     <div title={tooltip} className="flex flex-col cursor-default">
-      <span className={`font-semibold ${pctColor(value)}`}>{fmt(value)}</span>
+      <span className={`font-semibold ${pctColor(safe)}`}>{fmt(safe)}</span>
       <span className="text-gray-400">{label}</span>
     </div>
   );
@@ -178,12 +237,30 @@ function HumanVsAICard({ portfolioId }: { portfolioId: number }) {
       {loading && <div className="text-xs text-gray-400">Loading…</div>}
 
       {!loading && (!summary || summary.total_decisions === 0) && (
-        <p className="text-xs text-gray-400">
-          No execution decisions recorded yet. Use the optimizer and record a decision to begin tracking.
-        </p>
+        <div className="space-y-1">
+          <p className="text-xs text-gray-400">
+            No execution decisions recorded yet.
+          </p>
+          <p className="text-xs text-gray-300">
+            Use the optimizer and record a decision (APPROVED / REJECTED) to begin tracking.
+          </p>
+        </div>
       )}
 
-      {!loading && summary && summary.total_decisions > 0 && (
+      {!loading && summary && summary.total_decisions > 0 && summary.decisions_with_data === 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+            <span className="text-xs text-blue-600 font-medium">Tracking Started</span>
+          </div>
+          <p className="text-xs text-gray-400">
+            {summary.total_decisions} decision{summary.total_decisions !== 1 ? "s" : ""} recorded.
+            Comparison data available after shadow portfolios are priced (17:45 ICT).
+          </p>
+        </div>
+      )}
+
+      {!loading && summary && summary.total_decisions > 0 && summary.decisions_with_data > 0 && (
         <>
           {/* Hit rate gauge */}
           <div className="flex items-center gap-3 mb-3">
@@ -202,18 +279,18 @@ function HumanVsAICard({ portfolioId }: { portfolioId: number }) {
           </div>
 
           {/* Avg delta */}
-          {summary.mean_return_delta != null && (
+          {summary.mean_return_delta != null && !isInsufficientData(summary.mean_return_delta) && (
             <div className="flex gap-4 text-xs border-t pt-2">
               <div>
-                <span className={`font-semibold ${pctColor(summary.mean_return_delta)}`}>
-                  {fmt(summary.mean_return_delta)}
+                <span className={`font-semibold ${pctColor(safeReturn(summary.mean_return_delta))}`}>
+                  {fmt(safeReturn(summary.mean_return_delta))}
                 </span>
                 <span className="text-gray-400 ml-1">avg return delta</span>
               </div>
               {summary.mean_drawdown_delta != null && (
                 <div>
-                  <span className={`font-semibold ${pctColor(summary.mean_drawdown_delta, true)}`}>
-                    {fmt(summary.mean_drawdown_delta)}
+                  <span className={`font-semibold ${pctColor(safeReturn(summary.mean_drawdown_delta), true)}`}>
+                    {fmt(safeReturn(summary.mean_drawdown_delta))}
                   </span>
                   <span className="text-gray-400 ml-1">avg drawdown delta</span>
                 </div>
@@ -276,6 +353,14 @@ function RegimeCard({ portfolioId }: { portfolioId: number }) {
   const regimes = data?.regimes ?? {};
   const hasData = Object.keys(regimes).length > 0;
 
+  const statusMessage: Record<string, string> = {
+    no_snapshot_data: "No portfolio snapshots in the evaluation window.",
+    no_regime_data: "No market regime data found. Run the optimizer to generate regime snapshots.",
+    no_regime_overlap:
+      "Portfolio snapshots exist but no regime data overlaps — " +
+      "regime snapshots may not have been generated yet.",
+  };
+
   return (
     <div className="border rounded-lg p-4 bg-white">
       <h3 className="text-sm font-semibold text-gray-700 mb-3">
@@ -287,9 +372,7 @@ function RegimeCard({ portfolioId }: { portfolioId: number }) {
 
       {!loading && !hasData && (
         <p className="text-xs text-gray-400">
-          {data?.status === "no_snapshot_data"
-            ? "No portfolio snapshots found in the evaluation window."
-            : "No regime data overlaps with portfolio snapshots yet."}
+          {data?.status ? (statusMessage[data.status] ?? "No regime data available.") : "No regime data available."}
         </p>
       )}
 
@@ -352,6 +435,13 @@ function CalibrationCard({ portfolioId }: { portfolioId: number }) {
   const signalAcc = data?.signal_accuracy;
   const regimeStab = data?.regime_confidence_calibration;
 
+  // Determine whether we have meaningful signal data
+  const totalSignals =
+    signalAcc && typeof signalAcc === "object"
+      ? (signalAcc as { total_signals?: number }).total_signals ?? 0
+      : 0;
+  const hasSignalData = totalSignals > 0 && data?.consensus_strength_calibration != null;
+
   return (
     <div className="border rounded-lg p-4 bg-white">
       <h3 className="text-sm font-semibold text-gray-700 mb-3">
@@ -362,10 +452,25 @@ function CalibrationCard({ portfolioId }: { portfolioId: number }) {
       {loading && <div className="text-xs text-gray-400">Loading…</div>}
 
       {!loading && !data && (
-        <p className="text-xs text-gray-400">No calibration data available yet.</p>
+        <p className="text-xs text-gray-400">
+          No calibration data available yet. Run the optimizer and record decisions to accumulate signal history.
+        </p>
       )}
 
-      {!loading && data && (
+      {!loading && data && !hasSignalData && regimeStab == null && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+            <span className="text-xs text-blue-600 font-medium">Accumulating History</span>
+          </div>
+          <p className="text-xs text-gray-400">
+            Signal calibration requires at least 14 days of signal history with known entry prices.
+            Keep using the optimizer — accuracy data will appear here over time.
+          </p>
+        </div>
+      )}
+
+      {!loading && data && (hasSignalData || regimeStab != null) && (
         <>
           <div className="grid grid-cols-2 gap-3 mb-3">
             <div>
@@ -375,7 +480,9 @@ function CalibrationCard({ portfolioId }: { portfolioId: number }) {
                   ? fmtAbs(data.consensus_strength_calibration)
                   : "—"}
               </div>
-              <div className="text-xs text-gray-400">directional hit rate</div>
+              <div className="text-xs text-gray-400">
+                {hasSignalData ? "directional hit rate" : "insufficient data"}
+              </div>
             </div>
             <div>
               <div className="text-xs text-gray-500 mb-0.5">Regime Stability</div>
@@ -387,7 +494,7 @@ function CalibrationCard({ portfolioId }: { portfolioId: number }) {
           </div>
 
           {/* Confidence bucket breakdown */}
-          {signalAcc && typeof signalAcc === "object" && (signalAcc as { buckets?: unknown }).buckets && (
+          {signalAcc && typeof signalAcc === "object" && (signalAcc as { buckets?: unknown }).buckets && hasSignalData && (
             <div className="border-t pt-2 mt-1">
               <div className="text-xs text-gray-500 mb-1">By Confidence Bucket</div>
               <div className="space-y-1">

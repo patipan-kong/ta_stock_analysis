@@ -11,6 +11,7 @@ const NAV_MAIN = [
   { label: "Portfolio",   href: "/portfolio" },
   { label: "Performance", href: "/performance" },
   { label: "Analytics",   href: "/analytics" },
+  { label: "Portfolio Intelligence", href: "/portfolio-intelligence" },
   { label: "Watchlist",   href: "/watchlist" },
   { label: "Optimizer",   href: "/optimizer" },
   { label: "📚 Guide",    href: "/system-guide" },

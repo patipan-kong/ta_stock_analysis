@@ -400,7 +400,76 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 ---
 
 ## CURRENT ARCHITECTURE STATE
-_Last updated: 2026-05-25 (Phase 3B.7C). Update this section at the start of each new session._
+_Last updated: 2026-05-25 (Phase 3B.9 + accounting hotfix). Update this section at the start of each new session._
+
+### Phase 3B.9 Hotfix — Backdated Import Detection & Quantity Correction ✅ SHIPPED 2026-05-25
+
+Fixes a critical bug in the Phase 3B.9 snapshot engine where `INITIAL_POSITION` transactions recorded with a historical `transaction_date` were invisible to the non-performance stripping logic.
+
+**Root cause:** The snapshot window filter used `Transaction.transaction_date` for detecting INITIAL_POSITION imports. When a user calls `POST /portfolios/{id}/transactions/initial-position` with a backdated `transaction_date` (e.g. the original purchase date years ago), the filter `transaction_date >= prev_day_end` fails — the import silently escapes stripping and appears as investment gain.
+
+**Fix:** All non-performance transaction queries in `portfolio_snapshots.py` now filter by `Transaction.created_at` (physical DB insert time) instead of `transaction_date`. `created_at` is always `datetime.utcnow()` at insert time regardless of what `transaction_date` the user supplied.
+
+**Additional changes:**
+- New `QUANTITY_CORRECTION` transaction type for manual share-count adjustments to existing positions.
+- `PortfolioSnapshot.manual_adjustment_value` (new nullable Float column) — stores market value of QUANTITY_CORRECTION events in the period. Subtracted from the formula alongside `imported_asset_value`.
+- `execute_quantity_correction()` in `services/portfolio_transactions.py` — adjusts `PortfolioItem.shares` (weighted avg cost on additions) and writes a `QUANTITY_CORRECTION` transaction.
+- `POST /portfolios/{id}/transactions/quantity-correction` endpoint.
+- Alembic migration `s3t4u5v6w7x8` + `migrate_legacy_data()` patch for SQLite.
+- Frontend: "Portfolio Correction: Imported Holdings" → **"Imported Assets"** (purple chip); new **"Quantity Correction"** (orange chip); **"Investment Gain"** chip now shows amount + percentage side by side. History table External Events column shows "adj" entries in orange.
+- 2 new tests: `test_backdated_import_still_excluded` (proves `created_at` fix), `test_quantity_correction_excluded`.
+
+**Formula (unchanged structure, new `manual_adjustment_value` term):**
+```
+pure_market_gain = today_nav - prev_nav - net_external_cash_flow - imported_asset_value - manual_adjustment_value
+```
+
+### Phase 3B.9 — Position Import Accounting Fix ✅ SHIPPED 2026-05-25
+
+Eliminates the "position import = trading gain" accounting distortion. Any manually imported holding (via `INITIAL_POSITION` or `POST /portfolios/{id}/holdings`) is now classified as a **NON-PERFORMANCE CAPITAL INFLOW** and excluded from all return, alpha, Sharpe, and attribution calculations.
+
+**Root cause:** The previous snapshot engine only stripped `DEPOSIT`/`WITHDRAW` from the NAV delta. `INITIAL_POSITION` injected equity into the portfolio without a corresponding cash outflow — the snapshot treated the full market value as market gain.
+
+**What was built:**
+
+- **`PortfolioSnapshot.imported_asset_value`** (new nullable Float column) — market value of all `INITIAL_POSITION` transactions that occurred between the previous snapshot and today. Stored at **current market price** (not avg_cost) so that unrealised appreciation that pre-dated the import is also excluded.
+
+- **Alembic migration `r2s3t4u5v6w7`** — adds `imported_asset_value` to `portfolio_snapshots`. SQLite patched via `migrate_legacy_data()`. Historical rows have NULL (engine defaults to 0.0).
+
+- **`services/portfolio_snapshots.py` rewrite:**
+  - `_CASH_INFLOW_TYPES = {"DEPOSIT", "INITIAL_CASH"}` — `INITIAL_CASH` (onboarding) now included in `net_external_cash_flow`, fixing a second unreported distortion.
+  - `_ASSET_IMPORT_TYPES = {"INITIAL_POSITION"}` — new query computes `imported_asset_value` as `∑ shares × live_price` for all import transactions in the window.
+  - **Corrected formula:** `pure_market_gain = today_nav − prev_nav − net_external_cash_flow − imported_asset_value`
+  - `imported_asset_value` stored in snapshot row and returned in API response.
+
+- **`main.py` — `add_holding` fixed:** was directly inserting a `PortfolioItem` with no transaction record. Now calls `execute_initial_position()`, ensuring every holding added via the UI leaves an `INITIAL_POSITION` trace that the snapshot engine can classify correctly.
+
+- **`frontend/lib/api.ts`:** `PortfolioSnapshotRow.imported_asset_value: number | null` added.
+
+- **`frontend/app/performance/page.tsx`:**
+  - Disclosure banner now triggers on `imported_asset_value` as well as `net_external_cash_flow`.
+  - Shows **"Portfolio Correction"** purple label with amount when position imports occurred.
+  - History table "Cash Flow" column renamed to "External Events"; import rows appear as `+X import` in purple alongside `+X cash` in blue.
+
+- **`backend/tests/test_position_import_accounting.py`** — 6 green tests:
+  1. `test_import_does_not_create_return` — 1000-share import → 0% return
+  2. `test_initial_cash_excluded_from_return` — onboarding cash → 0% return
+  3. `test_deposit_regression_still_excluded` — DEPOSIT regression guard
+  4. `test_mixed_import_and_market_gain` — import + real market gain: only gain counted
+  5. `test_quantity_correction_upward_excluded` — upward quantity correction → 0% return
+  6. `test_buy_transaction_is_performance_event` — BUY + price appreciation correctly reflected
+
+**Performance formula before/after:**
+```
+# Before (bugged):
+investment_return_pct = (today_nav - prev_nav - net_ecf) / prev_nav
+
+# After (correct):
+investment_return_pct = (today_nav - prev_nav - net_external_cash_flow - imported_asset_value) / prev_nav
+#  where net_external_cash_flow now includes INITIAL_CASH (was missing before)
+```
+
+**Shadow portfolio & attribution engine are unaffected:** shadow portfolios are paper portfolios driven purely by market movement — they never receive `INITIAL_POSITION` events. Attribution metrics read `investment_return_pct` from actual snapshots which now correctly excludes imports.
 
 ### Phase 3B.7C — Execution Lifecycle Tracking & Shadow Portfolio Engine ✅ SHIPPED 2026-05-25
 

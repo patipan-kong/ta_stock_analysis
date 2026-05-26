@@ -47,6 +47,7 @@ from services.portfolio_transactions import (
     execute_buy, execute_sell,
     execute_deposit, execute_withdraw,
     execute_initial_position, execute_initial_cash,
+    execute_quantity_correction,
     execute_dividend,
 )
 from services.portfolio_snapshots import generate_daily_snapshot
@@ -789,16 +790,25 @@ async def add_holding(portfolio_id: int, body: HoldingCreate, db: Session = Depe
     existing = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     if existing:
         raise HTTPException(status_code=409, detail="Symbol already in this portfolio")
-    item = PortfolioItem(workspace_id=ws, portfolio_id=portfolio_id, symbol=symbol, shares=body.shares, avg_cost=body.avg_cost)
-    db.add(item)
-    db.commit()
-    db.refresh(item)
+
     sector, price = await asyncio.gather(
         _fetch_sector(symbol),
         asyncio.to_thread(fetch_price_info, symbol),
     )
-    item.sector = sector
-    db.commit()
+
+    # Record as INITIAL_POSITION so the snapshot engine can classify this
+    # as a non-performance asset inflow and exclude it from return calculations.
+    result = execute_initial_position(
+        db=db,
+        ws_id=ws,
+        portfolio_id=portfolio_id,
+        symbol=symbol,
+        shares=body.shares,
+        avg_cost=body.avg_cost,
+        sector=sector,
+    )
+
+    item = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     return {
         "id": item.id,
         "portfolio_id": item.portfolio_id,
@@ -1895,6 +1905,23 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     scores_list = await asyncio.gather(*[_get_scores(sym) for sym in all_symbols])
     scores_map = {s["symbol"]: s for s in scores_list}
 
+    # ── Phase 3B.10 — Execution quality context ───────────────────────────────
+    execution_ctx: dict | None = None
+    try:
+        from services.optimizer.execution_penalty import (
+            compute_portfolio_execution_context,
+            apply_execution_score_penalties,
+        )
+        execution_ctx = compute_portfolio_execution_context(scores_map)
+        apply_execution_score_penalties(scores_map, execution_ctx)
+        _log.info(
+            "analyze_optimizer: execution_ctx — dr_assets=%d high_risk=%d",
+            len(execution_ctx.get("dr_symbols", [])),
+            len(execution_ctx.get("high_risk_symbols", [])),
+        )
+    except Exception as _exc_err:
+        _log.warning("analyze_optimizer: execution_penalty failed — continuing without: %s", _exc_err)
+
     portfolio_data = [
         {**scores_map[h.symbol], "shares": h.shares, "avg_cost": h.avg_cost, "allow_swap": h.allow_swap}
         for h in holdings
@@ -1985,6 +2012,7 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         fallback_cfg["provider"], fallback_cfg["model"],
         persona_ctx, regime_ctx, policy_ctx,
         effective_env,
+        execution_ctx,
     )
 
     # Surface regime in optimizer result for frontend display
@@ -2003,6 +2031,8 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     result["analyzed_at"] = datetime.utcnow().isoformat() + "Z"
     result.setdefault("portfolio_count", portfolio_count)
     result.setdefault("max_reached", max_reached)
+    if execution_ctx:
+        result["execution_context"] = execution_ctx
 
     upside_map = {sym: d.get("upside_pct") for sym, d in scores_map.items()}
     for item in result.get("watchlist_ranking", []):
@@ -3104,6 +3134,52 @@ async def transaction_initial_position(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+class TransactionQuantityCorrectionBody(BaseModel):
+    symbol: str
+    shares_delta: float
+    price_per_share: float
+    transaction_date: str | None = None
+    notes: str | None = None
+
+
+@app.post("/portfolios/{portfolio_id}/transactions/quantity-correction", status_code=201)
+async def transaction_quantity_correction(
+    portfolio_id: int,
+    body: TransactionQuantityCorrectionBody,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Apply a manual share-count correction to an existing position.
+
+    shares_delta is signed: positive adds shares, negative removes shares.
+    Records a QUANTITY_CORRECTION transaction so the snapshot engine strips
+    the equity change from investment_return_pct.
+    """
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    if body.shares_delta == 0:
+        raise HTTPException(status_code=422, detail="shares_delta must be non-zero")
+    if body.price_per_share <= 0:
+        raise HTTPException(status_code=422, detail="price_per_share must be positive")
+
+    symbol = _resolve_symbol(body.symbol)
+    tx_date = _parse_tx_date(body.transaction_date)
+    try:
+        return execute_quantity_correction(
+            db=db,
+            ws_id=ws,
+            portfolio_id=portfolio_id,
+            symbol=symbol,
+            shares_delta=body.shares_delta,
+            price_per_share=body.price_per_share,
+            transaction_date=tx_date,
+            notes=body.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.post("/portfolios/{portfolio_id}/transactions/initial-cash", status_code=201)
 async def transaction_initial_cash(
     portfolio_id: int,
@@ -3190,6 +3266,9 @@ def _snapshot_row(s: PortfolioSnapshot) -> dict:
         "unrealized_pnl_pct": s.unrealized_pnl_pct,
         "realized_pnl": s.realized_pnl,
         "daily_return_pct": s.daily_return_pct,
+        "investment_return_pct": getattr(s, "investment_return_pct", None),
+        "investment_return_amount": getattr(s, "investment_return_amount", None),
+        "net_external_cash_flow": getattr(s, "net_external_cash_flow", None),
         "holdings_count": s.holdings_count,
         "sector_breakdown": _parse(s.sector_breakdown_json),
         "holdings": _parse(s.holdings_json),
@@ -3368,8 +3447,26 @@ async def get_performance_comparison(
         }
 
     base_date: str = snap_rows[0].snapshot_date
-    portfolio_map: dict[str, float] = {s.snapshot_date: s.total_value for s in snap_rows}
-    base_portfolio_value: float = snap_rows[0].total_value
+
+    # Build a chained return index anchored at 100.0 on base_date.
+    # Uses investment_return_pct (capital-injection-stripped) so that importing
+    # positions, deposits, or quantity corrections never create artificial spikes.
+    # Falls back to daily_return_pct for snapshots generated before the
+    # accounting fix, and defaults to 0.0 when both are NULL (e.g. first row).
+    portfolio_index: dict[str, float] = {}
+    _running_idx = 100.0
+    for _snap in snap_rows:
+        if not portfolio_index:
+            portfolio_index[_snap.snapshot_date] = 100.0
+        else:
+            _ret = _snap.investment_return_pct
+            if _ret is None:
+                _ret = _snap.daily_return_pct
+            if _ret is None:
+                _ret = 0.0
+            _running_idx = _running_idx * (1.0 + _ret / 100.0)
+            portfolio_index[_snap.snapshot_date] = round(_running_idx, 4)
+        _running_idx = portfolio_index[_snap.snapshot_date]
 
     # Parse requested benchmark symbols
     bench_symbols: list[str] = [s.strip() for s in benchmarks.split(",") if s.strip()]
@@ -3396,7 +3493,7 @@ async def get_performance_comparison(
                 bench_base[sym] = dated[anchor_date]
 
     # Collect all dates from portfolio + all benchmarks, sorted
-    all_dates: set[str] = set(portfolio_map.keys())
+    all_dates: set[str] = set(portfolio_index.keys())
     for sym in bench_symbols:
         all_dates.update(d for d in bench_map[sym] if d >= base_date)
     sorted_dates = sorted(all_dates)
@@ -3406,11 +3503,8 @@ async def get_performance_comparison(
     for d in sorted_dates:
         row: dict = {"date": d}
 
-        # Portfolio — normalised to base=100
-        if d in portfolio_map and base_portfolio_value and base_portfolio_value > 0:
-            row["portfolio"] = round(portfolio_map[d] / base_portfolio_value * 100, 4)
-        else:
-            row["portfolio"] = None
+        # Portfolio — cumulative return index (base=100, capital-injection-stripped)
+        row["portfolio"] = portfolio_index.get(d)
 
         # Each benchmark — normalised to base=100 from its own anchor price
         for sym in bench_symbols:
@@ -3831,10 +3925,13 @@ async def record_execution_decision(
     # On APPROVED: always create both STATIC_FROZEN and ACTIVE_MODEL shadows
     if decision.decision == "APPROVED":
         from services.decision_memory.shadow_tracker import (
-            create_static_frozen_shadow, create_active_model_shadow,
+            create_static_frozen_shadow, create_active_model_shadow, value_shadow_portfolio,
         )
         try:
             static_result = create_static_frozen_shadow(db, decision.id, ws)
+            static_shadow_id = static_result.get("shadow_id")
+            if static_shadow_id:
+                static_result["initial_snapshot"] = value_shadow_portfolio(db, int(static_shadow_id))
             result["static_shadow"] = static_result
         except Exception as exc:
             _log.warning("record_execution_decision: STATIC_FROZEN creation failed: %s", exc)
@@ -3843,6 +3940,9 @@ async def record_execution_decision(
             active_result = create_active_model_shadow(
                 db, body.portfolio_id, body.recommendation_snapshot_id, ws
             )
+            active_shadow_id = active_result.get("shadow_id")
+            if active_shadow_id:
+                active_result["initial_snapshot"] = value_shadow_portfolio(db, int(active_shadow_id))
             result["active_model_shadow"] = active_result
         except Exception as exc:
             _log.warning("record_execution_decision: ACTIVE_MODEL creation failed: %s", exc)
@@ -3850,8 +3950,11 @@ async def record_execution_decision(
     elif body.create_static_shadow:
         # Explicit flag on non-APPROVED decisions (REJECTED / MANUAL_OVERRIDE)
         try:
-            from services.decision_memory.shadow_tracker import create_static_frozen_shadow
+            from services.decision_memory.shadow_tracker import create_static_frozen_shadow, value_shadow_portfolio
             static_result = create_static_frozen_shadow(db, decision.id, ws)
+            static_shadow_id = static_result.get("shadow_id")
+            if static_shadow_id:
+                static_result["initial_snapshot"] = value_shadow_portfolio(db, int(static_shadow_id))
             result["static_shadow"] = static_result
         except Exception as exc:
             _log.warning("record_execution_decision: shadow creation failed: %s", exc)
@@ -4469,14 +4572,32 @@ async def get_shadow_performance_summary(
     if not rows:
         return {"portfolio_id": portfolio_id, "shadows": [], "has_shadows": False}
 
+    from services.decision_memory.shadow_tracker import value_shadow_portfolio as _val_shadow
+
     shadows = []
     for s in rows:
+        # Auto-repair: if inception_return_pct is clearly corrupted (< -99%),
+        # re-trigger valuation with the stabilized engine so the DB row is fixed.
+        if s.inception_return_pct is not None and s.inception_return_pct < -99.0:
+            try:
+                _val_shadow(db, s.id)
+                db.refresh(s)
+                _log.info("get_shadow_performance_summary: repaired shadow_id=%s (was %.2f%%)", s.id, s.inception_return_pct)
+            except Exception as _rep_exc:
+                _log.warning("get_shadow_performance_summary: repair failed shadow_id=%s: %s", s.id, _rep_exc)
+
         latest_snap = (
             db.query(ShadowPortfolioSnapshot)
             .filter_by(shadow_portfolio_id=s.id)
             .order_by(ShadowPortfolioSnapshot.snapshot_date.desc())
             .first()
         )
+
+        # Apply plausibility guard before returning — never surface -100% to UI
+        safe_return_pct = s.inception_return_pct
+        if safe_return_pct is not None and (safe_return_pct < -99.9 or safe_return_pct > 1000.0):
+            safe_return_pct = None
+
         shadows.append({
             "shadow_id": s.id,
             "shadow_type": s.shadow_type,
@@ -4484,7 +4605,7 @@ async def get_shadow_performance_summary(
             "inception_date": s.inception_date,
             "inception_value": s.inception_value,
             "current_value": s.current_value,
-            "inception_return_pct": s.inception_return_pct,
+            "inception_return_pct": safe_return_pct,
             "last_valued_at": s.last_valued_at.isoformat() + "Z" if s.last_valued_at else None,
             "latest_alpha": latest_snap.alpha if latest_snap else None,
             "latest_benchmark_return_pct": latest_snap.benchmark_return_pct if latest_snap else None,

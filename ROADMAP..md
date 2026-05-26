@@ -1,5 +1,18 @@
-Recommended Roadmap จริง ๆ
+Recommended Roadmap 
 Phase 1 — Production Foundation
+1A Basic 
+✅ Portfolio
+✅ Watchlist
+✅ AnalysisCache
+✅ AnalysisHistory
+✅ Settings
+1B Advance
+✅ 3 Layer Optimizer
+✅ Deterministic Scoring
+✅ Latency & Cost Tracking
+✅ Confidence Capping
+✅ Chart Indicators
+1C Server Deploy
 ✅ Deploy
 ✅ PostgreSQL
 ✅ VPS
@@ -14,13 +27,13 @@ Phase 2.5
 
 Phase 3 — Investment Intelligence (Institutional Intelligence Layer)
 Phase 3A — Core Historical Analytics
-Equity curve
-Drawdown
-Sharpe
-Alpha/Beta
-Signal analytics
-Allocation analytics
-Benchmark comparison
+✅ Equity curve
+✅ Drawdown
+✅ Sharpe
+✅ Alpha/Beta
+✅ Signal analytics
+✅ Allocation analytics
+✅ Benchmark comparison
 Phase 3B — Investment Intelligence
 3B.1 — Factor Exposure Analysis ⭐ PRIORITY
 3B.2 — Strategy Persona System 
@@ -51,6 +64,8 @@ routing feedback memory
 model trust score
 agent scoring history
 persona performance memory
+Phase 3B.8 — Cash-Flow-Adjusted Return Accounting
+Phase 3B.9 — Position Import Accounting Fix ✅ SHIPPED 2026-05-25
 
 Phase 3C — Advanced Historical Analytics
 ✅ Dynamic routing => ตอนนี้: DONE ระดับสูงแล้ว
@@ -123,3 +138,14 @@ Phase 5 — Multi-user SaaS Platform engineering (Platform / SaaS Layer)
 ✅ usage reports
 
 
+## Run Instructions
+```bash
+# Backend (Windows)
+g:\work\ta\stock-analysis\.venv\Scripts\python.exe -m uvicorn main:app --reload --port 8000
+
+# Frontend
+cd frontend && npm run dev
+
+# DB migrations (PostgreSQL)
+cd backend && alembic upgrade head
+```

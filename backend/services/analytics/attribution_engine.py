@@ -1,9 +1,29 @@
-"""attribution_engine.py — Phase 3B.7B
+"""attribution_engine.py — Phase 3B.7B (stabilized, Phase 3B.9S)
 
 Portfolio attribution analytics: actual vs shadow portfolio comparison.
 
 Computes deterministically from stored PortfolioSnapshot and
 ShadowPortfolioSnapshot rows — no yfinance calls.
+
+Sanity filters (Phase 3B.9S)
+-----------------------------
+All snapshot series are pre-filtered to remove zero/negative NAV values
+before any arithmetic.  This prevents:
+  - Fake -100% returns from shadows with missing price data
+  - Zero-divide in drawdown calculation
+  - Infinite or NaN returns from corrupted inception baselines
+
+_safe_return() clips results to [-99.9%, +1000%] — values outside this
+range are treated as corrupted data (returned as None with a warning log).
+
+Cash-flow-adjusted return accounting
+-------------------------------------
+PortfolioSnapshot.investment_return_pct stores the cash-flow-adjusted daily
+return (deposits / withdrawals stripped out).  Actual portfolio total return
+uses TWR chaining over investment_return_pct when available.
+
+Shadow portfolio snapshots have no external cash flows (paper portfolios),
+so their daily_return_pct is clean and used for TWR chaining directly.
 
 Public API:
     compute_max_drawdown(values)           → float (% as positive number)
@@ -21,19 +41,27 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
+# Plausibility bounds for return percentages.
+# Values outside these are almost certainly data corruption, not real returns.
+_MIN_PLAUSIBLE_RETURN = -99.9
+_MAX_PLAUSIBLE_RETURN = 1000.0
+
 
 # ── Math utilities ─────────────────────────────────────────────────────────────
 
 def compute_max_drawdown(values: list[float]) -> float:
     """Return the maximum peak-to-trough drawdown as a positive percentage.
 
-    Returns 0.0 when fewer than 2 values or all values are zero.
+    Filters out zero and negative values before computation — they indicate
+    missing or corrupted NAV data and must not create artificial drawdowns.
+    Returns 0.0 when fewer than 2 valid values remain.
     """
-    if len(values) < 2:
+    valid = [v for v in values if v and v > 0]
+    if len(valid) < 2:
         return 0.0
-    peak = values[0]
+    peak = valid[0]
     max_dd = 0.0
-    for v in values:
+    for v in valid:
         if v > peak:
             peak = v
         if peak > 0:
@@ -43,11 +71,56 @@ def compute_max_drawdown(values: list[float]) -> float:
     return round(max_dd * 100, 4)
 
 
-def _compute_return_pct(values: list[float]) -> float | None:
-    """Compute total return % from first to last value in the series."""
-    if len(values) < 2 or values[0] == 0:
+def _safe_return(ret: float | None) -> float | None:
+    """Clamp a return percentage to plausible bounds.
+
+    Returns None for values clearly outside plausible range, which prevents
+    corrupted baselines (e.g. zero NAV from missing prices) from displaying
+    fake -100% or +10000% returns in the UI.
+    """
+    if ret is None:
         return None
-    return round((values[-1] - values[0]) / values[0] * 100, 4)
+    if ret < _MIN_PLAUSIBLE_RETURN or ret > _MAX_PLAUSIBLE_RETURN:
+        logger.warning(
+            "[ATTRIBUTION] Return %.2f%% outside plausible bounds [%.1f%%, %.1f%%] — suppressed",
+            ret, _MIN_PLAUSIBLE_RETURN, _MAX_PLAUSIBLE_RETURN,
+        )
+        return None
+    return ret
+
+
+def _compute_return_pct(values: list[float]) -> float | None:
+    """Compute total return % from first to last NAV value.
+
+    Filters invalid (zero/negative) values. Returns None if fewer than
+    2 valid values remain or if the baseline is 0.
+
+    NOTE: This is contaminated by external cash flows when PortfolioSnapshot
+    rows do not have investment_return_pct populated (pre-Phase-3B.8 history).
+    Prefer _compute_twr() for actual portfolios.
+    """
+    valid = [v for v in values if v and v > 0]
+    if len(valid) < 2 or valid[0] == 0:
+        return None
+    return _safe_return(round((valid[-1] - valid[0]) / valid[0] * 100, 4))
+
+
+def _compute_twr(adjusted_returns: list[float]) -> float | None:
+    """Time-Weighted Return from cash-flow-adjusted daily return percentages.
+
+    Chains sub-period returns multiplicatively — correct even when external
+    cash flows (deposits / withdrawals) occurred during the window.
+
+        TWR = ∏(1 + r_i / 100) - 1  (expressed as %)
+
+    Returns None when the list is empty.
+    """
+    if not adjusted_returns:
+        return None
+    result = 1.0
+    for r in adjusted_returns:
+        result *= (1.0 + r / 100.0)
+    return _safe_return(round((result - 1.0) * 100.0, 4))
 
 
 def _compute_daily_volatility(daily_returns: list[float]) -> float | None:
@@ -103,6 +176,67 @@ def _find_shadow(db: Session, portfolio_id: int, shadow_type: str) -> Any | None
     )
 
 
+def _actual_portfolio_metrics(
+    snaps: list[Any],
+) -> tuple[float | None, float, float | None]:
+    """Compute (total_return_pct, max_drawdown_pct, annualized_vol) for actual portfolio.
+
+    Filters snapshots with zero/negative total_value before any arithmetic.
+    Uses cash-flow-adjusted investment_return_pct for TWR when available.
+    Falls back to raw daily_return_pct for volatility (historical rows).
+    Falls back to first/last NAV for total return when no adjusted returns exist.
+    """
+    # Filter out corrupted / missing NAV rows
+    valid_snaps = [s for s in snaps if s.total_value and s.total_value > 0]
+    if not valid_snaps:
+        return None, 0.0, None
+
+    values = [s.total_value for s in valid_snaps]
+
+    # Cash-flow-adjusted daily returns (populated since Phase 3B.8)
+    adjusted = [
+        s.investment_return_pct
+        for s in valid_snaps
+        if s.investment_return_pct is not None
+    ]
+    # Raw daily returns (always present after first snapshot)
+    raw_daily = [
+        s.daily_return_pct
+        for s in valid_snaps
+        if s.daily_return_pct is not None
+    ]
+
+    total_return = _compute_twr(adjusted) if adjusted else _compute_return_pct(values)
+    volatility = _compute_daily_volatility(adjusted if adjusted else raw_daily)
+    max_dd = compute_max_drawdown(values)
+
+    return total_return, max_dd, volatility
+
+
+def _shadow_portfolio_metrics(
+    snaps: list[Any],
+) -> tuple[float | None, float, float | None]:
+    """Compute (total_return_pct, max_drawdown_pct, annualized_vol) for a shadow portfolio.
+
+    Filters snapshots with zero/negative total_value before any arithmetic.
+    Shadow portfolios have no external cash flows (paper-only portfolios), so
+    daily_return_pct is already cash-flow-clean and used for TWR chaining.
+    """
+    # Filter out corrupted / missing NAV rows
+    valid_snaps = [s for s in snaps if s.total_value and s.total_value > 0]
+    if not valid_snaps:
+        return None, 0.0, None
+
+    values = [s.total_value for s in valid_snaps]
+    daily = [s.daily_return_pct for s in valid_snaps if s.daily_return_pct is not None]
+
+    total_return = _compute_twr(daily) if daily else _compute_return_pct(values)
+    volatility = _compute_daily_volatility(daily)
+    max_dd = compute_max_drawdown(values)
+
+    return total_return, max_dd, volatility
+
+
 # ── Core attribution computation ───────────────────────────────────────────────
 
 def compute_portfolio_attribution(
@@ -112,14 +246,14 @@ def compute_portfolio_attribution(
 ) -> dict[str, Any]:
     """Compute human-vs-AI attribution for a portfolio over the evaluation window.
 
-    Fetches actual PortfolioSnapshot rows and any active shadow portfolios,
-    then computes returns, drawdowns, regret score, and avoided drawdown.
+    All return values pass through _safe_return() before use.  Zero-NAV and
+    negative-NAV snapshot rows are excluded from metric computation.  This
+    prevents corrupted shadow baselines from generating -100% returns or
+    infinite drawdowns in the attribution output.
 
-    All arithmetic is deterministic: no yfinance calls, no AI inference.
-    Persists the result to AttributionMetric (idempotent on portfolio_id +
-    period_start + period_end).
-
-    Returns a fully-typed dict suitable for the API response.
+    Cash-flow correctness:
+        Actual portfolio uses TWR from investment_return_pct (adjusted).
+        Shadow portfolios use TWR from daily_return_pct (already clean).
     """
     from models.database import AttributionMetric, Workspace
 
@@ -131,79 +265,67 @@ def compute_portfolio_attribution(
 
     # ── Actual portfolio ───────────────────────────────────────────────────────
     actual_snaps = _get_actual_snapshots(db, portfolio_id, cutoff)
-    actual_values = [s.total_value for s in actual_snaps]
-    actual_daily = [
-        s.daily_return_pct for s in actual_snaps if s.daily_return_pct is not None
-    ]
-    actual_return = _compute_return_pct(actual_values)
-    actual_drawdown = compute_max_drawdown(actual_values)
-    actual_volatility = _compute_daily_volatility(actual_daily)
+    actual_return_raw, actual_drawdown, actual_volatility = _actual_portfolio_metrics(actual_snaps)
+    actual_return = _safe_return(actual_return_raw)
 
     # ── STATIC_FROZEN shadow ───────────────────────────────────────────────────
     static_shadow = _find_shadow(db, portfolio_id, "STATIC_FROZEN")
-    static_return = None
-    static_drawdown = None
-    static_volatility = None
-    static_shadow_id = None
+    static_return: float | None = None
+    static_drawdown: float | None = None
+    static_volatility: float | None = None
+    static_shadow_id: int | None = None
 
     if static_shadow:
         static_shadow_id = static_shadow.id
         static_snaps = _get_shadow_snapshots(db, static_shadow.id, cutoff)
-        static_values = [s.total_value for s in static_snaps]
-        static_daily = [
-            s.daily_return_pct for s in static_snaps if s.daily_return_pct is not None
-        ]
-        static_return = _compute_return_pct(static_values)
-        static_drawdown = compute_max_drawdown(static_values)
-        static_volatility = _compute_daily_volatility(static_daily)
+        sr_raw, sd, sv = _shadow_portfolio_metrics(static_snaps)
+        static_return = _safe_return(sr_raw)
+        static_drawdown = sd
+        static_volatility = sv
 
     # ── ACTIVE_MODEL shadow ────────────────────────────────────────────────────
     ai_shadow = _find_shadow(db, portfolio_id, "ACTIVE_MODEL")
-    ai_model_return = None
-    ai_model_drawdown = None
-    ai_model_volatility = None
-    shadow_id_for_record = None
+    ai_model_return: float | None = None
+    ai_model_drawdown: float | None = None
+    ai_model_volatility: float | None = None
+    shadow_id_for_record: int | None = None
 
     if ai_shadow:
         shadow_id_for_record = ai_shadow.id
         ai_snaps = _get_shadow_snapshots(db, ai_shadow.id, cutoff)
-        ai_values = [s.total_value for s in ai_snaps]
-        ai_daily = [
-            s.daily_return_pct for s in ai_snaps if s.daily_return_pct is not None
-        ]
-        ai_model_return = _compute_return_pct(ai_values)
-        ai_model_drawdown = compute_max_drawdown(ai_values)
-        ai_model_volatility = _compute_daily_volatility(ai_daily)
+        air_raw, aid, aiv = _shadow_portfolio_metrics(ai_snaps)
+        ai_model_return = _safe_return(air_raw)
+        ai_model_drawdown = aid
+        ai_model_volatility = aiv
 
     shadow_id_for_record = shadow_id_for_record or static_shadow_id
 
     # ── Derived metrics ────────────────────────────────────────────────────────
-    # avoided_drawdown: static_drawdown - actual_drawdown
-    #   positive → the AI recommendation had more drawdown (human held steadier)
-    #   negative → AI recommendation would have reduced drawdown
     avoided_drawdown: float | None = None
     if actual_drawdown is not None and static_drawdown is not None:
         avoided_drawdown = round(static_drawdown - actual_drawdown, 4)
 
-    # regret_score: ai_model_return - actual_return
-    #   positive → AI model portfolio would have done better (human left gains on table)
-    #   negative → human execution outperformed AI recommendation
     regret_score: float | None = None
     ai_outperformed: bool | None = None
     if ai_model_return is not None and actual_return is not None:
         regret_score = round(ai_model_return - actual_return, 4)
         ai_outperformed = regret_score > 0
 
+    # Determine data quality for frontend display guidance
+    valid_actual_count = len([s for s in actual_snaps if s.total_value and s.total_value > 0])
+    has_sufficient_history = valid_actual_count >= 2
+
     result: dict[str, Any] = {
         "portfolio_id": portfolio_id,
         "evaluation_window_days": evaluation_window_days,
         "period_start": cutoff,
         "period_end": today,
+        "has_sufficient_history": has_sufficient_history,
         "actual": {
             "return_pct": actual_return,
             "max_drawdown_pct": actual_drawdown,
             "annualized_volatility": actual_volatility,
-            "snapshot_count": len(actual_values),
+            "snapshot_count": valid_actual_count,
         },
         "static_shadow": {
             "shadow_id": static_shadow_id,
@@ -220,7 +342,7 @@ def compute_portfolio_attribution(
         "avoided_drawdown_pct": avoided_drawdown,
         "regret_score": regret_score,
         "ai_outperformed": ai_outperformed,
-        "interpretation": _interpret(regret_score, avoided_drawdown, actual_return),
+        "interpretation": _interpret(regret_score, avoided_drawdown, actual_return, has_sufficient_history),
         "computed_at": datetime.utcnow().isoformat() + "Z",
     }
 
@@ -274,8 +396,11 @@ def _interpret(
     regret_score: float | None,
     avoided_drawdown: float | None,
     actual_return: float | None,
+    has_sufficient_history: bool = True,
 ) -> str:
     """One-sentence plain-English summary of the attribution result."""
+    if not has_sufficient_history:
+        return "Tracking started — insufficient history for comparison (need ≥2 snapshots)."
     if regret_score is None:
         return "Insufficient shadow portfolio data to compare AI vs actual performance."
     if regret_score > 2:
@@ -315,9 +440,9 @@ def get_attribution_summary(
             "evaluation_window_days": r.evaluation_window_days,
             "period_start": r.evaluation_period_start,
             "period_end": r.evaluation_period_end,
-            "actual_return_pct": r.actual_return_pct,
-            "static_shadow_return_pct": r.static_shadow_return_pct,
-            "ai_model_return_pct": r.ai_model_return_pct,
+            "actual_return_pct": _safe_return(r.actual_return_pct),
+            "static_shadow_return_pct": _safe_return(r.static_shadow_return_pct),
+            "ai_model_return_pct": _safe_return(r.ai_model_return_pct),
             "avoided_drawdown_pct": r.avoided_drawdown_pct,
             "regret_score": r.regret_score,
             "ai_outperformed": r.ai_outperformed,

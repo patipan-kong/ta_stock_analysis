@@ -26,7 +26,9 @@ from sqlalchemy.orm import Session
 from services.analytics.attribution_engine import (
     compute_max_drawdown,
     _compute_return_pct,
+    _compute_twr,
     _compute_daily_volatility,
+    _safe_return,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,11 @@ def _portfolio_return_since(
     portfolio_id: int,
     since_date: str,
 ) -> tuple[float | None, float, float | None]:
-    """Return (return_pct, max_drawdown_pct, annualized_vol) for actual portfolio since since_date."""
+    """Return (return_pct, max_drawdown_pct, annualized_vol) for actual portfolio since since_date.
+
+    Uses investment_return_pct (cash-flow-adjusted) for TWR when available,
+    falling back to raw daily_return_pct for historical rows.
+    """
     from models.database import PortfolioSnapshot
 
     snaps = (
@@ -49,9 +55,15 @@ def _portfolio_return_since(
         .order_by(PortfolioSnapshot.snapshot_date)
         .all()
     )
-    values = [s.total_value for s in snaps]
-    daily = [s.daily_return_pct for s in snaps if s.daily_return_pct is not None]
-    return _compute_return_pct(values), compute_max_drawdown(values), _compute_daily_volatility(daily)
+    # Filter out zero/negative NAV rows (price outage / corruption guard)
+    valid_snaps = [s for s in snaps if s.total_value and s.total_value > 0]
+    values = [s.total_value for s in valid_snaps]
+    adjusted = [s.investment_return_pct for s in valid_snaps if s.investment_return_pct is not None]
+    raw_daily = [s.daily_return_pct for s in valid_snaps if s.daily_return_pct is not None]
+
+    total_return = _safe_return(_compute_twr(adjusted) if adjusted else _compute_return_pct(values))
+    volatility = _compute_daily_volatility(adjusted if adjusted else raw_daily)
+    return total_return, compute_max_drawdown(values), volatility
 
 
 def _shadow_return_since(
@@ -59,7 +71,12 @@ def _shadow_return_since(
     shadow_id: int,
     since_date: str,
 ) -> tuple[float | None, float, float | None]:
-    """Return (return_pct, max_drawdown_pct, annualized_vol) for a shadow since since_date."""
+    """Return (return_pct, max_drawdown_pct, annualized_vol) for a shadow since since_date.
+
+    Shadow portfolios have no external cash flows, so daily_return_pct is clean.
+    Zero/negative NAV rows are filtered out to prevent fake -100% returns from
+    price-outage days.
+    """
     from models.database import ShadowPortfolioSnapshot
 
     snaps = (
@@ -71,9 +88,12 @@ def _shadow_return_since(
         .order_by(ShadowPortfolioSnapshot.snapshot_date)
         .all()
     )
-    values = [s.total_value for s in snaps]
-    daily = [s.daily_return_pct for s in snaps if s.daily_return_pct is not None]
-    return _compute_return_pct(values), compute_max_drawdown(values), _compute_daily_volatility(daily)
+    # Filter out zero/negative NAV rows
+    valid_snaps = [s for s in snaps if s.total_value and s.total_value > 0]
+    values = [s.total_value for s in valid_snaps]
+    daily = [s.daily_return_pct for s in valid_snaps if s.daily_return_pct is not None]
+    total_return = _safe_return(_compute_twr(daily) if daily else _compute_return_pct(values))
+    return total_return, compute_max_drawdown(values), _compute_daily_volatility(daily)
 
 
 def compare_human_vs_ai(

@@ -682,6 +682,7 @@ def _layer1_prompt(
     policy_context: dict | None = None,
     effective_envelope: "_EffectiveEnvelope | None" = None,
     t1_breach_note: str = "",
+    execution_context: dict | None = None,
 ) -> str:
     # Phase 3B.5: use resolved per-sector limits when available; fall back to raw sector_limits
     if effective_envelope is not None:
@@ -758,7 +759,12 @@ Stocks proposed for REDUCE/SELL must be misaligned with {p_label} or overweight.
                 "If any holding currently exceeds this, propose an incremental REDUCE swap.\n"
             )
 
-    return f"""{policy_block}{regime_block}{strategy_block}{t1_breach_note}You are a STRATEGIST. Output swap targets in JSON only.
+    execution_block = ""
+    if execution_context:
+        from services.optimizer.execution_penalty import build_execution_prompt_block
+        execution_block = build_execution_prompt_block(execution_context)
+
+    return f"""{policy_block}{regime_block}{strategy_block}{t1_breach_note}{execution_block}You are a STRATEGIST. Output swap targets in JSON only.
 No explanation. No prose. Only valid JSON output.
 {violation_note}
 Portfolio: {json.dumps(c_pc)}
@@ -803,6 +809,7 @@ def _layer2_prompt(
     regime_context: dict | None = None,
     policy_context: dict | None = None,
     t1_breach_note: str = "",
+    execution_context: dict | None = None,
 ) -> str:
     role_line = f"Your role: {role}\n\n" if role else ""
 
@@ -850,8 +857,13 @@ Factor weighting, position sizing, and stock selection must all reflect this per
 
 """
 
+    execution_block = ""
+    if execution_context:
+        from services.optimizer.execution_penalty import build_execution_prompt_block
+        execution_block = build_execution_prompt_block(execution_context)
+
     return f"""You are an independent portfolio reviewer.
-{policy_block}{regime_block}{strategy_block}{t1_breach_note}{role_line}The Strategist (Layer 1) proposed:
+{policy_block}{regime_block}{strategy_block}{t1_breach_note}{execution_block}{role_line}The Strategist (Layer 1) proposed:
 - Priority: {l1_priority}
 - Swaps: {json.dumps(l1_swaps, indent=2)}
 - Top watchlist picks: {l1_top_buys}
@@ -1281,6 +1293,7 @@ def run_layered_optimizer(
     regime_context: dict | None = None,
     policy_context: dict | None = None,
     effective_envelope: "_EffectiveEnvelope | None" = None,
+    execution_context: dict | None = None,
 ) -> dict:
     """3-layer Dynamic Capital Allocation Engine with global single-shot fallback."""
     if layers is None:
@@ -1384,6 +1397,7 @@ def run_layered_optimizer(
                 policy_context=policy_context,
                 effective_envelope=effective_envelope,
                 t1_breach_note=_t1_note,
+                execution_context=execution_context,
             )
             logger.info(f"L1 prompt chars: {len(l1_prompt)}")
             l1_raw = call_ai(
@@ -1435,7 +1449,8 @@ def run_layered_optimizer(
                                persona_context=persona_context,
                                regime_context=regime_context,
                                policy_context=policy_context,
-                               t1_breach_note=_t1_note),
+                               t1_breach_note=_t1_note,
+                               execution_context=execution_context),
                 l2_cfg["provider"], l2_cfg["model"], max_tokens=8192,
                 usage_operation="optimize", usage_layer="layer2",
             )
@@ -1684,6 +1699,39 @@ def run_layered_optimizer(
                     "[SECTOR_ENFORCE] %s sector %.1f%% > %.1f%% resolved limit — trimmed",
                     sector, proj_pct, limit,
                 )
+
+        # ── Phase 3B.10 — Execution quality cap enforcement ──────────────────
+        # Applies per-asset position caps for DR and illiquid assets.
+        # This is a SOFT enforcement: reduces target_weight to the cap but never
+        # hard-rejects the asset. Runs after all other constraint enforcement.
+        if execution_context:
+            per_sym_exec = execution_context.get("per_symbol", {})
+            for a in final_allocations:
+                if a.get("action") not in ("BUY", "ACCUMULATE"):
+                    continue
+                sym = a.get("symbol", "")
+                sym_exec = per_sym_exec.get(sym, {})
+                cap = sym_exec.get("position_cap_pct")   # None = no reduced cap
+                if cap is not None and a.get("target_weight", 0) > cap:
+                    logger.info(
+                        "[EXEC_CAP] %s target_weight %.1f%% → %.1f%% (DR/illiquid cap)",
+                        sym, a["target_weight"], cap,
+                    )
+                    a["target_weight"]             = round(cap, 2)
+                    a["allocation_change_percent"] = round(a["target_weight"] - a["current_weight"], 2)
+                    a["estimated_amount"]          = round((a["allocation_change_percent"] / 100) * total_value)
+                    a["execution_capped"]          = True
+
+        # Attach per-symbol execution metadata to allocations for frontend badge rendering
+        if execution_context:
+            per_sym_exec = execution_context.get("per_symbol", {})
+            for a in final_allocations:
+                sym = a.get("symbol", "")
+                if sym in per_sym_exec:
+                    a["execution_risk"]     = per_sym_exec[sym].get("execution_risk", "LOW")
+                    a["execution_warnings"] = per_sym_exec[sym].get("execution_warnings", [])
+                    a["asset_type"]         = per_sym_exec[sym].get("asset_type", "EQUITY")
+                    a["slippage_est_pct"]   = per_sym_exec[sym].get("slippage_cost_est_pct")
 
         # Build sector_map for governance scoring (symbol → sector)
         _sector_map_for_scoring: dict[str, str] = {

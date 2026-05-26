@@ -510,6 +510,31 @@ export interface SwapSuggestion {
 
 export type AllocationAction = "BUY" | "ACCUMULATE" | "HOLD" | "REDUCE" | "SELL" | "WATCH";
 
+export type ExecutionRisk = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type AssetType = "EQUITY" | "DR" | "ETF" | "INDEX";
+
+export interface ExecutionSymbolMetadata {
+  asset_type: AssetType;
+  liquidity_score: number;
+  spread_score: number;
+  execution_quality_score: number;
+  execution_risk: ExecutionRisk;
+  execution_warnings: string[];
+  position_cap_pct: number | null;
+  slippage_cost_est_pct: number;
+  combined_score_penalty: number;
+}
+
+export interface ExecutionContext {
+  per_symbol: Record<string, ExecutionSymbolMetadata>;
+  has_dr_assets: boolean;
+  dr_symbols: string[];
+  high_risk_symbols: string[];
+  dr_position_cap: number;
+  dr_portfolio_cap: number;
+  execution_summary: string;
+}
+
 export interface TargetAllocation {
   symbol: string;
   current_weight: number;
@@ -518,6 +543,12 @@ export interface TargetAllocation {
   allocation_change_percent: number;
   estimated_amount: number;
   reason: string;
+  // Phase 3B.10 — execution quality metadata (attached post-AI)
+  execution_risk?: ExecutionRisk;
+  execution_warnings?: string[];
+  asset_type?: AssetType;
+  slippage_est_pct?: number;
+  execution_capped?: boolean;
 }
 
 export interface OptimizerLayerConfig {
@@ -841,6 +872,8 @@ export interface OptimizerResult {
   effective_envelope?: EffectiveEnvelope | null;
   // Phase 3B.7A — Decision Memory
   recommendation_snapshot_id?: number | null;
+  // Phase 3B.10 — DR / execution quality context
+  execution_context?: ExecutionContext | null;
 }
 
 export interface OptimizerHistoryItem {
@@ -1410,14 +1443,25 @@ export interface SnapshotHolding {
 export interface PortfolioSnapshotRow {
   id: number;
   portfolio_id: number;
-  snapshot_date: string;           // "YYYY-MM-DD"
+  snapshot_date: string;               // "YYYY-MM-DD"
   total_value: number;
   cash_balance: number;
   total_invested: number;
   unrealized_pnl: number | null;
   unrealized_pnl_pct: number | null;
   realized_pnl: number | null;
+  /** Cash-flow-adjusted daily return. Deposits/withdrawals are stripped out. */
   daily_return_pct: number | null;
+  /** Same as daily_return_pct — explicit semantic alias for clarity. */
+  investment_return_pct: number | null;
+  /** Absolute market gain/loss in currency units (no external cash flows). */
+  investment_return_amount: number | null;
+  /** Net external cash flow this period (deposits − withdrawals − initial cash). Positive = inflow. */
+  net_external_cash_flow: number | null;
+  /** Market value of INITIAL_POSITION imports in this period. Excluded from return. */
+  imported_asset_value: number | null;
+  /** Market value of QUANTITY_CORRECTION adjustments in this period. Excluded from return. */
+  manual_adjustment_value: number | null;
   holdings_count: number | null;
   sector_breakdown: Record<string, number> | null;  // {sector: weight_pct}
   holdings: SnapshotHolding[] | null;
@@ -1427,6 +1471,10 @@ export interface PortfolioSnapshotRow {
 export interface GenerateSnapshotResult extends PortfolioSnapshotRow {
   equity_value: number;
   updated: boolean;
+  /** Gross deposits since previous snapshot. */
+  net_deposits: number;
+  /** Gross withdrawals since previous snapshot. */
+  net_withdrawals: number;
 }
 
 export const generateSnapshot = (portfolioId: number, snapshotDate?: string) =>
@@ -1934,6 +1982,7 @@ export interface PortfolioAttributionResult {
   evaluation_window_days: number;
   period_start: string;
   period_end: string;
+  has_sufficient_history: boolean;
   actual: PortfolioMetrics;
   static_shadow: ShadowMetrics | null;
   ai_model_shadow: ShadowMetrics | null;
@@ -2184,8 +2233,11 @@ export interface ShadowPerformanceSummary {
 
 export interface AIvsHumanTimelineEntry {
   decision_id: number;
-  decision: ExecutionDecisionType;
-  executed_at: string;
+  decision_type: ExecutionDecisionType;
+  executed_at: string | null;
+  since_date: string;
+  shadow_id: number | null;
+  shadow_type: ShadowPortfolioType | null;
   shadow_return_pct: number | null;
   actual_return_pct: number | null;
   return_delta: number | null;

@@ -1,10 +1,18 @@
-"""regime_attribution.py — Phase 3B.7B
+"""regime_attribution.py — Phase 3B.7B (stabilized, Phase 3B.9S)
 
 Observational analysis of portfolio performance grouped by market regime.
 
 Joins PortfolioSnapshot daily returns with RegimeSnapshot regime labels to
 measure which market conditions the optimizer performs best/worst in.
 All arithmetic is deterministic — no yfinance calls.
+
+Timestamp alignment (Phase 3B.9S)
+----------------------------------
+RegimeSnapshot rows are written once per day by the scheduler.
+PortfolioSnapshot rows are also written once per day.
+However, timezone drift (UTC vs ICT) or scheduler timing can cause dates to
+be off by 1 day.  _find_regime_near_date() allows a ±2-day tolerance window
+when matching a portfolio snapshot date to the regime map.
 
 Public API:
     compute_regime_attribution(db, portfolio_id, lookback_days=90) → dict
@@ -41,6 +49,32 @@ _REGIME_COLORS: dict[str, str] = {
 }
 
 
+def _find_regime_near_date(
+    date_str: str,
+    regime_map: dict[str, str],
+    tolerance_days: int = 2,
+) -> str | None:
+    """Return the regime label for a date within tolerance_days of date_str.
+
+    Tries the exact date first, then checks ±1, ±2, … days up to tolerance_days.
+    This corrects for timezone drift (UTC vs ICT +7) or scheduler timing
+    differences that cause portfolio snapshots and regime snapshots to be
+    written on slightly different calendar dates.
+    """
+    if date_str in regime_map:
+        return regime_map[date_str]
+    try:
+        d = date.fromisoformat(date_str)
+        for delta in range(1, tolerance_days + 1):
+            for sign in (+1, -1):
+                neighbor = (d + timedelta(days=delta * sign)).isoformat()
+                if neighbor in regime_map:
+                    return regime_map[neighbor]
+    except Exception:
+        pass
+    return None
+
+
 def compute_regime_attribution(
     db: Session,
     portfolio_id: int,
@@ -48,8 +82,8 @@ def compute_regime_attribution(
 ) -> dict[str, Any]:
     """Group portfolio daily returns by market regime.
 
-    For each RegimeSnapshot date that overlaps with a PortfolioSnapshot,
-    records the daily return. Then aggregates per-regime statistics:
+    For each RegimeSnapshot date that overlaps (within ±2 days) with a
+    PortfolioSnapshot, records the daily return. Aggregates per-regime:
       - avg_daily_return_pct
       - total_return_pct (compounded)
       - trading_days
@@ -61,6 +95,7 @@ def compute_regime_attribution(
         best_regime      : regime with highest avg_daily_return
         worst_regime     : regime with lowest avg_daily_return
         total_days       : total portfolio snapshot days in window
+        matched_days     : days with a matched regime label (after tolerance)
         coverage_pct     : % of days with a matching regime snapshot
     """
     from models.database import PortfolioSnapshot, RegimeSnapshot
@@ -85,36 +120,59 @@ def compute_regime_attribution(
             "best_regime": None,
             "worst_regime": None,
             "total_days": 0,
+            "matched_days": 0,
             "coverage_pct": 0.0,
             "status": "no_snapshot_data",
         }
 
     # Build regime lookup: date_str → regime
-    regime_dates = {s.snapshot_date for s in portfolio_snaps}
+    # Load regime rows within a slightly wider window (+ tolerance buffer)
+    regime_cutoff = (date.today() - timedelta(days=lookback_days + 3)).isoformat()
     regime_rows = (
         db.query(RegimeSnapshot)
-        .filter(RegimeSnapshot.snapshot_date.in_(regime_dates))
+        .filter(RegimeSnapshot.snapshot_date >= regime_cutoff)
         .all()
     )
     regime_map: dict[str, str] = {r.snapshot_date: r.regime for r in regime_rows}
-    regime_confidence: dict[str, float] = {r.snapshot_date: r.confidence for r in regime_rows}
 
-    # Group daily returns by regime
+    if not regime_map:
+        return {
+            "portfolio_id": portfolio_id,
+            "lookback_days": lookback_days,
+            "regimes": {},
+            "best_regime": None,
+            "worst_regime": None,
+            "total_days": len(portfolio_snaps),
+            "matched_days": 0,
+            "coverage_pct": 0.0,
+            "status": "no_regime_data",
+        }
+
+    # Group daily returns by regime (with ±2 day tolerance)
     buckets: dict[str, list[float]] = {}
     matched = 0
 
     for snap in portfolio_snaps:
-        if snap.daily_return_pct is None:
+        # Only include snapshots with valid NAV
+        if not snap.total_value or snap.total_value <= 0:
             continue
-        regime = regime_map.get(snap.snapshot_date)
+        # Prefer investment_return_pct (cash-flow-adjusted); fall back to daily_return_pct
+        ret = getattr(snap, "investment_return_pct", None) or snap.daily_return_pct
+        if ret is None:
+            continue
+        regime = _find_regime_near_date(snap.snapshot_date, regime_map, tolerance_days=2)
         if regime is None:
             continue
         matched += 1
         if regime not in buckets:
             buckets[regime] = []
-        buckets[regime].append(snap.daily_return_pct)
+        buckets[regime].append(ret)
 
-    total_days = len([s for s in portfolio_snaps if s.daily_return_pct is not None])
+    total_days = len([
+        s for s in portfolio_snaps
+        if s.total_value and s.total_value > 0
+        and ((getattr(s, "investment_return_pct", None) or s.daily_return_pct) is not None)
+    ])
     coverage_pct = round(matched / total_days * 100, 1) if total_days > 0 else 0.0
 
     # Build per-regime statistics
@@ -128,13 +186,11 @@ def compute_regime_attribution(
             compound *= (1 + r / 100)
         total_ret = round((compound - 1) * 100, 4)
 
-        # Variance / std dev
+        vol: float | None = None
         if n > 1:
             mean = avg
             variance = sum((r - mean) ** 2 for r in returns) / (n - 1)
             vol = round((variance ** 0.5) * (252 ** 0.5), 4)
-        else:
-            vol = None
 
         regime_stats[regime] = {
             "regime": regime,
@@ -180,7 +236,10 @@ def _optimizer_performance_by_regime(
     cutoff: str,
     regime_map: dict[str, str],
 ) -> dict[str, Any]:
-    """Count optimizer runs and avg rebalance_opportunity_score per regime."""
+    """Count optimizer runs and avg rebalance_opportunity_score per regime.
+
+    Uses ±2-day tolerance for regime matching (same as portfolio snapshots).
+    """
     from models.database import OptimizerHistory
 
     runs = (
@@ -197,19 +256,22 @@ def _optimizer_performance_by_regime(
         run_date = run.analyzed_at.strftime("%Y-%m-%d") if run.analyzed_at else None
         if not run_date:
             continue
-        regime = regime_map.get(run_date)
+        regime = _find_regime_near_date(run_date, regime_map, tolerance_days=2)
         if not regime:
-            # Try nearest available date in regime_map
             continue
         if regime not in by_regime:
-            by_regime[regime] = {"runs": 0, "rebalance_count": 0, "scores": [], "label": _REGIME_LABELS.get(regime, regime)}
+            by_regime[regime] = {
+                "runs": 0,
+                "rebalance_count": 0,
+                "scores": [],
+                "label": _REGIME_LABELS.get(regime, regime),
+            }
         by_regime[regime]["runs"] += 1
         if run.optimizer_status == "REBALANCE":
             by_regime[regime]["rebalance_count"] += 1
         if run.rebalance_opportunity_score is not None:
             by_regime[regime]["scores"].append(run.rebalance_opportunity_score)
 
-    # Finalize averages
     for regime, data in by_regime.items():
         scores = data.pop("scores", [])
         data["avg_opportunity_score"] = round(sum(scores) / len(scores), 1) if scores else None

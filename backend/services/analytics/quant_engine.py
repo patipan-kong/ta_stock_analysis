@@ -79,7 +79,11 @@ def _snap_to_df(snapshots: list) -> pd.DataFrame:
             "total_value": float(s.total_value or 0.0),
             "cash_balance": float(s.cash_balance or 0.0),
             "total_invested": float(s.total_invested or 0.0),
-            "daily_return_pct": float(s.daily_return_pct) if s.daily_return_pct is not None else None,
+            # Prefer investment_return_pct (cash-flow-adjusted, Phase 3B.8); daily_return_pct is identical
+            # for new snapshots but may contain contaminated values in historical rows.
+            "daily_return_pct": float(
+                getattr(s, "investment_return_pct", None) or s.daily_return_pct
+            ) if (getattr(s, "investment_return_pct", None) or s.daily_return_pct) is not None else None,
             "sector_breakdown": json.loads(s.sector_breakdown_json) if s.sector_breakdown_json else {},
             "holdings": json.loads(s.holdings_json) if s.holdings_json else [],
         })
@@ -105,34 +109,74 @@ def _r(val: float | None, n: int = 4) -> float | None:
     return round(fval, n)
 
 
+# Minimum calendar-day span before annualized metrics are meaningful.
+# Below this threshold Ann. Return, Volatility, and Sharpe return None ("—")
+# to prevent extreme mathematical scaling on new/short portfolios.
+_MIN_DAYS_FOR_ANNUALIZATION: int = 30
+
+
+def _span_days(df: pd.DataFrame) -> int:
+    """Calendar days between first and last snapshot date."""
+    if len(df) < 2:
+        return 0
+    return (
+        datetime.fromisoformat(df.iloc[-1]["date"])
+        - datetime.fromisoformat(df.iloc[0]["date"])
+    ).days
+
+
+def _twr(df: pd.DataFrame) -> float | None:
+    """Time-Weighted Return: ∏(1 + r_i) - 1 across all stored daily returns.
+
+    Reads investment_return_pct (mapped to daily_return_pct in _snap_to_df) so
+    capital inflows — position imports, deposits, quantity corrections — are
+    excluded from the result.  Falls back to pct_change when stored returns are
+    absent (e.g. legacy seeded rows without investment_return_pct).
+    """
+    dr = _daily_returns(df)
+    if len(dr) < 1:
+        return None
+    product = float((1.0 + dr).prod())
+    if math.isnan(product) or math.isinf(product):
+        return None
+    return product - 1.0
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # A. PORTFOLIO RETURN ANALYTICS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def calculate_cumulative_return(snapshots: list) -> float | None:
-    """Total % return from the first to the last snapshot."""
+    """Total % return from first to last snapshot using Time-Weighted Return.
+
+    Chains investment_return_pct so that capital inflows (imported positions,
+    deposits, quantity corrections) do not inflate the cumulative figure.
+    """
     df = _snap_to_df(snapshots)
     if len(df) < 2:
         return None
-    first, last = df.iloc[0]["total_value"], df.iloc[-1]["total_value"]
-    return None if first <= 0 else _r((last - first) / first * 100, 2)
+    twr = _twr(df)
+    return None if twr is None else _r(twr * 100.0, 2)
 
 
 def calculate_annualized_return(snapshots: list) -> float | None:
-    """CAGR (%) — compound annual growth rate across the snapshot range."""
+    """CAGR (%) — annualised TWR across the snapshot range.
+
+    Returns None when the history is shorter than _MIN_DAYS_FOR_ANNUALIZATION
+    (30 days) to prevent astronomical scaling on new portfolios (e.g. a +1%
+    3-day span would annualise to ~1,500%).  Uses Time-Weighted Return so
+    capital inflows do not inflate the figure.
+    """
     df = _snap_to_df(snapshots)
     if len(df) < 2:
         return None
-    first, last = df.iloc[0]["total_value"], df.iloc[-1]["total_value"]
-    if first <= 0:
+    days = _span_days(df)
+    if days < _MIN_DAYS_FOR_ANNUALIZATION:
         return None
-    days = (
-        datetime.fromisoformat(df.iloc[-1]["date"])
-        - datetime.fromisoformat(df.iloc[0]["date"])
-    ).days
-    if days < 1:
+    twr = _twr(df)
+    if twr is None:
         return None
-    return _r(((last / first) ** (365.25 / days) - 1.0) * 100, 2)
+    return _r(((1.0 + twr) ** (365.25 / days) - 1.0) * 100.0, 2)
 
 
 def calculate_max_drawdown(snapshots: list) -> dict:
@@ -192,9 +236,15 @@ def calculate_max_drawdown(snapshots: list) -> dict:
 
 
 def calculate_volatility(snapshots: list) -> float | None:
-    """Annualized daily-return volatility (%), assuming 252 trading days/year."""
+    """Annualized daily-return volatility (%), assuming 252 trading days/year.
+
+    Returns None when the history is shorter than _MIN_DAYS_FOR_ANNUALIZATION
+    (30 days) — a handful of data points produce a wildly unreliable std estimate.
+    """
     df = _snap_to_df(snapshots)
     if len(df) < 3:
+        return None
+    if _span_days(df) < _MIN_DAYS_FOR_ANNUALIZATION:
         return None
     dr = _daily_returns(df)
     if len(dr) < 3:
@@ -206,9 +256,15 @@ def calculate_sharpe_ratio(
     snapshots: list,
     risk_free_rate: float = 0.025,
 ) -> float | None:
-    """Annualized Sharpe ratio.  risk_free_rate is annual (default 2.5%)."""
+    """Annualized Sharpe ratio.  risk_free_rate is annual (default 2.5%).
+
+    Returns None when the history is shorter than _MIN_DAYS_FOR_ANNUALIZATION
+    (30 days) — insufficient data makes both the mean and std unreliable.
+    """
     df = _snap_to_df(snapshots)
     if len(df) < 3:
+        return None
+    if _span_days(df) < _MIN_DAYS_FOR_ANNUALIZATION:
         return None
     dr = _daily_returns(df)
     if len(dr) < 3:
@@ -330,7 +386,7 @@ def _align_series(
 def _assess_data_quality(
     aligned_days: int,
     alpha: float | None,
-    beta: float | None,
+    _beta: float | None,
     r_squared: float | None,
     tracking_error_pct: float | None,
 ) -> dict:
@@ -780,9 +836,8 @@ def calculate_sector_contribution(snapshots: list) -> list[dict]:
     if df.empty:
         return []
 
-    first_val = df.iloc[0]["total_value"]
-    last_val = df.iloc[-1]["total_value"]
-    overall_return = (last_val - first_val) / first_val * 100 if first_val > 0 else 0.0
+    twr = _twr(df)
+    overall_return = twr * 100.0 if twr is not None else 0.0
 
     sector_weights: dict[str, list[float]] = defaultdict(list)
     for _, row in df.iterrows():
@@ -936,26 +991,32 @@ def build_equity_curve(snapshots: list) -> list[dict]:
     """Recharts-ready equity curve.
 
     Each row: {date, total_value, cumulative_return_pct, drawdown_pct, daily_return_pct}
+
+    cumulative_return_pct and drawdown_pct use a chained TWR index so that
+    capital injections (imports, deposits) do not inflate the curve.
     """
     df = _snap_to_df(snapshots)
     if df.empty:
         return []
 
-    base = df.iloc[0]["total_value"]
-    running_peak = base
+    twr_idx = 1.0       # cumulative performance index anchored at 1.0
+    peak_twr = 1.0      # high-water mark for drawdown
     rows: list[dict] = []
 
-    for _, row in df.iterrows():
+    for i, row in df.iterrows():
         tv = row["total_value"]
-        running_peak = max(running_peak, tv)
-        cum_ret = (tv - base) / base * 100 if base > 0 else 0.0
-        drawdown = (tv - running_peak) / running_peak * 100 if running_peak > 0 else 0.0
+        dr = row.get("daily_return_pct")
+        if i > 0 and dr is not None and not math.isnan(float(dr)) and not math.isinf(float(dr)):
+            twr_idx *= 1.0 + float(dr) / 100.0
+        peak_twr = max(peak_twr, twr_idx)
+        cum_ret = (twr_idx - 1.0) * 100.0
+        drawdown = (twr_idx - peak_twr) / peak_twr * 100.0 if peak_twr > 0 else 0.0
         rows.append({
             "date": row["date"],
             "total_value": round(tv, 2),
             "cumulative_return_pct": _r(cum_ret, 3),
             "drawdown_pct": _r(drawdown, 3),
-            "daily_return_pct": _r(row.get("daily_return_pct"), 3),
+            "daily_return_pct": _r(dr, 3),
         })
     return rows
 

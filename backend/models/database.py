@@ -193,6 +193,7 @@ class Transaction(Base):
       DEPOSIT, WITHDRAW     — cash movements (symbol is null)
       INITIAL_POSITION      — onboarding: import existing holding (symbol required)
       INITIAL_CASH          — onboarding: set starting cash (symbol is null)
+      QUANTITY_CORRECTION   — manual share-count adjustment (symbol required)
     """
     __tablename__ = "transactions"
 
@@ -230,7 +231,12 @@ class PortfolioSnapshot(Base):
     unrealized_pnl = Column(Float, nullable=True)
     unrealized_pnl_pct = Column(Float, nullable=True)
     realized_pnl = Column(Float, nullable=True)           # cumulative realized P/L from all SELL txs
-    daily_return_pct = Column(Float, nullable=True)       # day-over-day return vs previous snapshot
+    daily_return_pct = Column(Float, nullable=True)           # cash-flow-adjusted day-over-day return
+    net_external_cash_flow = Column(Float, nullable=True)     # deposits - withdrawals this period
+    investment_return_pct = Column(Float, nullable=True)      # same as daily_return_pct (semantic alias)
+    investment_return_amount = Column(Float, nullable=True)   # absolute pure market gain/loss
+    imported_asset_value = Column(Float, nullable=True)       # market value of INITIAL_POSITION imports this period
+    manual_adjustment_value = Column(Float, nullable=True)    # market value of QUANTITY_CORRECTION adjustments this period
     sector_breakdown_json = Column(Text, nullable=True)  # JSON {"Technology": 35.2, ...}
     holdings_json = Column(Text, nullable=True)          # JSON [{symbol, shares, market_value, ...}]
     holdings_count = Column(Integer, nullable=True)
@@ -672,6 +678,16 @@ def migrate_legacy_data() -> None:
                         conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN daily_return_pct REAL"))
                     if "holdings_json" not in ps_cols:
                         conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN holdings_json TEXT"))
+                    if "net_external_cash_flow" not in ps_cols:
+                        conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN net_external_cash_flow REAL"))
+                    if "investment_return_pct" not in ps_cols:
+                        conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN investment_return_pct REAL"))
+                    if "investment_return_amount" not in ps_cols:
+                        conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN investment_return_amount REAL"))
+                    if "imported_asset_value" not in ps_cols:
+                        conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN imported_asset_value REAL"))
+                    if "manual_adjustment_value" not in ps_cols:
+                        conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN manual_adjustment_value REAL"))
 
             if "transactions" in tables:
                 with engine.begin() as conn:

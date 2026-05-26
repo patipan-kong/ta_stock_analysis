@@ -236,30 +236,82 @@ export default function PerformancePage() {
 
       {/* Summary stat cards */}
       {latest && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatCard
-            label="Portfolio Value"
-            value={fmt(latest.total_value)}
-            sub={`Cash: ${fmt(latest.cash_balance)}`}
-          />
-          <StatCard
-            label="Unrealized P/L"
-            value={`${latest.unrealized_pnl != null && latest.unrealized_pnl >= 0 ? "+" : ""}${fmt(latest.unrealized_pnl)}`}
-            sub={pct(latest.unrealized_pnl_pct)}
-            valueClass={pnlColor(latest.unrealized_pnl)}
-          />
-          <StatCard
-            label="Realized P/L"
-            value={`${latest.realized_pnl != null && latest.realized_pnl >= 0 ? "+" : ""}${fmt(latest.realized_pnl)}`}
-            valueClass={pnlColor(latest.realized_pnl)}
-          />
-          <StatCard
-            label="Daily Return"
-            value={pct(latest.daily_return_pct)}
-            sub={prev ? `vs ${prev.snapshot_date}` : "first snapshot"}
-            valueClass={pnlColor(latest.daily_return_pct)}
-          />
-        </div>
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatCard
+              label="Portfolio Value"
+              value={fmt(latest.total_value)}
+              sub={`Cash: ${fmt(latest.cash_balance)}`}
+            />
+            <StatCard
+              label="Unrealized P/L"
+              value={`${latest.unrealized_pnl != null && latest.unrealized_pnl >= 0 ? "+" : ""}${fmt(latest.unrealized_pnl)}`}
+              sub={pct(latest.unrealized_pnl_pct)}
+              valueClass={pnlColor(latest.unrealized_pnl)}
+            />
+            <StatCard
+              label="Realized P/L"
+              value={`${latest.realized_pnl != null && latest.realized_pnl >= 0 ? "+" : ""}${fmt(latest.realized_pnl)}`}
+              valueClass={pnlColor(latest.realized_pnl)}
+            />
+            <StatCard
+              label="Investment Return"
+              value={pct(latest.investment_return_pct ?? latest.daily_return_pct)}
+              sub={prev ? `pure market gain vs ${prev.snapshot_date}` : "first snapshot"}
+              valueClass={pnlColor(latest.investment_return_pct ?? latest.daily_return_pct)}
+            />
+          </div>
+
+          {/* Non-performance disclosure — shown whenever any external event occurred */}
+          {((latest.net_external_cash_flow != null && latest.net_external_cash_flow !== 0) ||
+            (latest.imported_asset_value != null && latest.imported_asset_value !== 0) ||
+            (latest.manual_adjustment_value != null && latest.manual_adjustment_value !== 0)) && (
+            <div className="flex items-start gap-3 px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-800">
+              <span className="mt-0.5 text-blue-500 shrink-0">ℹ</span>
+              <div className="space-y-1.5">
+                <p className="font-semibold">Non-Performance Events Recorded — Excluded from Return</p>
+                <div className="flex flex-wrap gap-x-6 gap-y-1 text-blue-700">
+                  {(latest.net_external_cash_flow ?? 0) !== 0 && (
+                    <span className="flex items-center gap-1.5">
+                      <span className="px-1.5 py-0.5 bg-blue-100 rounded text-blue-700 font-medium">External Funding</span>
+                      <strong className={(latest.net_external_cash_flow ?? 0) >= 0 ? "text-blue-700" : "text-amber-700"}>
+                        {(latest.net_external_cash_flow ?? 0) >= 0 ? "+" : ""}{fmt(latest.net_external_cash_flow)}
+                      </strong>
+                    </span>
+                  )}
+                  {(latest.imported_asset_value ?? 0) > 0 && (
+                    <span className="flex items-center gap-1.5">
+                      <span className="px-1.5 py-0.5 bg-purple-100 rounded text-purple-700 font-medium">Imported Assets</span>
+                      <strong className="text-purple-700">+{fmt(latest.imported_asset_value)}</strong>
+                    </span>
+                  )}
+                  {(latest.manual_adjustment_value ?? 0) !== 0 && (
+                    <span className="flex items-center gap-1.5">
+                      <span className="px-1.5 py-0.5 bg-orange-100 rounded text-orange-700 font-medium">Quantity Correction</span>
+                      <strong className="text-orange-700">
+                        {(latest.manual_adjustment_value ?? 0) >= 0 ? "+" : ""}{fmt(latest.manual_adjustment_value)}
+                      </strong>
+                    </span>
+                  )}
+                  {latest.investment_return_amount != null && (
+                    <span className="flex items-center gap-1.5">
+                      <span className="px-1.5 py-0.5 bg-green-100 rounded text-green-700 font-medium">Investment Gain</span>
+                      <strong className={pnlColor(latest.investment_return_amount)}>
+                        {latest.investment_return_amount >= 0 ? "+" : ""}{fmt(latest.investment_return_amount)}
+                        {latest.investment_return_pct != null && (
+                          <span className="font-normal ml-1">({pct(latest.investment_return_pct)})</span>
+                        )}
+                      </strong>
+                    </span>
+                  )}
+                </div>
+                <p className="text-blue-600">
+                  Cash deposits, imported positions, and quantity corrections are balance-sheet events — only pure market movement counts toward your return.
+                </p>
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* Equity curve */}
@@ -364,27 +416,55 @@ export default function PerformancePage() {
                   <th className="py-2 pr-4 font-medium text-right">Total Value</th>
                   <th className="py-2 pr-4 font-medium text-right">Unrealized P/L</th>
                   <th className="py-2 pr-4 font-medium text-right">Realized P/L</th>
-                  <th className="py-2 pr-4 font-medium text-right">Daily Return</th>
+                  <th className="py-2 pr-4 font-medium text-right">Invest. Return</th>
+                  <th className="py-2 pr-4 font-medium text-right">External Events</th>
                   <th className="py-2 font-medium text-right">Holdings</th>
                 </tr>
               </thead>
               <tbody>
-                {[...snapshots].reverse().map((s) => (
-                  <tr key={s.id} className="border-b last:border-0 hover:bg-gray-50">
-                    <td className="py-2 pr-4 font-medium text-gray-800">{s.snapshot_date}</td>
-                    <td className="py-2 pr-4 text-right text-gray-700">{fmt(s.total_value)}</td>
-                    <td className={`py-2 pr-4 text-right font-medium ${pnlColor(s.unrealized_pnl)}`}>
-                      {s.unrealized_pnl != null && s.unrealized_pnl >= 0 ? "+" : ""}{fmt(s.unrealized_pnl)}
-                    </td>
-                    <td className={`py-2 pr-4 text-right font-medium ${pnlColor(s.realized_pnl)}`}>
-                      {s.realized_pnl != null && s.realized_pnl >= 0 ? "+" : ""}{fmt(s.realized_pnl)}
-                    </td>
-                    <td className={`py-2 pr-4 text-right font-medium ${pnlColor(s.daily_return_pct)}`}>
-                      {pct(s.daily_return_pct)}
-                    </td>
-                    <td className="py-2 text-right text-gray-500">{s.holdings_count ?? "—"}</td>
-                  </tr>
-                ))}
+                {[...snapshots].reverse().map((s) => {
+                  const hasCashFlow = s.net_external_cash_flow != null && s.net_external_cash_flow !== 0;
+                  const hasImport = (s.imported_asset_value ?? 0) > 0;
+                  const hasAdj = (s.manual_adjustment_value ?? 0) !== 0;
+                  const hasAnyEvent = hasCashFlow || hasImport || hasAdj;
+                  return (
+                    <tr key={s.id} className={`border-b last:border-0 hover:bg-gray-50 ${hasAnyEvent ? "bg-blue-50/40" : ""}`}>
+                      <td className="py-2 pr-4 font-medium text-gray-800">{s.snapshot_date}</td>
+                      <td className="py-2 pr-4 text-right text-gray-700">{fmt(s.total_value)}</td>
+                      <td className={`py-2 pr-4 text-right font-medium ${pnlColor(s.unrealized_pnl)}`}>
+                        {s.unrealized_pnl != null && s.unrealized_pnl >= 0 ? "+" : ""}{fmt(s.unrealized_pnl)}
+                      </td>
+                      <td className={`py-2 pr-4 text-right font-medium ${pnlColor(s.realized_pnl)}`}>
+                        {s.realized_pnl != null && s.realized_pnl >= 0 ? "+" : ""}{fmt(s.realized_pnl)}
+                      </td>
+                      <td className={`py-2 pr-4 text-right font-medium ${pnlColor(s.investment_return_pct ?? s.daily_return_pct)}`}>
+                        {pct(s.investment_return_pct ?? s.daily_return_pct)}
+                      </td>
+                      <td className="py-2 pr-4 text-right text-xs space-y-0.5">
+                        {hasCashFlow && (
+                          <div className={`font-medium ${(s.net_external_cash_flow ?? 0) > 0 ? "text-blue-600" : "text-amber-600"}`}>
+                            {(s.net_external_cash_flow ?? 0) > 0 ? "+" : ""}{fmt(s.net_external_cash_flow)}
+                            <span className="ml-1 text-gray-400 font-normal">cash</span>
+                          </div>
+                        )}
+                        {hasImport && (
+                          <div className="font-medium text-purple-600">
+                            +{fmt(s.imported_asset_value)}
+                            <span className="ml-1 text-gray-400 font-normal">import</span>
+                          </div>
+                        )}
+                        {hasAdj && (
+                          <div className="font-medium text-orange-600">
+                            {(s.manual_adjustment_value ?? 0) >= 0 ? "+" : ""}{fmt(s.manual_adjustment_value)}
+                            <span className="ml-1 text-gray-400 font-normal">adj</span>
+                          </div>
+                        )}
+                        {!hasAnyEvent && <span className="text-gray-300">—</span>}
+                      </td>
+                      <td className="py-2 text-right text-gray-500">{s.holdings_count ?? "—"}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

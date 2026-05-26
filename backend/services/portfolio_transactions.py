@@ -495,6 +495,95 @@ def execute_initial_position(
     }
 
 
+# ─── QUANTITY_CORRECTION ──────────────────────────────────────────────────────
+
+def execute_quantity_correction(
+    db: Session,
+    ws_id: int,
+    portfolio_id: int,
+    symbol: str,
+    shares_delta: float,
+    price_per_share: float,
+    transaction_date: datetime | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Apply a share-count correction to an existing position.
+
+    Records a QUANTITY_CORRECTION transaction so the snapshot engine can
+    classify the equity change as a balance-sheet event and exclude it from
+    investment_return_pct.
+
+    shares_delta may be positive (adding missing shares) or negative
+    (removing erroneously recorded shares).  The PortfolioItem.shares is
+    adjusted accordingly; avg_cost is recalculated on additions using a
+    weighted average.
+
+    Does NOT affect cash_balance — this is purely a record-keeping correction.
+    """
+    if shares_delta == 0:
+        raise ValueError("shares_delta must be non-zero")
+    if price_per_share <= 0:
+        raise ValueError("price_per_share must be positive")
+
+    d_delta = _d(shares_delta)
+    d_price = _d(price_per_share)
+    tx_date = transaction_date or datetime.utcnow()
+
+    item = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
+    if not item:
+        raise ValueError(f"No holding found for {symbol} in portfolio {portfolio_id}")
+
+    old_shares = _d(item.shares)
+    new_shares = old_shares + d_delta
+    if new_shares < 0:
+        raise ValueError(
+            f"Correction would result in negative shares: {_f(old_shares)} + {_f(d_delta)}"
+        )
+
+    if d_delta > 0:
+        # Weighted-average cost on additions
+        old_cost = _d(item.avg_cost)
+        new_avg = (old_shares * old_cost + d_delta * d_price) / new_shares
+        item.avg_cost = _f(new_avg)
+
+    item.shares = _f(new_shares)
+
+    tx = Transaction(
+        workspace_id=ws_id,
+        portfolio_id=portfolio_id,
+        symbol=symbol,
+        transaction_type="QUANTITY_CORRECTION",
+        shares=_f(abs(d_delta)),        # always positive; sign conveyed by notes
+        price_per_share=_f(d_price),
+        total_amount=_f(abs(d_delta) * d_price),
+        fees=0.0,
+        taxes=0.0,
+        transaction_date=tx_date,
+        notes=notes or f"Quantity correction: {'+' if d_delta > 0 else ''}{_f(d_delta)} shares",
+        sector=item.sector,
+    )
+    db.add(tx)
+    db.commit()
+    db.refresh(tx)
+    db.refresh(item)
+
+    return {
+        "transaction_id": tx.id,
+        "type": "QUANTITY_CORRECTION",
+        "symbol": symbol,
+        "shares_delta": shares_delta,
+        "price_per_share": tx.price_per_share,
+        "total_amount": tx.total_amount,
+        "transaction_date": tx.transaction_date.isoformat() + "Z",
+        "notes": tx.notes,
+        "holding": {
+            "shares": item.shares,
+            "avg_cost": item.avg_cost,
+            "sector": item.sector,
+        },
+    }
+
+
 # ─── INITIAL_CASH ─────────────────────────────────────────────────────────────
 
 def execute_initial_cash(
