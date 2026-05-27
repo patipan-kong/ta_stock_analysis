@@ -67,6 +67,27 @@ persona performance memory
 Phase 3B.8 — Cash-Flow-Adjusted Return Accounting
 Phase 3B.9 — Position Import Accounting Fix ✅ SHIPPED 2026-05-25
 
+
+Checklist ที่ควร verify ด้วยข้อมูลจริง:
+
+Accounting Integrity
+ realized/unrealized continuity
+ deposits stripped
+ imports stripped
+ fee deduction
+ DR pricing
+ shadow portfolio continuity
+Analytics Integrity
+ alpha reasonable
+ sharpe reasonable
+ drawdown not exploding
+ calibration buckets stable
+Optimizer Integrity
+ REBALANCE no longer deadlock
+ turnover relaxation works
+ policy hierarchy works
+ regime switching works
+ 
 Phase 3C — Advanced Historical Analytics
 ✅ Dynamic routing => ตอนนี้: DONE ระดับสูงแล้ว
 ✅ Performance Attribution => PARTIAL DONE

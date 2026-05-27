@@ -2839,8 +2839,6 @@ class TransactionBuyBody(BaseModel):
     symbol: str
     shares: float
     price_per_share: float
-    fees: float = 0.0
-    taxes: float = 0.0
     currency: str = "THB"
     exchange_rate: float = 1.0
     transaction_date: str | None = None
@@ -2851,8 +2849,6 @@ class TransactionSellBody(BaseModel):
     symbol: str
     shares: float
     price_per_share: float
-    fees: float = 0.0
-    taxes: float = 0.0
     currency: str = "THB"
     exchange_rate: float = 1.0
     transaction_date: str | None = None
@@ -2946,8 +2942,6 @@ async def transaction_buy(
         raise HTTPException(status_code=422, detail="shares must be positive")
     if body.price_per_share <= 0:
         raise HTTPException(status_code=422, detail="price_per_share must be positive")
-    if body.fees < 0:
-        raise HTTPException(status_code=422, detail="fees cannot be negative")
 
     tx_date = _parse_tx_date(body.transaction_date)
 
@@ -2961,8 +2955,6 @@ async def transaction_buy(
         symbol=symbol,
         shares=body.shares,
         price_per_share=body.price_per_share,
-        fees=body.fees,
-        taxes=body.taxes,
         currency=body.currency,
         exchange_rate=body.exchange_rate,
         transaction_date=tx_date,
@@ -2990,8 +2982,6 @@ async def transaction_sell(
         raise HTTPException(status_code=422, detail="shares must be positive")
     if body.price_per_share <= 0:
         raise HTTPException(status_code=422, detail="price_per_share must be positive")
-    if body.fees < 0:
-        raise HTTPException(status_code=422, detail="fees cannot be negative")
 
     tx_date = _parse_tx_date(body.transaction_date)
 
@@ -3003,8 +2993,6 @@ async def transaction_sell(
             symbol=symbol,
             shares=body.shares,
             price_per_share=body.price_per_share,
-            fees=body.fees,
-            taxes=body.taxes,
             currency=body.currency,
             exchange_rate=body.exchange_rate,
             transaction_date=tx_date,
@@ -3269,6 +3257,12 @@ def _snapshot_row(s: PortfolioSnapshot) -> dict:
         "investment_return_pct": getattr(s, "investment_return_pct", None),
         "investment_return_amount": getattr(s, "investment_return_amount", None),
         "net_external_cash_flow": getattr(s, "net_external_cash_flow", None),
+        "imported_asset_value": getattr(s, "imported_asset_value", None),
+        "manual_adjustment_value": getattr(s, "manual_adjustment_value", None),
+        # Period return decomposition — transparent breakdown of what drove the return
+        "period_realized_pnl": getattr(s, "period_realized_pnl", None),
+        "period_dividend_income": getattr(s, "period_dividend_income", None),
+        "period_fees_paid": getattr(s, "period_fees_paid", None),
         "holdings_count": s.holdings_count,
         "sector_breakdown": _parse(s.sector_breakdown_json),
         "holdings": _parse(s.holdings_json),

@@ -311,6 +311,47 @@ export default function PerformancePage() {
               </div>
             </div>
           )}
+
+          {/* Period return decomposition — shown when sells/dividends/fees occurred this period */}
+          {((latest.period_realized_pnl != null && latest.period_realized_pnl !== 0) ||
+            (latest.period_dividend_income != null && latest.period_dividend_income > 0) ||
+            (latest.period_fees_paid != null && latest.period_fees_paid > 0)) && (
+            <div className="flex items-start gap-3 px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-xs text-gray-700">
+              <span className="mt-0.5 text-gray-400 shrink-0">◎</span>
+              <div className="space-y-1.5 w-full">
+                <p className="font-semibold text-gray-800">Period Return Breakdown</p>
+                <div className="flex flex-wrap gap-x-6 gap-y-1">
+                  {(latest.period_realized_pnl ?? 0) !== 0 && (
+                    <span className="flex items-center gap-1.5">
+                      <span className="px-1.5 py-0.5 bg-teal-100 rounded text-teal-700 font-medium">Realized Sells</span>
+                      <strong className={pnlColor(latest.period_realized_pnl)}>
+                        {(latest.period_realized_pnl ?? 0) >= 0 ? "+" : ""}{fmt(latest.period_realized_pnl)}
+                      </strong>
+                    </span>
+                  )}
+                  {(latest.period_dividend_income ?? 0) > 0 && (
+                    <span className="flex items-center gap-1.5">
+                      <span className="px-1.5 py-0.5 bg-green-100 rounded text-green-700 font-medium">Dividends</span>
+                      <strong className="text-green-700">+{fmt(latest.period_dividend_income)}</strong>
+                    </span>
+                  )}
+                  {(latest.period_fees_paid ?? 0) > 0 && (
+                    <span className="flex items-center gap-1.5">
+                      <span className="px-1.5 py-0.5 bg-red-100 rounded text-red-600 font-medium">Fees Paid</span>
+                      <strong className="text-red-600">−{fmt(latest.period_fees_paid)}</strong>
+                    </span>
+                  )}
+                </div>
+                {(latest.period_realized_pnl ?? 0) > 0 &&
+                  latest.investment_return_amount != null &&
+                  (latest.period_realized_pnl ?? 0) > Math.abs(latest.investment_return_amount) * 1.5 && (
+                  <p className="text-gray-500 leading-relaxed">
+                    The realized P/L ({fmt(latest.period_realized_pnl)}) is larger than today&apos;s investment return ({fmt(latest.investment_return_amount)}) because most of that gain accumulated over previous periods as unrealized appreciation — today&apos;s return reflects only the price movement since the last snapshot.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
         </>
       )}
 
@@ -417,7 +458,7 @@ export default function PerformancePage() {
                   <th className="py-2 pr-4 font-medium text-right">Unrealized P/L</th>
                   <th className="py-2 pr-4 font-medium text-right">Realized P/L</th>
                   <th className="py-2 pr-4 font-medium text-right">Invest. Return</th>
-                  <th className="py-2 pr-4 font-medium text-right">External Events</th>
+                  <th className="py-2 pr-4 font-medium text-right">Period Activity</th>
                   <th className="py-2 font-medium text-right">Holdings</th>
                 </tr>
               </thead>
@@ -426,9 +467,12 @@ export default function PerformancePage() {
                   const hasCashFlow = s.net_external_cash_flow != null && s.net_external_cash_flow !== 0;
                   const hasImport = (s.imported_asset_value ?? 0) > 0;
                   const hasAdj = (s.manual_adjustment_value ?? 0) !== 0;
-                  const hasAnyEvent = hasCashFlow || hasImport || hasAdj;
+                  const hasAnyExcluded = hasCashFlow || hasImport || hasAdj;
+                  const hasSell = (s.period_realized_pnl ?? 0) !== 0;
+                  const hasDividend = (s.period_dividend_income ?? 0) > 0;
+                  const hasFees = (s.period_fees_paid ?? 0) > 0;
                   return (
-                    <tr key={s.id} className={`border-b last:border-0 hover:bg-gray-50 ${hasAnyEvent ? "bg-blue-50/40" : ""}`}>
+                    <tr key={s.id} className={`border-b last:border-0 hover:bg-gray-50 ${hasAnyExcluded ? "bg-blue-50/40" : ""}`}>
                       <td className="py-2 pr-4 font-medium text-gray-800">{s.snapshot_date}</td>
                       <td className="py-2 pr-4 text-right text-gray-700">{fmt(s.total_value)}</td>
                       <td className={`py-2 pr-4 text-right font-medium ${pnlColor(s.unrealized_pnl)}`}>
@@ -439,8 +483,14 @@ export default function PerformancePage() {
                       </td>
                       <td className={`py-2 pr-4 text-right font-medium ${pnlColor(s.investment_return_pct ?? s.daily_return_pct)}`}>
                         {pct(s.investment_return_pct ?? s.daily_return_pct)}
+                        {s.investment_return_amount != null && (
+                          <span className="block text-gray-400 font-normal text-xs">
+                            {s.investment_return_amount >= 0 ? "+" : ""}{fmt(s.investment_return_amount)}
+                          </span>
+                        )}
                       </td>
                       <td className="py-2 pr-4 text-right text-xs space-y-0.5">
+                        {/* Excluded events (balance-sheet) */}
                         {hasCashFlow && (
                           <div className={`font-medium ${(s.net_external_cash_flow ?? 0) > 0 ? "text-blue-600" : "text-amber-600"}`}>
                             {(s.net_external_cash_flow ?? 0) > 0 ? "+" : ""}{fmt(s.net_external_cash_flow)}
@@ -459,7 +509,28 @@ export default function PerformancePage() {
                             <span className="ml-1 text-gray-400 font-normal">adj</span>
                           </div>
                         )}
-                        {!hasAnyEvent && <span className="text-gray-300">—</span>}
+                        {/* Performance events (included in return) */}
+                        {hasSell && (
+                          <div className={`font-medium ${(s.period_realized_pnl ?? 0) >= 0 ? "text-teal-600" : "text-red-500"}`}>
+                            {(s.period_realized_pnl ?? 0) >= 0 ? "+" : ""}{fmt(s.period_realized_pnl)}
+                            <span className="ml-1 text-gray-400 font-normal">realized</span>
+                          </div>
+                        )}
+                        {hasDividend && (
+                          <div className="font-medium text-green-600">
+                            +{fmt(s.period_dividend_income)}
+                            <span className="ml-1 text-gray-400 font-normal">div</span>
+                          </div>
+                        )}
+                        {hasFees && (
+                          <div className="font-medium text-red-400">
+                            −{fmt(s.period_fees_paid)}
+                            <span className="ml-1 text-gray-400 font-normal">fees</span>
+                          </div>
+                        )}
+                        {!hasAnyExcluded && !hasSell && !hasDividend && !hasFees && (
+                          <span className="text-gray-300">—</span>
+                        )}
                       </td>
                       <td className="py-2 text-right text-gray-500">{s.holdings_count ?? "—"}</td>
                     </tr>

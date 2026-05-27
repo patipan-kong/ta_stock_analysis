@@ -20,6 +20,9 @@ from models.database import Portfolio, PortfolioItem, Transaction
 
 _QUANT = Decimal("0.000001")
 
+# Thai SET brokerage: 0.157% commission × 1.07 VAT = 0.0016799 effective rate
+_BROKERAGE_RATE = Decimal("0.00157") * Decimal("1.07")
+
 
 def _d(v: float) -> Decimal:
     return Decimal(str(v))
@@ -27,6 +30,11 @@ def _d(v: float) -> Decimal:
 
 def _f(v: Decimal) -> float:
     return float(v.quantize(_QUANT, rounding=ROUND_HALF_UP))
+
+
+def _calc_fee(value: Decimal) -> Decimal:
+    """Brokerage fee: value × 0.00157 × 1.07, rounded to 4 decimal places."""
+    return (value * _BROKERAGE_RATE).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
 
 # ─── BUY ──────────────────────────────────────────────────────────────────────
@@ -38,8 +46,6 @@ def execute_buy(
     symbol: str,
     shares: float,
     price_per_share: float,
-    fees: float = 0.0,
-    taxes: float = 0.0,
     currency: str = "THB",
     exchange_rate: float = 1.0,
     transaction_date: datetime | None = None,
@@ -48,15 +54,16 @@ def execute_buy(
 ) -> dict:
     """Create a BUY transaction, upsert the holding, and reduce portfolio cash.
 
+    Fee is auto-calculated: value × 0.00157 × 1.07 (0.157% brokerage + 7% VAT).
     Avg cost uses weighted-average formula (fees excluded from cost basis).
-    Cash is allowed to go negative (no validation) so users can record
-    purchases before depositing cash.
+    Cash is allowed to go negative so users can record purchases before depositing.
     """
     d_shares = _d(shares)
     d_price = _d(price_per_share)
-    d_fees = _d(fees)
-    d_taxes = _d(taxes)
-    total = d_shares * d_price + d_fees + d_taxes
+    d_value = d_shares * d_price
+    d_fees = _calc_fee(d_value)
+    d_taxes = Decimal("0")
+    total = d_value + d_fees
     tx_date = transaction_date or datetime.utcnow()
 
     item = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
@@ -135,8 +142,6 @@ def execute_sell(
     symbol: str,
     shares: float,
     price_per_share: float,
-    fees: float = 0.0,
-    taxes: float = 0.0,
     currency: str = "THB",
     exchange_rate: float = 1.0,
     transaction_date: datetime | None = None,
@@ -145,11 +150,13 @@ def execute_sell(
 ) -> dict:
     """Create a SELL transaction, reduce the holding, and increase portfolio cash.
 
+    Fee is auto-calculated: value × 0.00157 × 1.07 (0.157% brokerage + 7% VAT).
+
     Raises ValueError if:
     - No holding exists for the symbol
     - Selling more shares than currently held (oversell prevention)
 
-    Realized P&L = (sell_price - avg_cost) * shares - fees - taxes
+    Realized P&L = (sell_price - avg_cost) * shares - fees
     """
     item = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     if not item:
@@ -157,8 +164,9 @@ def execute_sell(
 
     d_shares = _d(shares)
     d_price = _d(price_per_share)
-    d_fees = _d(fees)
-    d_taxes = _d(taxes)
+    d_value = d_shares * d_price
+    d_fees = _calc_fee(d_value)
+    d_taxes = Decimal("0")
     d_held = _d(item.shares)
 
     if d_shares > d_held + Decimal("0.0001"):

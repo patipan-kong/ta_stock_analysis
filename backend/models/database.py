@@ -237,6 +237,10 @@ class PortfolioSnapshot(Base):
     investment_return_amount = Column(Float, nullable=True)   # absolute pure market gain/loss
     imported_asset_value = Column(Float, nullable=True)       # market value of INITIAL_POSITION imports this period
     manual_adjustment_value = Column(Float, nullable=True)    # market value of QUANTITY_CORRECTION adjustments this period
+    # Period-level return decomposition (for transparency / debugging)
+    period_realized_pnl = Column(Float, nullable=True)        # realized P&L from SELL transactions in this window
+    period_dividend_income = Column(Float, nullable=True)     # dividend income received in this window
+    period_fees_paid = Column(Float, nullable=True)           # total brokerage fees paid on trades in this window
     sector_breakdown_json = Column(Text, nullable=True)  # JSON {"Technology": 35.2, ...}
     holdings_json = Column(Text, nullable=True)          # JSON [{symbol, shares, market_value, ...}]
     holdings_count = Column(Integer, nullable=True)
@@ -688,6 +692,12 @@ def migrate_legacy_data() -> None:
                         conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN imported_asset_value REAL"))
                     if "manual_adjustment_value" not in ps_cols:
                         conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN manual_adjustment_value REAL"))
+                    if "period_realized_pnl" not in ps_cols:
+                        conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN period_realized_pnl REAL"))
+                    if "period_dividend_income" not in ps_cols:
+                        conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN period_dividend_income REAL"))
+                    if "period_fees_paid" not in ps_cols:
+                        conn.execute(text("ALTER TABLE portfolio_snapshots ADD COLUMN period_fees_paid REAL"))
 
             if "transactions" in tables:
                 with engine.begin() as conn:

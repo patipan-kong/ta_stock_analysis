@@ -1120,8 +1120,6 @@ export interface BuyPayload {
   symbol: string;
   shares: number;
   price_per_share: number;
-  fees?: number;
-  taxes?: number;
   currency?: string;
   exchange_rate?: number;
   transaction_date?: string;
@@ -1132,8 +1130,6 @@ export interface SellPayload {
   symbol: string;
   shares: number;
   price_per_share: number;
-  fees?: number;
-  taxes?: number;
   currency?: string;
   exchange_rate?: number;
   transaction_date?: string;
@@ -1462,6 +1458,18 @@ export interface PortfolioSnapshotRow {
   imported_asset_value: number | null;
   /** Market value of QUANTITY_CORRECTION adjustments in this period. Excluded from return. */
   manual_adjustment_value: number | null;
+  /**
+   * Realized P&L from SELL transactions in this snapshot window (informational).
+   * Already embedded in investment_return_pct through total_value changes.
+   * Tip: if this is much larger than investment_return_amount, most of the gain
+   * accumulated over prior periods as unrealized P/L — today's return reflects
+   * only the price movement since the previous snapshot.
+   */
+  period_realized_pnl: number | null;
+  /** Dividends received in this snapshot window. Included in investment_return_pct. */
+  period_dividend_income: number | null;
+  /** Total brokerage fees on trades in this window. Drag already reflected in investment_return_pct. */
+  period_fees_paid: number | null;
   holdings_count: number | null;
   sector_breakdown: Record<string, number> | null;  // {sector: weight_pct}
   holdings: SnapshotHolding[] | null;

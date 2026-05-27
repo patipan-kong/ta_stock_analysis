@@ -64,7 +64,6 @@ export default function TransactionModal({
   const [price, setPrice] = useState(currentPrice != null ? String(currentPrice) : "");
   const [avgCost, setAvgCost] = useState("");    // for initial_position
   const [amount, setAmount] = useState("");       // for deposit/withdraw
-  const [fees, setFees] = useState("0");
   const [date, setDate] = useState(today());
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -89,12 +88,18 @@ export default function TransactionModal({
   const priceNum  = parseFloat(price)  || 0;
   const avgNum    = parseFloat(avgCost) || 0;
   const amountNum = parseFloat(amount)  || 0;
-  const feesNum   = parseFloat(fees)    || 0;
+
+  // Auto-calculated brokerage fee: 0.157% commission × 1.07 VAT
+  const BROKERAGE_RATE = 0.00157 * 1.07;
+  const tradeValue = sharesNum * priceNum;
+  const brokerageFee = (mode === "buy" || mode === "sell") && tradeValue > 0
+    ? Math.round(tradeValue * BROKERAGE_RATE * 10000) / 10000
+    : 0;
 
   const total = (() => {
     if (isCash || isDividend) return amountNum;
     if (isImport) return sharesNum * avgNum;
-    return sharesNum * priceNum + (mode === "buy" ? feesNum : -feesNum);
+    return mode === "buy" ? tradeValue + brokerageFee : tradeValue - brokerageFee;
   })();
 
   const effectiveSymbol = (symbolProp ?? symbolInput).trim().toUpperCase();
@@ -106,7 +111,7 @@ export default function TransactionModal({
     if (isImport) return effectiveSymbol.length > 0 && sharesNum > 0 && avgNum > 0;
     // buy / sell
     if (!effectiveSymbol) return false;
-    if (sharesNum <= 0 || priceNum <= 0 || feesNum < 0) return false;
+    if (sharesNum <= 0 || priceNum <= 0) return false;
     if (mode === "sell" && maxShares != null && sharesNum > maxShares) return false;
     return true;
   })();
@@ -126,7 +131,6 @@ export default function TransactionModal({
           symbol: effectiveSymbol,
           shares: sharesNum,
           price_per_share: priceNum,
-          fees: feesNum,
           transaction_date: txDate,
           notes: txNotes,
         } satisfies BuyPayload;
@@ -135,7 +139,6 @@ export default function TransactionModal({
           symbol: effectiveSymbol,
           shares: sharesNum,
           price_per_share: priceNum,
-          fees: feesNum,
           transaction_date: txDate,
           notes: txNotes,
           remove_if_zero: true,
@@ -240,6 +243,12 @@ export default function TransactionModal({
                 <div className="flex justify-between">
                   <span className="text-gray-500">Price</span>
                   <span className="font-medium">{result.price_per_share.toFixed(4)}</span>
+                </div>
+              )}
+              {result.fees != null && result.fees > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Brokerage fee</span>
+                  <span className="font-medium">{result.fees.toFixed(4)}</span>
                 </div>
               )}
               <div className="flex justify-between">
@@ -415,22 +424,6 @@ export default function TransactionModal({
               </div>
             )}
 
-            {/* Fees — buy / sell only */}
-            {(mode === "buy" || mode === "sell") && (
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1">Fees / commission</label>
-                <input
-                  type="number"
-                  step="any"
-                  min="0"
-                  value={fees}
-                  onChange={(e) => setFees(e.target.value)}
-                  placeholder="0"
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
-                />
-              </div>
-            )}
-
             {/* Date */}
             <div>
               <label className="block text-xs font-semibold text-gray-500 mb-1">Date</label>
@@ -455,17 +448,38 @@ export default function TransactionModal({
               />
             </div>
 
-            {/* Total preview */}
-            {total > 0 && (
+            {/* Trade breakdown — buy / sell: shows Value + Fee + Total */}
+            {(mode === "buy" || mode === "sell") && tradeValue > 0 && (
+              <div
+                className="rounded-lg px-3 py-2 text-xs space-y-1"
+                style={{ backgroundColor: cfg.accentLight }}
+              >
+                <div className="flex justify-between text-gray-500">
+                  <span>Value ({sharesNum} × {priceNum.toFixed(2)})</span>
+                  <span>{tradeValue.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-gray-500">
+                  <span>Brokerage fee <span className="text-gray-400">(0.157% + 7% VAT)</span></span>
+                  <span>{mode === "buy" ? "+" : "−"}{brokerageFee.toFixed(2)}</span>
+                </div>
+                <div
+                  className="flex justify-between font-semibold border-t pt-1 mt-0.5"
+                  style={{ color: cfg.accent, borderColor: `${cfg.accent}30` }}
+                >
+                  <span>{mode === "buy" ? "Total cost" : "Net proceeds"}</span>
+                  <span>{total.toFixed(2)}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Amount preview — deposit / withdraw / dividend / import */}
+            {(isCash || isDividend || isImport) && total > 0 && (
               <div
                 className="rounded-lg px-3 py-2 text-xs flex justify-between"
                 style={{ backgroundColor: cfg.accentLight }}
               >
                 <span className="text-gray-500">
-                  {mode === "buy"      ? "Total cost"   :
-                   mode === "sell"     ? "Net proceeds" :
-                   mode === "withdraw" ? "Withdrawn"    :
-                   mode === "dividend" ? "Dividend"     : "Amount"}
+                  {mode === "withdraw" ? "Withdrawn" : mode === "dividend" ? "Dividend" : "Amount"}
                 </span>
                 <span className="font-semibold" style={{ color: cfg.accent }}>
                   {Math.abs(total).toFixed(2)}

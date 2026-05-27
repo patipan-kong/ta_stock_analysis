@@ -400,7 +400,51 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 ---
 
 ## CURRENT ARCHITECTURE STATE
-_Last updated: 2026-05-25 (Phase 3B.9 + accounting hotfix). Update this section at the start of each new session._
+_Last updated: 2026-05-27 (Phase 3B.10 — Return decomposition transparency + auto-fee calculation). Update this section at the start of each new session._
+
+### Phase 3B.10 — Return Decomposition Transparency & Auto-Fee Calculation ✅ SHIPPED 2026-05-27
+
+Adds three period-level transparency columns to `PortfolioSnapshot` so users can understand why daily return may appear small when cumulative realized P/L is large.
+
+**Root cause of confusion:** When a user sells a stock that has been held for many days, the cumulative `realized_pnl` (e.g. +3,808 from avg_cost to sell price) looks much bigger than the daily `investment_return_pct` (e.g. +0.17%). The formula is correct: most of that gain was already captured in prior snapshots as unrealized appreciation. Today's return reflects only the price movement since the last snapshot.
+
+**What was built:**
+
+- **3 new `PortfolioSnapshot` columns** (all nullable, backward-compat):
+  - `period_realized_pnl` — P&L from SELL transactions with `created_at` in this snapshot window. Already embedded in `investment_return_pct` via total_value delta. Shown for transparency.
+  - `period_dividend_income` — dividend income received in this window. Also in `investment_return_pct`.
+  - `period_fees_paid` — total brokerage fees on BUY + SELL trades in this window. Real drag reflected in `investment_return_pct`.
+
+- **Alembic migration `t4u5v6w7x8y9`** + `migrate_legacy_data()` SQLite patches for all 3 columns.
+
+- **Diagnostic logging** (`logging.getLogger(__name__)` in `portfolio_snapshots.py`):
+  - `[SNAPSHOT]` — logs all return components every time a snapshot is generated
+  - `[SNAPSHOT VALIDATION]` — warns when `|investment_return_pct| > 25%` (suspicious NAV jump)
+  - `[SNAPSHOT ACCOUNTING]` — info-level note when `period_realized_pnl > 2 × investment_return_amount`, explaining that prior snapshots captured most of the gain as unrealized
+
+- **`_snapshot_row()` in `main.py`** — now includes `imported_asset_value`, `manual_adjustment_value`, and all 3 new period fields in the serialized response (previously missing from the GET /snapshots list endpoint).
+
+- **Auto-fee calculation in `portfolio_transactions.py`** — `execute_buy()` and `execute_sell()` now auto-calculate brokerage fee as `value × 0.00157 × 1.07` (0.157% commission + 7% VAT). Manual `fees`/`taxes` parameters removed.
+
+- **`main.py`** — `TransactionBuyBody` / `TransactionSellBody` Pydantic models no longer accept `fees`/`taxes`.
+
+- **`TransactionModal.tsx`** — removed manual fee input field; auto-shows the calculated fee (`value × 0.00157 × 1.07`) as a read-only preview.
+
+- **`frontend/lib/api.ts`** — `PortfolioSnapshotRow` extended with `period_realized_pnl`, `period_dividend_income`, `period_fees_paid`.
+
+- **`frontend/app/performance/page.tsx`** — new "Period Return Breakdown" section (gray card) alongside the existing non-performance disclosure banner; shows realized sells, dividends, fees; contextual explanation text appears when realized P/L > 1.5× daily return amount. History table "External Events" column renamed "Period Activity" and now also shows realized/dividend/fee entries.
+
+**Accounting invariant (unchanged):**
+```
+investment_return_pct = (today_nav − prev_nav − net_external_cash_flow
+                         − imported_asset_value − manual_adjustment_value)
+                        / prev_nav × 100
+
+# Realized gains: already in total_value via cash balance from execute_sell()
+# Dividends: already in total_value via cash balance from execute_dividend()
+# Fees: already subtracted from net_proceeds/total in execute_buy/sell()
+# None of the above are double-counted or excluded
+```
 
 ### Phase 3B.9 Hotfix — Backdated Import Detection & Quantity Correction ✅ SHIPPED 2026-05-25
 
