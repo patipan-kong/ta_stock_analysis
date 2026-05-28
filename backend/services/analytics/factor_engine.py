@@ -40,6 +40,7 @@ from services.data_fetcher import (
     is_dr_symbol,
 )
 from services.analytics.quant_engine import get_cached, set_cached
+from services.core.runtime_env import allow_market_fetching
 
 log = logging.getLogger(__name__)
 _CACHE_GROUP = "factor"
@@ -749,6 +750,13 @@ def compute_portfolio_factor_exposure(db, portfolio_id: int, workspace_id: int) 
     cached = get_cached(portfolio_id, _CACHE_GROUP)
     if cached:
         return cached
+
+    if not allow_market_fetching():
+        log.info(
+            "[VPS BLOCKED FETCH] factor_engine portfolio_id=%s — "
+            "live price/info fetches blocked; results will use stale DB cache via data_fetcher",
+            portfolio_id,
+        )
 
     # Load portfolio
     portfolio = (

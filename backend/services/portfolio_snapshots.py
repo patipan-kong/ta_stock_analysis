@@ -321,7 +321,11 @@ async def generate_daily_snapshot(
                 m = _REALIZED_RE.search(tx.notes)
                 if m:
                     period_realized_pnl += float(m.group(1))
-            period_fees_paid += tx.fees or 0.0
+            # fees = pre-VAT component; taxes = VAT component (both non-zero for
+            # transactions recorded after the broker-fee decomposition upgrade).
+            # Historical rows have taxes=0 so fees alone equalled the total — the
+            # sum is correct for both old and new records.
+            period_fees_paid += (tx.fees or 0.0) + (tx.taxes or 0.0)
 
         # ── Period dividend income ─────────────────────────────────────────────
         div_txs = db.query(Transaction).filter(
@@ -340,7 +344,7 @@ async def generate_daily_snapshot(
             Transaction.created_at < today_end,
         ).all()
         for tx in buy_txs_period:
-            period_fees_paid += tx.fees or 0.0
+            period_fees_paid += (tx.fees or 0.0) + (tx.taxes or 0.0)
 
     # ── Cash-flow-adjusted daily return ──────────────────────────────────────
     # pure_market_gain = today_nav
@@ -415,6 +419,32 @@ async def generate_daily_snapshot(
                 portfolio_id, today,
                 period_realized_pnl, investment_return_amount,
             )
+
+    # ── NAV reconciliation ───────────────────────────────────────────────────
+    # Invariant: cash + equity_value must equal total_value (always true by
+    # construction, but logged so the audit trail is explicit in server logs).
+    _computed_nav = equity_value + cash
+    _nav_delta = abs(_computed_nav - total_value)
+    if _nav_delta > 0.01:
+        _log.error(
+            "[NAV RECONCILIATION FAILED] portfolio=%d date=%s "
+            "cash=%.4f equity=%.4f computed_nav=%.4f stored_nav=%.4f delta=%.6f — "
+            "total_value formula is broken; investigate immediately",
+            portfolio_id, today,
+            cash, equity_value, _computed_nav, total_value, _nav_delta,
+        )
+    elif total_value < 0:
+        _log.warning(
+            "[NAV NEGATIVE] portfolio=%d date=%s total_value=%.4f — "
+            "portfolio is net-negative (leveraged or fee-distorted)",
+            portfolio_id, today, total_value,
+        )
+    else:
+        _log.debug(
+            "[NAV RECONCILIATION OK] portfolio=%d date=%s "
+            "cash=%.4f + equity=%.4f = nav=%.4f",
+            portfolio_id, today, cash, equity_value, total_value,
+        )
 
     # ── Upsert snapshot row ───────────────────────────────────────────────────
     existing = db.query(PortfolioSnapshot).filter_by(

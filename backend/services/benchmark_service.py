@@ -16,6 +16,7 @@ import yfinance as yf
 from sqlalchemy.orm import Session
 
 from models.database import BenchmarkPrice
+from services.core.runtime_env import allow_market_fetching
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +53,15 @@ def _fetch_close_on_date(symbol: str, price_date: str) -> float | None:
     Requests a 6-day window ending on the day after *price_date* so that the
     last available trading-day close is returned even when *price_date* falls
     on a weekend or holiday.
+    On VPS: always returns None (no live fetch allowed).
     """
+    if not allow_market_fetching():
+        log.info(
+            "[VPS BLOCKED FETCH] benchmark_service._fetch_close_on_date symbol=%s date=%s — skipped",
+            symbol, price_date,
+        )
+        return None
+
     d = date.fromisoformat(price_date)
     start = (d - timedelta(days=6)).isoformat()
     end = (d + timedelta(days=1)).isoformat()  # yfinance end is exclusive
@@ -61,6 +70,7 @@ def _fetch_close_on_date(symbol: str, price_date: str) -> float | None:
         if hist.empty:
             log.warning("benchmark_service: no data for %s on %s", symbol, price_date)
             return None
+        log.info("[LOCAL FETCH] benchmark_service fetched %s @ %s", symbol, price_date)
         return float(hist["Close"].iloc[-1])
     except Exception as exc:
         log.error("benchmark_service: fetch failed %s %s — %s", symbol, price_date, exc)
@@ -135,9 +145,14 @@ async def backfill_benchmarks(
     Uses a single yfinance history() call per symbol to retrieve all trading
     days in the range at once, then upserts each row into benchmark_prices.
     Existing rows are overwritten to correct any previously stored stale prices.
+    On VPS: returns immediately with a blocked status for all symbols.
 
     Returns a list of per-symbol result dicts.
     """
+    if not allow_market_fetching():
+        log.info("[VPS BLOCKED FETCH] benchmark_service.backfill_benchmarks — skipped on VPS")
+        return [{"symbol": sym, "status": "vps_blocked", "rows": 0} for sym in (symbols or DEFAULT_BENCHMARKS)]
+
     if symbols is None:
         symbols = DEFAULT_BENCHMARKS
     if to_date is None:

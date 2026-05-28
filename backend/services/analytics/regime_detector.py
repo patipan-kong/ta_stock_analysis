@@ -189,7 +189,17 @@ def get_regime_constraints(regime: str) -> dict:
 def _fetch_benchmark_history(symbol: str, days: int = 95) -> pd.DataFrame:
     """Fetch daily close prices for a benchmark symbol via yfinance.
     Returns a DataFrame with columns ['Close'] indexed by date, or empty DataFrame on failure.
+    On VPS: returns empty DataFrame immediately (no live fetch allowed).
     """
+    from services.core.runtime_env import allow_market_fetching
+    if not allow_market_fetching():
+        log.info(
+            "[VPS BLOCKED FETCH] regime_detector._fetch_benchmark_history symbol=%s — "
+            "returning empty (VPS mode; regime state served from DB cache)",
+            symbol,
+        )
+        return pd.DataFrame()
+
     try:
         import yfinance as yf  # local import — only needed here
         ticker = yf.Ticker(symbol)
@@ -200,6 +210,7 @@ def _fetch_benchmark_history(symbol: str, days: int = 95) -> pd.DataFrame:
         df = hist[["Close"]].copy()
         df.index = pd.to_datetime(df.index).tz_localize(None)
         df = df.sort_index()
+        log.info("[LOCAL FETCH] regime_detector fetched %s (%d rows)", symbol, len(df))
         return df.tail(days)
     except Exception as exc:
         log.warning("regime_detector: failed to fetch %s — %s", symbol, exc)

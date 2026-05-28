@@ -52,6 +52,7 @@ from services.portfolio_transactions import (
 )
 from services.portfolio_snapshots import generate_daily_snapshot
 from services.snapshot_scheduler import setup_scheduler, shutdown_scheduler
+from services.core.runtime_env import get_system_status, is_vps_env, allow_market_fetching
 from services.analytics.quant_engine import (
     build_portfolio_metrics, build_benchmark_metrics,
     build_signal_metrics, build_allocation_metrics,
@@ -85,7 +86,16 @@ async def lifespan(_: FastAPI):
     _ANALYZE_SEMAPHORE = asyncio.Semaphore(_ANALYZE_CONCURRENCY)
     init_db()
     migrate_legacy_data()
-    setup_scheduler()
+    status = get_system_status()
+    _log.info(
+        "startup: role=%s app_env=%s live_fetch=%s scheduler=%s — %s",
+        status["role"],
+        status["app_env"],
+        status["live_fetch_enabled"],
+        status["scheduler_enabled"],
+        status["description"],
+    )
+    setup_scheduler()  # no-op on VPS (guarded inside setup_scheduler)
     yield
     shutdown_scheduler()
 
@@ -2501,6 +2511,15 @@ async def fix_sectors(db: Session = Depends(get_db)) -> dict:
     return {"updated": updated, "total": len(all_symbols), "results": results}
 
 
+@app.get("/system/status")
+async def system_status():
+    """Return the current runtime environment role and feature flags.
+
+    No auth required — used by the frontend to show the Cloud Dashboard badge.
+    """
+    return get_system_status()
+
+
 @app.get("/stats/latency")
 async def get_latency_stats(
     db: Session = Depends(get_db),
@@ -3555,6 +3574,322 @@ async def admin_benchmark_backfill(
     results = await backfill_benchmarks(db, symbols=sym_list, from_date=from_date, to_date=to_date)
     total_rows = sum(r.get("rows", 0) for r in results)
     return {"results": results, "total_rows_written": total_rows}
+
+
+@app.post("/admin/recalculate-cost-basis")
+async def admin_recalculate_cost_basis(
+    from_date: str = "2026-05-27",
+    dry_run: bool = False,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Replay transaction history with the broker-grade fee formula.
+
+    What changes for each portfolio:
+      1. Transaction.fees  → commission + trading_fee + clearing_fee (pre-VAT)
+      2. Transaction.taxes → VAT amount
+      3. PortfolioItem.avg_cost → rebuilt using fee-inclusive weighted average
+      4. SELL notes        → Realized P&L figure updated to match new avg_cost
+      5. PortfolioSnapshot rows on or after from_date → regenerated
+
+    The total fee per transaction is mathematically identical to the old formula
+    (0.00157 × 1.07 = sum of all components × 1.07), so cash balances are
+    unchanged.  Only the fees/taxes split, avg_cost, and realized P&L wording
+    are different.
+
+    Set dry_run=true to preview affected counts without writing to the DB.
+    """
+    import re as _re
+    from decimal import Decimal as _Dec, ROUND_HALF_UP as _RHU
+    from services.broker_fees import calc_fees as _calc_fees, resolve_fee_profile as _resolve_profile
+
+    _PNLRE = re.compile(r"^Realized P&L:\s*([-+]?\d+\.?\d*)\.\s*")
+    _QUANT6 = _Dec("0.000001")
+
+    def _d(v: float) -> _Dec:
+        return _Dec(str(v))
+
+    def _f(v: _Dec) -> float:
+        return float(v.quantize(_QUANT6, rounding=_RHU))
+
+    ws = _ws_id(db)
+    cutoff = datetime.strptime(from_date, "%Y-%m-%d")
+
+    portfolios = db.query(Portfolio).filter_by(workspace_id=ws).all()
+
+    total_tx_updated = 0
+    total_holdings_updated = 0
+    total_snapshots_regenerated = 0
+    snapshot_errors: list[str] = []
+
+    for portfolio in portfolios:
+        # ── Step 1: Re-split fees/taxes for BUY/SELL from from_date ──────────
+        recent_txs = db.query(Transaction).filter(
+            Transaction.portfolio_id == portfolio.id,
+            Transaction.transaction_type.in_(["BUY", "SELL"]),
+            Transaction.created_at >= cutoff,
+        ).all()
+
+        for tx in recent_txs:
+            if tx.shares and tx.price_per_share:
+                gross = _d(tx.shares) * _d(tx.price_per_share)
+                profile = _resolve_profile(tx.symbol or "")
+                bd = _calc_fees(gross, profile)
+                if not dry_run:
+                    tx.fees  = _f(bd.total_fees_excl_vat)
+                    tx.taxes = _f(bd.vat)
+                total_tx_updated += 1
+
+        # ── Step 2: Full cost-basis replay (all transactions) ─────────────────
+        all_txs = (
+            db.query(Transaction)
+            .filter(
+                Transaction.portfolio_id == portfolio.id,
+                Transaction.transaction_type.in_(["BUY", "SELL", "INITIAL_POSITION"]),
+            )
+            .order_by(Transaction.transaction_date, Transaction.id)
+            .all()
+        )
+
+        # virtual holdings: {symbol: {shares: Decimal, avg_cost: Decimal}}
+        virt: dict[str, dict] = {}
+
+        for tx in all_txs:
+            sym = tx.symbol
+            if not sym or not tx.shares or not tx.price_per_share:
+                continue
+
+            d_sh  = _d(tx.shares)
+            d_px  = _d(tx.price_per_share)
+
+            if tx.transaction_type == "BUY":
+                gross = d_sh * d_px
+                profile = _resolve_profile(sym)
+                bd = _calc_fees(gross, profile)
+                net_cost = bd.net_buy_amount()   # fee-inclusive total cash out
+
+                if sym not in virt:
+                    virt[sym] = {"shares": d_sh, "avg_cost": net_cost / d_sh}
+                else:
+                    h = virt[sym]
+                    new_sh  = h["shares"] + d_sh
+                    new_avg = (h["shares"] * h["avg_cost"] + net_cost) / new_sh
+                    virt[sym] = {"shares": new_sh, "avg_cost": new_avg}
+
+            elif tx.transaction_type == "INITIAL_POSITION":
+                d_avg = d_px
+                if sym not in virt:
+                    virt[sym] = {"shares": d_sh, "avg_cost": d_avg}
+                else:
+                    h = virt[sym]
+                    new_sh  = h["shares"] + d_sh
+                    new_avg = (h["shares"] * h["avg_cost"] + d_sh * d_avg) / new_sh
+                    virt[sym] = {"shares": new_sh, "avg_cost": new_avg}
+
+            elif tx.transaction_type == "SELL":
+                if sym not in virt:
+                    continue
+                h      = virt[sym]
+                avg_at_sell = h["avg_cost"]
+
+                gross   = d_sh * d_px
+                profile = _resolve_profile(sym)
+                bd      = _calc_fees(gross, profile)
+                pnl     = (d_px - avg_at_sell) * d_sh - bd.total_fees_incl_vat
+
+                # Update SELL notes for transactions from from_date
+                if not dry_run and tx.created_at >= cutoff and tx.notes is not None:
+                    m = _PNLRE.match(tx.notes)
+                    user_note = tx.notes[m.end():] if m else tx.notes
+                    pnl_str   = f"Realized P&L: {_f(pnl):+.4f}"
+                    tx.notes  = f"{pnl_str}. {user_note}" if user_note else pnl_str
+
+                new_sh = h["shares"] - d_sh
+                if _f(new_sh) <= 0:
+                    del virt[sym]
+                else:
+                    virt[sym] = {"shares": new_sh, "avg_cost": avg_at_sell}
+
+        # ── Step 3: Update PortfolioItem.avg_cost ─────────────────────────────
+        for sym, state in virt.items():
+            item = db.query(PortfolioItem).filter_by(
+                portfolio_id=portfolio.id, symbol=sym
+            ).first()
+            if item:
+                new_avg = _f(state["avg_cost"])
+                if abs(new_avg - item.avg_cost) > 0.0001:
+                    if not dry_run:
+                        item.avg_cost = new_avg
+                    total_holdings_updated += 1
+
+        if not dry_run:
+            db.commit()
+
+        # ── Step 4: Regenerate snapshots from from_date ───────────────────────
+        if not dry_run:
+            snaps = (
+                db.query(PortfolioSnapshot)
+                .filter(
+                    PortfolioSnapshot.portfolio_id == portfolio.id,
+                    PortfolioSnapshot.snapshot_date >= from_date,
+                )
+                .order_by(PortfolioSnapshot.snapshot_date)
+                .all()
+            )
+            for snap in snaps:
+                try:
+                    await generate_daily_snapshot(db, portfolio.id, ws, snap.snapshot_date)
+                    total_snapshots_regenerated += 1
+                except Exception as exc:
+                    msg = f"portfolio={portfolio.id} date={snap.snapshot_date}: {exc}"
+                    snapshot_errors.append(msg)
+                    _log.warning("[COST-BASIS REGEN] snapshot failed — %s", msg)
+
+    return {
+        "from_date": from_date,
+        "dry_run": dry_run,
+        "portfolios_processed": len(portfolios),
+        "transactions_updated": total_tx_updated,
+        "holdings_updated": total_holdings_updated,
+        "snapshots_regenerated": total_snapshots_regenerated,
+        "snapshot_errors": snapshot_errors,
+    }
+
+
+@app.get("/admin/validate-portfolio/{portfolio_id}")
+async def admin_validate_portfolio(
+    portfolio_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Accounting integrity audit for a single portfolio.
+
+    Checks performed:
+      1. NAV reconciliation — cash + live equity ≈ last snapshot total_value
+      2. Cash ledger        — portfolio.cash_balance reconciles with transaction history
+      3. Realized P/L       — sum of parsed SELL notes matches snapshot realized_pnl
+      4. Negative shares    — any PortfolioItem with shares ≤ 0
+
+    Returns a structured report with pass/fail per check and the computed deltas.
+    Designed as a diagnostic tool; it does not mutate any data.
+    """
+    ws = _ws_id(db)
+    portfolio = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id,
+        Portfolio.workspace_id == ws,
+    ).first()
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    items = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id).all()
+
+    # ── Fetch live prices ─────────────────────────────────────────────────────
+    prices_list = await asyncio.gather(*[
+        asyncio.to_thread(fetch_price_info, item.symbol)
+        for item in items
+    ]) if items else []
+    price_map = {
+        item.symbol: (p.get("current_price") or item.avg_cost)
+        for item, p in zip(items, prices_list)
+    }
+
+    live_equity = sum(item.shares * price_map.get(item.symbol, item.avg_cost) for item in items)
+    live_cash   = portfolio.cash_balance or 0.0
+    live_nav    = live_equity + live_cash
+
+    # ── 1. NAV reconciliation vs latest snapshot ──────────────────────────────
+    latest_snap = (
+        db.query(PortfolioSnapshot)
+        .filter_by(portfolio_id=portfolio_id)
+        .order_by(PortfolioSnapshot.snapshot_date.desc())
+        .first()
+    )
+    nav_check = {"status": "no_snapshot"}
+    if latest_snap:
+        delta = abs(live_nav - latest_snap.total_value)
+        # Allow up to 2% drift (market movement since last snapshot is expected)
+        nav_ok = delta / max(latest_snap.total_value, 1.0) < 0.02
+        nav_check = {
+            "status": "ok" if nav_ok else "drift",
+            "live_nav": round(live_nav, 4),
+            "snapshot_nav": round(latest_snap.total_value, 4),
+            "snapshot_date": latest_snap.snapshot_date,
+            "delta": round(delta, 4),
+            "delta_pct": round(delta / max(latest_snap.total_value, 1.0) * 100, 2),
+        }
+
+    # ── 2. Cash ledger reconciliation ─────────────────────────────────────────
+    all_txs = db.query(Transaction).filter_by(portfolio_id=portfolio_id).all()
+    ledger_cash = 0.0
+    for tx in all_txs:
+        t = tx.transaction_type
+        if t in ("DEPOSIT", "INITIAL_CASH"):
+            ledger_cash += tx.total_amount
+        elif t == "WITHDRAW":
+            ledger_cash -= tx.total_amount
+        elif t == "BUY":
+            ledger_cash -= tx.total_amount   # total_amount = gross + fees
+        elif t == "SELL":
+            ledger_cash += tx.total_amount   # total_amount = net proceeds
+        elif t == "DIVIDEND":
+            ledger_cash += tx.total_amount
+
+    cash_delta = abs(ledger_cash - live_cash)
+    cash_check = {
+        "status": "ok" if cash_delta < 0.10 else "mismatch",
+        "ledger_computed": round(ledger_cash, 4),
+        "portfolio_balance": round(live_cash, 4),
+        "delta": round(cash_delta, 4),
+    }
+
+    # ── 3. Realized P/L from SELL notes ──────────────────────────────────────
+    sell_txs = [t for t in all_txs if t.transaction_type == "SELL"]
+    pnl_from_notes = 0.0
+    pnl_unparsed   = 0
+    _PNLRE = re.compile(r"Realized P&L:\s*([-+]?\d+\.?\d*)")
+    for tx in sell_txs:
+        if tx.notes:
+            m = _PNLRE.search(tx.notes)
+            if m:
+                pnl_from_notes += float(m.group(1))
+            else:
+                pnl_unparsed += 1
+
+    snap_realized = latest_snap.realized_pnl if latest_snap else None
+    pnl_delta = abs(pnl_from_notes - (snap_realized or 0.0))
+    pnl_check = {
+        "status": "ok" if pnl_delta < 0.10 else "mismatch",
+        "computed_from_notes": round(pnl_from_notes, 4),
+        "snapshot_realized_pnl": round(snap_realized, 4) if snap_realized is not None else None,
+        "delta": round(pnl_delta, 4),
+        "unparsed_sell_notes": pnl_unparsed,
+    }
+
+    # ── 4. Negative-share positions ──────────────────────────────────────────
+    neg_items = [item.symbol for item in items if item.shares <= 0]
+    neg_check = {
+        "status": "ok" if not neg_items else "error",
+        "symbols_with_non_positive_shares": neg_items,
+    }
+
+    overall = "ok" if all(
+        c.get("status") in ("ok", "no_snapshot", "drift")
+        for c in [nav_check, cash_check, pnl_check, neg_check]
+    ) else "issues_found"
+
+    return {
+        "portfolio_id": portfolio_id,
+        "portfolio_name": portfolio.name,
+        "overall": overall,
+        "checks": {
+            "nav_reconciliation": nav_check,
+            "cash_ledger": cash_check,
+            "realized_pnl": pnl_check,
+            "negative_shares": neg_check,
+        },
+        "live_nav": round(live_nav, 4),
+        "live_cash": round(live_cash, 4),
+        "live_equity": round(live_equity, 4),
+        "holdings_count": len(items),
+    }
 
 
 @app.get("/admin/cache-stats")

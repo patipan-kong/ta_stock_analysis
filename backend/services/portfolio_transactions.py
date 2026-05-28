@@ -10,6 +10,38 @@ Supported transaction types:
   WITHDRAW         — remove cash from portfolio (prevents negative balance)
   INITIAL_POSITION — onboarding: import existing holding, does NOT affect cash
   INITIAL_CASH     — onboarding: set starting cash balance
+  QUANTITY_CORRECTION — manual share-count adjustment, does NOT affect cash
+
+Fee accounting
+--------------
+All BUY and SELL fees are calculated via broker_fees.calc_fees():
+    Commission   = Gross × 0.15%
+    Trading Fee  = Gross × 0.006%
+    Clearing Fee = Gross × 0.001%
+    VAT          = (Commission + Trading + Clearing) × 7%
+
+Stored in Transaction columns:
+    fees  = commission + trading_fee + clearing_fee  (pre-VAT sub-total)
+    taxes = VAT amount
+
+Cost basis (BUY)
+----------------
+Fees are included in the weighted-average cost (fee-inclusive basis):
+    effective_price = (gross + total_fees_incl_vat) / shares
+    new_avg_cost    = (old_shares × old_avg + new_shares × effective_price)
+                      / (old_shares + new_shares)
+
+This means avg_cost already embeds the purchase cost fully, so SELL P/L
+only deducts the SELL-side fees—no double-deduction of BUY fees.
+
+Realized P/L (SELL)
+-------------------
+    realized_pnl = (sell_price - avg_cost) × shares - total_sell_fees_incl_vat
+
+Because avg_cost includes BUY fees, the complete round-trip cost is:
+    cost_in  = gross_buy + buy_fees_incl_vat
+    cash_out = gross_sell - sell_fees_incl_vat
+    true_pnl = cash_out - cost_in  (= the above formula)
 """
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
@@ -17,11 +49,9 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from models.database import Portfolio, PortfolioItem, Transaction
+from services.broker_fees import FeeProfile, FeeBreakdown, calc_fees, resolve_fee_profile
 
 _QUANT = Decimal("0.000001")
-
-# Thai SET brokerage: 0.157% commission × 1.07 VAT = 0.0016799 effective rate
-_BROKERAGE_RATE = Decimal("0.00157") * Decimal("1.07")
 
 
 def _d(v: float) -> Decimal:
@@ -30,11 +60,6 @@ def _d(v: float) -> Decimal:
 
 def _f(v: Decimal) -> float:
     return float(v.quantize(_QUANT, rounding=ROUND_HALF_UP))
-
-
-def _calc_fee(value: Decimal) -> Decimal:
-    """Brokerage fee: value × 0.00157 × 1.07, rounded to 4 decimal places."""
-    return (value * _BROKERAGE_RATE).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
 
 # ─── BUY ──────────────────────────────────────────────────────────────────────
@@ -51,28 +76,35 @@ def execute_buy(
     transaction_date: datetime | None = None,
     notes: str | None = None,
     sector: str | None = None,
+    fee_profile: FeeProfile | None = None,
 ) -> dict:
     """Create a BUY transaction, upsert the holding, and reduce portfolio cash.
 
-    Fee is auto-calculated: value × 0.00157 × 1.07 (0.157% brokerage + 7% VAT).
-    Avg cost uses weighted-average formula (fees excluded from cost basis).
+    Fee profile is auto-selected from the symbol (DR vs SET) unless overridden.
+    Avg cost uses weighted-average formula with fee-inclusive effective price:
+        effective_price = (gross + all_fees) / shares
     Cash is allowed to go negative so users can record purchases before depositing.
     """
     d_shares = _d(shares)
-    d_price = _d(price_per_share)
-    d_value = d_shares * d_price
-    d_fees = _calc_fee(d_value)
-    d_taxes = Decimal("0")
-    total = d_value + d_fees
+    d_price  = _d(price_per_share)
+    d_gross  = d_shares * d_price
+
+    profile  = fee_profile or resolve_fee_profile(symbol)
+    bd: FeeBreakdown = calc_fees(d_gross, profile)
+
+    total    = bd.net_buy_amount()                        # cash out
+    eff_price = total / d_shares                          # fee-inclusive cost per share
+
     tx_date = transaction_date or datetime.utcnow()
 
     item = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     if item:
         old_shares = _d(item.shares)
-        old_cost = _d(item.avg_cost)
+        old_cost   = _d(item.avg_cost)
         new_shares = old_shares + d_shares
-        new_avg = (old_shares * old_cost + d_shares * d_price) / new_shares
-        item.shares = _f(new_shares)
+        # weighted-average using fee-inclusive total cost of this lot
+        new_avg = (old_shares * old_cost + total) / new_shares
+        item.shares  = _f(new_shares)
         item.avg_cost = _f(new_avg)
         if sector and not item.sector:
             item.sector = sector
@@ -82,12 +114,11 @@ def execute_buy(
             portfolio_id=portfolio_id,
             symbol=symbol,
             shares=_f(d_shares),
-            avg_cost=_f(d_price),
+            avg_cost=_f(eff_price),       # fee-inclusive from the start
             sector=sector,
         )
         db.add(item)
 
-    # Reduce cash balance
     portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
     if portfolio:
         portfolio.cash_balance = _f(_d(portfolio.cash_balance) - total)
@@ -100,8 +131,8 @@ def execute_buy(
         shares=_f(d_shares),
         price_per_share=_f(d_price),
         total_amount=_f(total),
-        fees=_f(d_fees),
-        taxes=_f(d_taxes),
+        fees=_f(bd.total_fees_excl_vat),   # commission + trading + clearing
+        taxes=_f(bd.vat),                  # VAT portion
         currency=currency,
         exchange_rate=exchange_rate,
         transaction_date=tx_date,
@@ -119,9 +150,12 @@ def execute_buy(
         "symbol": symbol,
         "shares": tx.shares,
         "price_per_share": tx.price_per_share,
+        "gross_amount": _f(d_gross),
         "total_amount": tx.total_amount,
         "fees": tx.fees,
         "taxes": tx.taxes,
+        "fee_profile": profile.name,
+        "fee_breakdown": bd.to_dict(),
         "transaction_date": tx.transaction_date.isoformat() + "Z",
         "notes": tx.notes,
         "cash_balance": portfolio.cash_balance if portfolio else None,
@@ -147,55 +181,58 @@ def execute_sell(
     transaction_date: datetime | None = None,
     notes: str | None = None,
     remove_if_zero: bool = True,
+    fee_profile: FeeProfile | None = None,
 ) -> dict:
     """Create a SELL transaction, reduce the holding, and increase portfolio cash.
 
-    Fee is auto-calculated: value × 0.00157 × 1.07 (0.157% brokerage + 7% VAT).
+    Fee profile is auto-selected from the symbol unless overridden.
 
     Raises ValueError if:
     - No holding exists for the symbol
     - Selling more shares than currently held (oversell prevention)
 
-    Realized P&L = (sell_price - avg_cost) * shares - fees
+    Realized P/L = (sell_price - avg_cost) × shares - total_sell_fees_incl_vat
+    Because avg_cost already embeds the BUY-side fees, this correctly reflects
+    the complete round-trip cost of the position.
     """
     item = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     if not item:
         raise ValueError(f"No holding found for {symbol} in this portfolio")
 
     d_shares = _d(shares)
-    d_price = _d(price_per_share)
-    d_value = d_shares * d_price
-    d_fees = _calc_fee(d_value)
-    d_taxes = Decimal("0")
-    d_held = _d(item.shares)
+    d_price  = _d(price_per_share)
+    d_gross  = d_shares * d_price
+    d_held   = _d(item.shares)
 
     if d_shares > d_held + Decimal("0.0001"):
         raise ValueError(
             f"Cannot sell {shares} shares of {symbol}; only {item.shares} held"
         )
 
-    d_avg = _d(item.avg_cost)
-    realized_pnl = (d_price - d_avg) * d_shares - d_fees - d_taxes
-    net_proceeds = d_shares * d_price - d_fees - d_taxes
+    profile  = fee_profile or resolve_fee_profile(symbol)
+    bd: FeeBreakdown = calc_fees(d_gross, profile)
 
-    tx_date = transaction_date or datetime.utcnow()
-    new_shares = d_held - d_shares
+    net_proceeds = bd.net_sell_proceeds()   # cash in
+    d_avg        = _d(item.avg_cost)
+    realized_pnl = (d_price - d_avg) * d_shares - bd.total_fees_incl_vat
+
+    tx_date      = transaction_date or datetime.utcnow()
+    new_shares   = d_held - d_shares
     holding_removed = False
 
-    pnl_note = f"Realized P&L: {_f(realized_pnl):+.4f}"
+    pnl_note  = f"Realized P&L: {_f(realized_pnl):+.4f}"
     full_notes = f"{pnl_note}. {notes}" if notes else pnl_note
 
     if _f(new_shares) <= 0 and remove_if_zero:
-        db.delete(item)
-        holding_removed = True
         remaining_shares = 0.0
-        remaining_avg = item.avg_cost
+        remaining_avg    = item.avg_cost
+        db.delete(item)
+        holding_removed  = True
     else:
         item.shares = _f(new_shares)
         remaining_shares = item.shares
-        remaining_avg = item.avg_cost
+        remaining_avg    = item.avg_cost   # avg_cost unchanged on partial sell
 
-    # Increase cash balance
     portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
     if portfolio:
         portfolio.cash_balance = _f(_d(portfolio.cash_balance) + net_proceeds)
@@ -208,8 +245,8 @@ def execute_sell(
         shares=_f(d_shares),
         price_per_share=_f(d_price),
         total_amount=_f(abs(net_proceeds)),
-        fees=_f(d_fees),
-        taxes=_f(d_taxes),
+        fees=_f(bd.total_fees_excl_vat),
+        taxes=_f(bd.vat),
         currency=currency,
         exchange_rate=exchange_rate,
         transaction_date=tx_date,
@@ -225,9 +262,12 @@ def execute_sell(
         "symbol": symbol,
         "shares": tx.shares,
         "price_per_share": tx.price_per_share,
+        "gross_amount": _f(d_gross),
         "total_amount": tx.total_amount,
         "fees": tx.fees,
         "taxes": tx.taxes,
+        "fee_profile": profile.name,
+        "fee_breakdown": bd.to_dict(),
         "realized_pnl": _f(realized_pnl),
         "transaction_date": tx.transaction_date.isoformat() + "Z",
         "notes": tx.notes,
@@ -257,7 +297,7 @@ def execute_deposit(
         raise ValueError("Deposit amount must be positive")
 
     d_amount = _d(amount)
-    tx_date = transaction_date or datetime.utcnow()
+    tx_date  = transaction_date or datetime.utcnow()
 
     portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
     if not portfolio:
@@ -313,7 +353,7 @@ def execute_withdraw(
         raise ValueError("Withdrawal amount must be positive")
 
     d_amount = _d(amount)
-    tx_date = transaction_date or datetime.utcnow()
+    tx_date  = transaction_date or datetime.utcnow()
 
     portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
     if not portfolio:
@@ -377,7 +417,7 @@ def execute_dividend(
         raise ValueError("Dividend amount must be positive")
 
     d_amount = _d(amount)
-    tx_date = transaction_date or datetime.utcnow()
+    tx_date  = transaction_date or datetime.utcnow()
 
     portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
     if not portfolio:
@@ -433,7 +473,8 @@ def execute_initial_position(
     """Import an existing holding as INITIAL_POSITION.
 
     Does NOT affect cash balance (this is an onboarding import, not a new trade).
-    Upserts the PortfolioItem using the provided avg_cost directly.
+    The avg_cost is taken as-is — no fee adjustment (the original purchase costs
+    are unknown at import time).
     """
     if shares <= 0:
         raise ValueError("shares must be positive")
@@ -441,18 +482,17 @@ def execute_initial_position(
         raise ValueError("avg_cost must be positive")
 
     d_shares = _d(shares)
-    d_avg = _d(avg_cost)
-    total = d_shares * d_avg
-    tx_date = transaction_date or datetime.utcnow()
+    d_avg    = _d(avg_cost)
+    total    = d_shares * d_avg
+    tx_date  = transaction_date or datetime.utcnow()
 
     item = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     if item:
-        # Merge with existing: weighted average
         old_shares = _d(item.shares)
-        old_cost = _d(item.avg_cost)
+        old_cost   = _d(item.avg_cost)
         new_shares = old_shares + d_shares
-        new_avg = (old_shares * old_cost + d_shares * d_avg) / new_shares
-        item.shares = _f(new_shares)
+        new_avg    = (old_shares * old_cost + d_shares * d_avg) / new_shares
+        item.shares   = _f(new_shares)
         item.avg_cost = _f(new_avg)
         if sector and not item.sector:
             item.sector = sector
@@ -522,11 +562,10 @@ def execute_quantity_correction(
     investment_return_pct.
 
     shares_delta may be positive (adding missing shares) or negative
-    (removing erroneously recorded shares).  The PortfolioItem.shares is
-    adjusted accordingly; avg_cost is recalculated on additions using a
-    weighted average.
+    (removing erroneously recorded shares). avg_cost is recalculated on
+    additions using a weighted average.
 
-    Does NOT affect cash_balance — this is purely a record-keeping correction.
+    Does NOT affect cash_balance — purely a record-keeping correction.
     """
     if shares_delta == 0:
         raise ValueError("shares_delta must be non-zero")
@@ -549,9 +588,8 @@ def execute_quantity_correction(
         )
 
     if d_delta > 0:
-        # Weighted-average cost on additions
         old_cost = _d(item.avg_cost)
-        new_avg = (old_shares * old_cost + d_delta * d_price) / new_shares
+        new_avg  = (old_shares * old_cost + d_delta * d_price) / new_shares
         item.avg_cost = _f(new_avg)
 
     item.shares = _f(new_shares)
@@ -561,7 +599,7 @@ def execute_quantity_correction(
         portfolio_id=portfolio_id,
         symbol=symbol,
         transaction_type="QUANTITY_CORRECTION",
-        shares=_f(abs(d_delta)),        # always positive; sign conveyed by notes
+        shares=_f(abs(d_delta)),
         price_per_share=_f(d_price),
         total_amount=_f(abs(d_delta) * d_price),
         fees=0.0,
@@ -608,7 +646,7 @@ def execute_initial_cash(
         raise ValueError("Initial cash amount must be positive")
 
     d_amount = _d(amount)
-    tx_date = transaction_date or datetime.utcnow()
+    tx_date  = transaction_date or datetime.utcnow()
 
     portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
     if not portfolio:

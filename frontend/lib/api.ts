@@ -1423,6 +1423,20 @@ export interface MarketRegime {
 export const getMarketRegime = () =>
   apiFetch<MarketRegime>("/analytics/market-regime");
 
+// ─── System Status ────────────────────────────────────────────────────────────
+
+export interface SystemStatus {
+  app_env: "local" | "vps" | string;
+  role: string;
+  read_only_market_data: boolean;
+  scheduler_enabled: boolean;
+  live_fetch_enabled: boolean;
+  description: string;
+}
+
+export const getSystemStatus = () =>
+  apiFetch<SystemStatus>("/system/status");
+
 // ─── Portfolio Snapshots ──────────────────────────────────────────────────────
 
 export interface SnapshotHolding {

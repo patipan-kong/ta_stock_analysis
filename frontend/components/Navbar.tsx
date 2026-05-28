@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { logout } from "@/lib/auth";
 import { usePortfolio } from "@/lib/PortfolioContext";
+import { getSystemStatus, type SystemStatus } from "@/lib/api";
 
 const NAV_MAIN = [
   { label: "Dashboard",   href: "/" },
@@ -33,8 +34,15 @@ export default function Navbar() {
   const [adminOpen, setAdminOpen] = useState(false);
   const [portfolioOpen, setPortfolioOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [sysStatus, setSysStatus] = useState<SystemStatus | null>(null);
   const adminRef = useRef<HTMLDivElement>(null);
   const portfolioRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    getSystemStatus()
+      .then(setSysStatus)
+      .catch(() => {});
+  }, []);
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -68,6 +76,16 @@ export default function Navbar() {
 
         {/* Brand */}
         <span className="text-sm font-bold text-gray-800 shrink-0 mr-3">📈 Portfolio Intelligence</span>
+
+        {/* Cloud Dashboard Mode badge — shown only when APP_ENV=vps */}
+        {sysStatus?.read_only_market_data && (
+          <span
+            title="Market data synced from Local Research Node. Live fetching disabled."
+            className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-sky-50 text-sky-700 border border-sky-200 shrink-0 mr-1"
+          >
+            ☁ Cloud Dashboard
+          </span>
+        )}
 
         {/* Main nav — flat links */}
         <div className="hidden md:flex items-center gap-0.5">

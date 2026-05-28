@@ -77,7 +77,7 @@
         "token_1m": {
           "input": 1.5,
           "output": 9,
-          "caching": 0.2
+          "caching": 0.15
         }
       }
     },        

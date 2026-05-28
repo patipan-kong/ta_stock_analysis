@@ -31,6 +31,7 @@ from typing import Optional
 import pandas as pd
 
 from models.database import MarketDataCache, SessionLocal
+from services.core.runtime_env import allow_market_fetching
 from services.market_data.yahoo import YahooProvider, _is_rate_limit
 
 _log = logging.getLogger(__name__)
@@ -269,12 +270,17 @@ def fetch_history(symbol: str, period: str = "6mo", interval: str = "1d") -> Opt
     if cached:
         return _payload_to_df(cached)
 
+    if not allow_market_fetching():
+        _log.info("[VPS BLOCKED FETCH] fetch_history symbol=%s — returning stale cache", symbol)
+        stale = _get_stale(symbol, cache_type)
+        return _payload_to_df(stale) if stale else None
+
     _inc("yahoo_requests")
     t0 = time.monotonic()
     try:
         df = _provider.get_history(symbol, period, interval)
         _record_yf_call(t0)
-        _log.info("yahoo_fetch symbol=%s type=%s", symbol, cache_type)
+        _log.info("[LOCAL FETCH] yahoo_fetch symbol=%s type=%s", symbol, cache_type)
         if df is not None and not df.empty:
             _set_cached(symbol, cache_type, _df_to_payload(df), ttl)
         return df
@@ -291,15 +297,21 @@ def fetch_info(symbol: str) -> dict:
 
     cached = _get_cached(symbol, cache_type)
     if cached:
-        # Strip internal stale markers so callers get a clean info dict
         return {k: v for k, v in cached.items() if not k.startswith("_")}
+
+    if not allow_market_fetching():
+        _log.info("[VPS BLOCKED FETCH] fetch_info symbol=%s — returning stale cache", symbol)
+        stale = _get_stale(symbol, cache_type)
+        if stale:
+            return {k: v for k, v in stale.items() if not k.startswith("_")}
+        return {}
 
     _inc("yahoo_requests")
     t0 = time.monotonic()
     try:
         info = _provider.get_fundamentals(symbol)
         _record_yf_call(t0)
-        _log.info("yahoo_fetch symbol=%s type=fundamental", symbol)
+        _log.info("[LOCAL FETCH] yahoo_fetch symbol=%s type=fundamental", symbol)
         if info:
             _set_cached(symbol, cache_type, info, _TTL_FUND)
         return info or {}
@@ -319,12 +331,19 @@ def fetch_price_info(symbol: str) -> dict:
     if cached:
         return {k: v for k, v in cached.items() if not k.startswith("_")}
 
+    if not allow_market_fetching():
+        _log.info("[VPS BLOCKED FETCH] fetch_price_info symbol=%s — returning stale cache", symbol)
+        stale = _get_stale(symbol, cache_type)
+        if stale:
+            return {k: v for k, v in stale.items() if not k.startswith("_")}
+        return {"current_price": None, "change_percent": None, "last_updated": None, "_vps_cache_miss": True}
+
     _inc("yahoo_requests")
     t0 = time.monotonic()
     try:
         result = _provider.get_quote(symbol)
         _record_yf_call(t0)
-        _log.info("yahoo_fetch symbol=%s type=quote", symbol)
+        _log.info("[LOCAL FETCH] yahoo_fetch symbol=%s type=quote", symbol)
         if result.get("current_price") is not None:
             _set_cached(symbol, cache_type, result, _TTL_QUOTE)
         return result
@@ -338,13 +357,17 @@ def fetch_price_info(symbol: str) -> dict:
 
 def fetch_news(symbol: str) -> list[dict]:
     """Callers are responsible for normalising DR symbols via normalize_dr_symbol() first."""
+    if not allow_market_fetching():
+        _log.info("[VPS BLOCKED FETCH] fetch_news symbol=%s — returning empty list", symbol)
+        return []
+
     # News is short-lived and already managed by AgentCache (1 h TTL).
-    # We skip a second DB cache layer here to avoid double-caching.
     _inc("yahoo_requests")
     t0 = time.monotonic()
     try:
         result = _provider.get_news(symbol)
         _record_yf_call(t0)
+        _log.info("[LOCAL FETCH] yahoo_fetch symbol=%s type=news", symbol)
         return result
     except Exception as exc:
         _record_yf_error(exc)
@@ -359,7 +382,12 @@ def prefetch_history_batch(
     Call this before a concurrent analysis burst to replace N individual
     yfinance requests with ceil(N/15) batched downloads.
     Only fetches symbols whose cache entry is missing or expired.
+    Silently skips on VPS — the cache was pre-warmed by the Local Research Node.
     """
+    if not allow_market_fetching():
+        _log.info("[VPS BLOCKED FETCH] prefetch_history_batch — skipped on VPS")
+        return
+
     cache_type = f"history:{period}:{interval}"
     ttl        = _history_ttl(period, interval)
 
@@ -367,7 +395,7 @@ def prefetch_history_batch(
     if not stale:
         return
 
-    _log.info("prefetch_history_batch symbols=%d period=%s interval=%s", len(stale), period, interval)
+    _log.info("[LOCAL FETCH] prefetch_history_batch symbols=%d period=%s interval=%s", len(stale), period, interval)
     _inc("yahoo_requests", len(stale))
     t0 = time.monotonic()
     try:
