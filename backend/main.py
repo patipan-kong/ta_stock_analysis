@@ -2199,6 +2199,42 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     except Exception as _dm_exc:
         _log.warning("analyze_optimizer: decision_memory snapshot write failed: %s", _dm_exc)
 
+    # ── Phase 3B.7 — Auto-create/refresh ACTIVE_MODEL shadow after every optimizer run ─
+    # Ensures attribution metrics accumulate even before a user records an
+    # explicit APPROVED decision.  Runs in a background thread — never blocks
+    # the HTTP response.  Failure is logged but swallowed.
+    if _snap_id:
+        def _create_active_model_shadow_bg(
+            _portfolio_id: int, _snap_id: int, _workspace_id: int
+        ) -> None:
+            try:
+                from services.decision_memory.shadow_tracker import (
+                    create_active_model_shadow, value_shadow_portfolio,
+                )
+                _bg_db = SessionLocal()
+                try:
+                    r = create_active_model_shadow(_bg_db, _portfolio_id, _snap_id, _workspace_id)
+                    shadow_id = r.get("shadow_id")
+                    if shadow_id:
+                        value_shadow_portfolio(_bg_db, int(shadow_id))
+                        _log.info(
+                            "analyze_optimizer: ACTIVE_MODEL shadow id=%s %s for portfolio_id=%s",
+                            shadow_id, r.get("action", "ready"), _portfolio_id,
+                        )
+                finally:
+                    _bg_db.close()
+            except Exception as _shadow_exc:
+                _log.warning(
+                    "analyze_optimizer: ACTIVE_MODEL shadow creation failed: %s", _shadow_exc
+                )
+
+        import threading as _threading
+        _threading.Thread(
+            target=_create_active_model_shadow_bg,
+            args=(body.portfolio_id, _snap_id, ws),
+            daemon=True,
+        ).start()
+
     # ── Phase 3B.7 — Confidence calibration: update after every optimizer run ─
     # Runs in a background thread so it never delays the HTTP response.
     # Captures a new ConfidenceCalibrationRecord linking back to this run.
@@ -4740,6 +4776,128 @@ async def get_regime_attribution(
 
     result = await asyncio.to_thread(compute_regime_attribution, db, portfolio_id, lookback_days)
     return result
+
+
+@app.get("/analytics/data-readiness")
+async def get_analytics_data_readiness(
+    portfolio_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Diagnostic endpoint: full data-pipeline health report for a portfolio.
+
+    Returns counts for every table in the attribution pipeline and a plain-
+    English list of blockers explaining why metrics may be empty.  Use this
+    when attribution, shadow, or calibration cards show no data.
+    """
+    from models.database import (
+        PortfolioSnapshot, RecommendationSnapshot, UserExecutionDecision,
+        ShadowPortfolio, ShadowPortfolioSnapshot, AttributionMetric,
+        ConfidenceCalibrationRecord, RegimeSnapshot, BenchmarkPrice,
+    )
+    ws = _ws_id(db)
+
+    portfolio_snaps = db.query(PortfolioSnapshot).filter_by(portfolio_id=portfolio_id).count()
+    rec_snaps = db.query(RecommendationSnapshot).filter_by(portfolio_id=portfolio_id).count()
+    decisions_total = db.query(UserExecutionDecision).filter_by(portfolio_id=portfolio_id).count()
+    approved_decisions = db.query(UserExecutionDecision).filter_by(
+        portfolio_id=portfolio_id, decision="APPROVED"
+    ).count()
+
+    shadow_rows = (
+        db.query(ShadowPortfolio)
+        .filter_by(portfolio_id=portfolio_id, workspace_id=ws, is_active=True)
+        .all()
+    )
+    shadow_summary = []
+    for s in shadow_rows:
+        snap_count = (
+            db.query(ShadowPortfolioSnapshot)
+            .filter_by(shadow_portfolio_id=s.id)
+            .count()
+        )
+        latest = (
+            db.query(ShadowPortfolioSnapshot)
+            .filter_by(shadow_portfolio_id=s.id)
+            .order_by(ShadowPortfolioSnapshot.snapshot_date.desc())
+            .first()
+        )
+        shadow_summary.append({
+            "id": s.id,
+            "type": s.shadow_type,
+            "inception_date": s.inception_date,
+            "snapshot_count": snap_count,
+            "latest_snapshot": latest.snapshot_date if latest else None,
+            "last_valued_at": s.last_valued_at.isoformat() + "Z" if s.last_valued_at else None,
+        })
+
+    attribution_records = db.query(AttributionMetric).filter_by(portfolio_id=portfolio_id).count()
+    regime_snaps = db.query(RegimeSnapshot).count()
+    benchmark_prices = db.query(BenchmarkPrice).count()
+    calibration_records = db.query(ConfidenceCalibrationRecord).filter_by(workspace_id=ws).count()
+
+    latest_ps = (
+        db.query(PortfolioSnapshot)
+        .filter_by(portfolio_id=portfolio_id)
+        .order_by(PortfolioSnapshot.snapshot_date.desc())
+        .first()
+    )
+    latest_rs = (
+        db.query(RecommendationSnapshot)
+        .filter_by(portfolio_id=portfolio_id)
+        .order_by(RecommendationSnapshot.created_at.desc())
+        .first()
+    )
+
+    blockers: list[str] = []
+    if portfolio_snaps < 2:
+        blockers.append(
+            f"Need ≥2 portfolio snapshots for return calculations "
+            f"(have {portfolio_snaps} — scheduled at 17:45 ICT)"
+        )
+    if rec_snaps == 0:
+        blockers.append("No recommendation snapshots — run the optimizer at least once")
+    if not shadow_rows:
+        blockers.append(
+            "No active shadow portfolios — the optimizer now auto-creates an ACTIVE_MODEL "
+            "shadow on each run; or record an APPROVED decision to create a STATIC_FROZEN shadow"
+        )
+    elif all(s["snapshot_count"] == 0 for s in shadow_summary):
+        blockers.append(
+            "Shadow portfolios exist but have no snapshots yet — "
+            "initial valuation fires in the background after the optimizer run; "
+            "daily re-valuation at 17:45 ICT"
+        )
+    if regime_snaps == 0:
+        blockers.append(
+            "No regime snapshots — run the optimizer to generate market regime data"
+        )
+    if benchmark_prices == 0:
+        blockers.append(
+            "No benchmark prices — stored at 17:45 ICT alongside portfolio snapshots"
+        )
+
+    return {
+        "portfolio_id": portfolio_id,
+        "pipeline_health": "ok" if not blockers else "incomplete",
+        "blockers": blockers,
+        "counts": {
+            "portfolio_snapshots": portfolio_snaps,
+            "latest_portfolio_snapshot": latest_ps.snapshot_date if latest_ps else None,
+            "recommendation_snapshots": rec_snaps,
+            "latest_recommendation_snapshot": (
+                latest_rs.created_at.isoformat() + "Z"
+                if latest_rs and latest_rs.created_at else None
+            ),
+            "execution_decisions": decisions_total,
+            "approved_decisions": approved_decisions,
+            "active_shadows": len(shadow_rows),
+            "attribution_records": attribution_records,
+            "regime_snapshots": regime_snaps,
+            "benchmark_prices": benchmark_prices,
+            "calibration_records": calibration_records,
+        },
+        "shadows": shadow_summary,
+    }
 
 
 @app.get("/analytics/decision-memory")

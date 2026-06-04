@@ -274,6 +274,7 @@ def compute_portfolio_attribution(
     static_drawdown: float | None = None
     static_volatility: float | None = None
     static_shadow_id: int | None = None
+    static_snaps: list[Any] = []
 
     if static_shadow:
         static_shadow_id = static_shadow.id
@@ -289,6 +290,7 @@ def compute_portfolio_attribution(
     ai_model_drawdown: float | None = None
     ai_model_volatility: float | None = None
     shadow_id_for_record: int | None = None
+    ai_snaps: list[Any] = []
 
     if ai_shadow:
         shadow_id_for_record = ai_shadow.id
@@ -315,11 +317,52 @@ def compute_portfolio_attribution(
     valid_actual_count = len([s for s in actual_snaps if s.total_value and s.total_value > 0])
     has_sufficient_history = valid_actual_count >= 2
 
+    # ── Structured data-readiness status ──────────────────────────────────────
+    # Lets the frontend and diagnostic endpoint differentiate between:
+    #   no_portfolio_snapshots   — scheduler hasn't run yet
+    #   insufficient_portfolio_history — < 2 valid NAV points
+    #   no_shadows               — optimizer never ran or no decisions recorded
+    #   shadows_pending_valuation — shadows exist but today's snapshot not yet written
+    #   ok                       — full comparison data available
+    shadow_snap_count = len(
+        [s for s in static_snaps + ai_snaps if s.total_value and s.total_value > 0]
+    )
+    if not actual_snaps:
+        data_status = "no_portfolio_snapshots"
+        data_points_available = 0
+        required_days_remaining = 2
+    elif not has_sufficient_history:
+        data_status = "insufficient_portfolio_history"
+        data_points_available = valid_actual_count
+        required_days_remaining = max(0, 2 - valid_actual_count)
+    elif static_shadow is None and ai_shadow is None:
+        data_status = "no_shadows"
+        data_points_available = valid_actual_count
+        required_days_remaining = 0
+    elif shadow_snap_count == 0:
+        data_status = "shadows_pending_valuation"
+        data_points_available = valid_actual_count
+        required_days_remaining = 1
+    else:
+        data_status = "ok"
+        data_points_available = valid_actual_count
+        required_days_remaining = 0
+
+    logger.info(
+        "[ATTRIBUTION] portfolio_id=%s status=%s actual_snaps=%d shadow_snaps=%d "
+        "actual_return=%s static_return=%s ai_return=%s",
+        portfolio_id, data_status, valid_actual_count, shadow_snap_count,
+        actual_return, static_return, ai_model_return,
+    )
+
     result: dict[str, Any] = {
         "portfolio_id": portfolio_id,
         "evaluation_window_days": evaluation_window_days,
         "period_start": cutoff,
         "period_end": today,
+        "status": data_status,
+        "data_points_available": data_points_available,
+        "required_days_remaining": required_days_remaining,
         "has_sufficient_history": has_sufficient_history,
         "actual": {
             "return_pct": actual_return,

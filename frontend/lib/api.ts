@@ -2078,11 +2078,21 @@ export interface PortfolioMetrics {
   snapshot_count: number;
 }
 
+export type AttributionDataStatus =
+  | "ok"
+  | "no_portfolio_snapshots"
+  | "insufficient_portfolio_history"
+  | "no_shadows"
+  | "shadows_pending_valuation";
+
 export interface PortfolioAttributionResult {
   portfolio_id: number;
   evaluation_window_days: number;
   period_start: string;
   period_end: string;
+  status: AttributionDataStatus;
+  data_points_available: number;
+  required_days_remaining: number;
   has_sufficient_history: boolean;
   actual: PortfolioMetrics;
   static_shadow: ShadowMetrics | null;
@@ -2092,6 +2102,35 @@ export interface PortfolioAttributionResult {
   ai_outperformed: boolean | null;
   interpretation: string;
   computed_at: string;
+}
+
+export interface ShadowReadinessSummary {
+  id: number;
+  type: "STATIC_FROZEN" | "ACTIVE_MODEL";
+  inception_date: string;
+  snapshot_count: number;
+  latest_snapshot: string | null;
+  last_valued_at: string | null;
+}
+
+export interface DataReadinessResponse {
+  portfolio_id: number;
+  pipeline_health: "ok" | "incomplete";
+  blockers: string[];
+  counts: {
+    portfolio_snapshots: number;
+    latest_portfolio_snapshot: string | null;
+    recommendation_snapshots: number;
+    latest_recommendation_snapshot: string | null;
+    execution_decisions: number;
+    approved_decisions: number;
+    active_shadows: number;
+    attribution_records: number;
+    regime_snapshots: number;
+    benchmark_prices: number;
+    calibration_records: number;
+  };
+  shadows: ShadowReadinessSummary[];
 }
 
 export interface AttributionHistoryRecord {
@@ -2248,6 +2287,11 @@ export const getConfidenceCalibrationV2 = (
   return apiFetch<{ source: "cached" | "computed"; calibration: EnhancedCalibrationDetail }>(
     `/analytics/confidence-calibration?${params}`,
   );
+};
+
+export const getDataReadiness = (portfolioId: number) => {
+  const params = new URLSearchParams({ portfolio_id: String(portfolioId) });
+  return apiFetch<DataReadinessResponse>(`/analytics/data-readiness?${params}`);
 };
 
 // ─── Decision Memory Timeline (Phase 3B.7C) ──────────────────────────────────
