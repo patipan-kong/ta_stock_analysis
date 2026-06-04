@@ -637,7 +637,76 @@ export interface BlockedOpportunity {
   reason: string;
 }
 
-export type OptimizerStatus = "REBALANCE" | "NO_ACTION";
+export type OptimizerStatus =
+  | "REBALANCE"
+  | "REBALANCE_REQUIRED"
+  | "NO_ACTION"
+  | "NO_REBALANCE_REQUIRED"
+  | "COOLDOWN_ACTIVE"
+  | "OPTIMAL";
+
+export type StabilizationOverrideReason =
+  | "REGIME_CHANGE"
+  | "SECTOR_CONCENTRATION_BREACH"
+  | "SINGLE_POSITION_BREACH"
+  | "RISK_POLICY_VIOLATION"
+  | "DRAWDOWN_EVENT"
+  | "CONFIDENCE_COLLAPSE"
+  | "MANUAL_OVERRIDE";
+
+export interface DriftAnalysisItem {
+  symbol: string;
+  current_weight: number;
+  target_weight: number;
+  allocation_drift: number;
+  within_tolerance: boolean;
+}
+
+export interface StabilizationCooldown {
+  active: boolean;
+  last_rebalance_at: string | null;
+  days_elapsed: number;
+  days_remaining: number;
+  cooldown_days: number;
+  overridden: boolean;
+  override_reasons: StabilizationOverrideReason[];
+}
+
+export interface StabilizationMinimumImpact {
+  expected_improvement_pct: number;
+  estimated_cost_pct: number;
+  net_benefit_pct: number;
+  passes_threshold: boolean;
+  threshold_pct: number;
+  suppressed: boolean;
+  total_turnover_pct: number;
+}
+
+export interface DuplicateTickerDiagnostic {
+  total_duplicates_found: number;
+  duplicates: Array<{ symbol: string; count: number; layer: string }>;
+  by_layer: Record<string, string[]>;
+  root_cause_hypothesis: string | null;
+}
+
+export interface StabilizationMeta {
+  enabled: boolean;
+  status: OptimizerStatus;
+  original_optimizer_status: OptimizerStatus;
+  reason: string | null;
+  drift_threshold_pct: number;
+  cooldown_days: number;
+  net_benefit_threshold_pct: number;
+  positions_within_tolerance: number;
+  positions_needing_action: number;
+  all_within_tolerance: boolean;
+  drift_analysis: DriftAnalysisItem[];
+  cooldown: StabilizationCooldown;
+  minimum_impact: StabilizationMinimumImpact;
+  overrides_active: StabilizationOverrideReason[];
+  force_rebalance: boolean;
+  duplicate_ticker_diagnostic: DuplicateTickerDiagnostic;
+}
 
 export type NoActionReason =
   | "WELL_BALANCED"
@@ -645,7 +714,8 @@ export type NoActionReason =
   | "HIGH_DISAGREEMENT"
   | "CONSTRAINT_BLOCKED"
   | "MARKET_UNCERTAINTY"
-  | "INSUFFICIENT_EDGE";
+  | "INSUFFICIENT_EDGE"
+  | "COOLDOWN_ACTIVE";
 
 export type ConsensusType =
   | "STRONG_CONSENSUS"
@@ -654,7 +724,8 @@ export type ConsensusType =
   | "WEAK_CONSENSUS"
   | "RISK_CONFLICT"
   | "STRATEGIC_CONFLICT"
-  | "NO_ACTION_CONSENSUS";
+  | "NO_ACTION_CONSENSUS"
+  | "NO_REBALANCE_CONSENSUS";
 
 export interface OptimizerConsensus {
   // New Consensus Strength Matrix fields
@@ -672,7 +743,7 @@ export interface OptimizerConsensus {
   violation_details?: PolicyViolationDetail[];
   // Legacy fields (preserved for backward compat with old history rows)
   agrees: boolean;
-  consensus_decision?: "REBALANCE" | "NO_ACTION" | "REVIEW";
+  consensus_decision?: "REBALANCE" | "REBALANCE_REQUIRED" | "NO_ACTION" | "NO_REBALANCE_REQUIRED" | "COOLDOWN_ACTIVE" | "OPTIMAL" | "REVIEW";
   confidence: "high" | "medium" | "low";
   recommended: "layer1" | "layer2" | "neither" | "no_action" | "fallback";
   final_risk_level: "low" | "medium" | "high";
@@ -874,6 +945,8 @@ export interface OptimizerResult {
   recommendation_snapshot_id?: number | null;
   // Phase 3B.10 — DR / execution quality context
   execution_context?: ExecutionContext | null;
+  // Stabilization Sprint — post-processing churn reduction layer
+  stabilization?: StabilizationMeta | null;
 }
 
 export interface OptimizerHistoryItem {
@@ -886,13 +959,19 @@ export interface OptimizerHistoryItem {
   no_action_reason?: NoActionReason | null;
 }
 
-export const runOptimizer = (portfolioId: number, provider?: string, model?: string) =>
+export const runOptimizer = (
+  portfolioId: number,
+  provider?: string,
+  model?: string,
+  forceRebalance?: boolean,
+) =>
   apiFetch<OptimizerResult>("/analyze/optimizer", {
     method: "POST",
     body: JSON.stringify({
       portfolio_id: portfolioId,
-      ...(provider ? { provider } : {}),
-      ...(model    ? { model }    : {}),
+      ...(provider        ? { provider }                       : {}),
+      ...(model           ? { model }                          : {}),
+      ...(forceRebalance  ? { force_rebalance: true }          : {}),
     }),
   });
 

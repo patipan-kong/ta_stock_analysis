@@ -21,6 +21,7 @@ import type {
   StrategyPersona, StrategyProfile, PortfolioDNA, DriftSeverity, MarketRegime,
   ActivePolicy, ExecutionDecision, ExecutionDecisionType, DecisionMemoryEntry,
   ShadowPerformanceSummary, ExecutionRisk,
+  StabilizationMeta, OptimizerStatus,
 } from "@/lib/api";
 
 const TZ = "Asia/Bangkok";
@@ -589,6 +590,7 @@ const NO_ACTION_REASON_LABELS: Record<NoActionReason, string> = {
   CONSTRAINT_BLOCKED:  "Constraint Blocked",
   MARKET_UNCERTAINTY:  "Market Uncertainty",
   INSUFFICIENT_EDGE:   "Insufficient Edge",
+  COOLDOWN_ACTIVE:     "Cooldown Active",
 };
 
 const BLOCKED_REASON_LABELS: Record<string, string> = {
@@ -693,6 +695,211 @@ function NoActionCard({ result }: { result: OptimizerResult }) {
             })}
           </div>
         </div>
+      )}
+    </section>
+  );
+}
+
+// ─── Stabilization Status Badges ─────────────────────────────────────────────
+
+const STABILIZATION_STATUS_CFG: Record<OptimizerStatus, {
+  label: string; icon: string;
+  section: string; badge: string; text: string;
+}> = {
+  REBALANCE:              { label: "Rebalance Required",    icon: "⚡", section: "bg-orange-50 border-orange-200",  badge: "bg-orange-100 border-orange-300 text-orange-800", text: "text-orange-800" },
+  REBALANCE_REQUIRED:     { label: "Rebalance Required",    icon: "⚡", section: "bg-orange-50 border-orange-200",  badge: "bg-orange-100 border-orange-300 text-orange-800", text: "text-orange-800" },
+  NO_ACTION:              { label: "No Action Needed",       icon: "✓",  section: "bg-green-50 border-green-200",    badge: "bg-green-100 border-green-300 text-green-800",   text: "text-green-800" },
+  NO_REBALANCE_REQUIRED:  { label: "No Rebalance Required", icon: "✓",  section: "bg-green-50 border-green-200",    badge: "bg-green-100 border-green-300 text-green-800",   text: "text-green-800" },
+  OPTIMAL:                { label: "Portfolio Optimal",      icon: "✓",  section: "bg-teal-50 border-teal-200",      badge: "bg-teal-100 border-teal-300 text-teal-800",      text: "text-teal-800" },
+  COOLDOWN_ACTIVE:        { label: "Cooldown Active",        icon: "⏸",  section: "bg-blue-50 border-blue-200",     badge: "bg-blue-100 border-blue-300 text-blue-800",      text: "text-blue-800" },
+};
+
+const OVERRIDE_REASON_LABELS: Record<string, string> = {
+  REGIME_CHANGE:               "Market Regime Changed",
+  SECTOR_CONCENTRATION_BREACH: "Sector Concentration Breach",
+  SINGLE_POSITION_BREACH:      "Single Position Breach",
+  RISK_POLICY_VIOLATION:       "Risk Policy Violation",
+  DRAWDOWN_EVENT:              "Drawdown / Emergency Event",
+  CONFIDENCE_COLLAPSE:         "Confidence Collapse",
+  MANUAL_OVERRIDE:             "Manual Override Requested",
+};
+
+function StabilizationStatusBadge({ status }: { status: OptimizerStatus }) {
+  const cfg = STABILIZATION_STATUS_CFG[status] ?? STABILIZATION_STATUS_CFG.REBALANCE;
+  return (
+    <span className={`inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full border ${cfg.badge}`}>
+      <span>{cfg.icon}</span>
+      {cfg.label}
+    </span>
+  );
+}
+
+function StabilizationCard({
+  meta,
+  onForceRebalance,
+  forceRunning,
+}: {
+  meta: StabilizationMeta;
+  onForceRebalance: () => void;
+  forceRunning: boolean;
+}) {
+  const status = meta.status as OptimizerStatus;
+  const cfg = STABILIZATION_STATUS_CFG[status] ?? STABILIZATION_STATUS_CFG.REBALANCE;
+  const isBlocked = status === "NO_REBALANCE_REQUIRED" || status === "OPTIMAL" || status === "COOLDOWN_ACTIVE";
+  const cooldown = meta.cooldown;
+  const impact = meta.minimum_impact;
+
+  return (
+    <section className={`border rounded-xl p-5 shadow-sm space-y-4 ${cfg.section}`}>
+      {/* Header */}
+      <div className="flex items-start gap-3 flex-wrap">
+        <div className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold border-2 ${
+          isBlocked ? "bg-green-100 border-green-300 text-green-700" : "bg-orange-100 border-orange-300 text-orange-700"
+        }`}>
+          {cfg.icon}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className={`font-bold text-base ${cfg.text}`}>{cfg.label}</h3>
+            <StabilizationStatusBadge status={status} />
+          </div>
+          {meta.reason && (
+            <p className={`text-sm mt-1 leading-relaxed ${cfg.text} opacity-80`}>{meta.reason}</p>
+          )}
+        </div>
+        {isBlocked && (
+          <button
+            onClick={onForceRebalance}
+            disabled={forceRunning}
+            className="shrink-0 text-xs font-medium px-3 py-1.5 rounded border border-gray-300 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-50 self-start"
+          >
+            {forceRunning ? "Running…" : "Force Rebalance"}
+          </button>
+        )}
+      </div>
+
+      {/* Stats row */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+        <div className="bg-white/70 rounded-lg p-3">
+          <p className="text-xs text-gray-400 mb-0.5">Drift Threshold</p>
+          <p className="text-sm font-bold text-gray-700">{meta.drift_threshold_pct.toFixed(0)}%</p>
+        </div>
+        <div className="bg-white/70 rounded-lg p-3">
+          <p className="text-xs text-gray-400 mb-0.5">Within Tolerance</p>
+          <p className="text-sm font-bold text-green-700">{meta.positions_within_tolerance} / {meta.positions_within_tolerance + meta.positions_needing_action}</p>
+        </div>
+        {impact && (
+          <>
+            <div className="bg-white/70 rounded-lg p-3">
+              <p className="text-xs text-gray-400 mb-0.5">Est. Net Benefit</p>
+              <p className={`text-sm font-bold ${impact.net_benefit_pct >= impact.threshold_pct ? "text-green-700" : "text-red-600"}`}>
+                {impact.net_benefit_pct >= 0 ? "+" : ""}{impact.net_benefit_pct.toFixed(3)}%
+              </p>
+            </div>
+            <div className="bg-white/70 rounded-lg p-3">
+              <p className="text-xs text-gray-400 mb-0.5">Est. Turnover</p>
+              <p className="text-sm font-bold text-gray-700">{impact.total_turnover_pct.toFixed(1)}%</p>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Cooldown progress */}
+      {cooldown && (
+        <div className="bg-white/70 rounded-lg px-4 py-3 space-y-2">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-medium text-gray-600">
+              {cooldown.active && !cooldown.overridden
+                ? `Cooldown: ${cooldown.days_remaining} / ${cooldown.cooldown_days} day(s) remaining`
+                : cooldown.overridden
+                ? "Cooldown bypassed"
+                : cooldown.last_rebalance_at
+                ? `Last rebalance ${cooldown.days_elapsed}d ago — cooldown cleared`
+                : "No prior rebalance recorded"}
+            </span>
+            {cooldown.overridden && (
+              <span className="text-amber-600 font-semibold">Override active</span>
+            )}
+          </div>
+          {cooldown.active && !cooldown.overridden && (
+            <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-blue-400 rounded-full transition-all"
+                style={{ width: `${Math.min(100, (cooldown.days_elapsed / cooldown.cooldown_days) * 100)}%` }}
+              />
+            </div>
+          )}
+          {cooldown.override_reasons.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1">
+              {cooldown.override_reasons.map((r) => (
+                <span key={r} className="text-[10px] font-medium px-1.5 py-0.5 rounded border bg-amber-50 border-amber-200 text-amber-700">
+                  {OVERRIDE_REASON_LABELS[r] ?? r}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Impact breakdown */}
+      {impact && (
+        <div className="bg-white/70 rounded-lg px-4 py-3">
+          <p className="text-xs font-semibold text-gray-500 mb-2">Cost-Benefit Analysis</p>
+          <div className="grid grid-cols-3 gap-2 text-center text-xs">
+            <div>
+              <p className="text-gray-400">Expected Gain</p>
+              <p className="font-bold text-green-700">+{impact.expected_improvement_pct.toFixed(3)}%</p>
+            </div>
+            <div>
+              <p className="text-gray-400">Trading Cost</p>
+              <p className="font-bold text-red-600">−{impact.estimated_cost_pct.toFixed(4)}%</p>
+            </div>
+            <div>
+              <p className="text-gray-400">Net Benefit</p>
+              <p className={`font-bold ${impact.passes_threshold ? "text-green-700" : "text-red-600"}`}>
+                {impact.net_benefit_pct >= 0 ? "+" : ""}{impact.net_benefit_pct.toFixed(3)}%
+                <span className="ml-1 text-gray-400 font-normal">(min {impact.threshold_pct.toFixed(2)}%)</span>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Drift table (compact) */}
+      {meta.drift_analysis.length > 0 && (
+        <details className="bg-white/70 rounded-lg px-4 py-3">
+          <summary className="text-xs font-semibold text-gray-500 cursor-pointer">
+            Drift Analysis — {meta.positions_within_tolerance} within tolerance, {meta.positions_needing_action} need action
+          </summary>
+          <div className="mt-2 overflow-x-auto">
+            <table className="min-w-full text-xs">
+              <thead>
+                <tr className="text-gray-400 text-left">
+                  <th className="py-1 pr-4">Symbol</th>
+                  <th className="py-1 pr-4">Current</th>
+                  <th className="py-1 pr-4">Target</th>
+                  <th className="py-1 pr-4">Drift</th>
+                  <th className="py-1">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {meta.drift_analysis.map((d) => (
+                  <tr key={d.symbol} className="border-t border-gray-100">
+                    <td className="py-1 pr-4 font-semibold text-gray-700">{d.symbol.replace(".BK","")}</td>
+                    <td className="py-1 pr-4 text-gray-600">{d.current_weight.toFixed(1)}%</td>
+                    <td className="py-1 pr-4 text-gray-600">{d.target_weight.toFixed(1)}%</td>
+                    <td className="py-1 pr-4 font-medium text-gray-700">{d.allocation_drift.toFixed(1)}%</td>
+                    <td className="py-1">
+                      {d.within_tolerance
+                        ? <span className="text-green-600 font-semibold">Within tolerance</span>
+                        : <span className="text-amber-600 font-semibold">Needs action</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
       )}
     </section>
   );
@@ -997,7 +1204,8 @@ const CONSENSUS_TYPE_CFG: Record<ConsensusType, {
   WEAK_CONSENSUS:      { label: "Weak Consensus",      icon: "?",  section: "bg-gray-50 border-gray-300",     border: "border-gray-300",    badge: "bg-gray-100 border-gray-300 text-gray-700",      badgeText: "text-gray-700",  bar: "bg-gray-400",   summary: "bg-gray-100 border-gray-200",    summaryText: "text-gray-800" },
   RISK_CONFLICT:       { label: "Risk Conflict",       icon: "⚠",  section: "bg-orange-50 border-orange-400", border: "border-orange-400",  badge: "bg-orange-100 border-orange-400 text-orange-800",badgeText: "text-orange-800",bar: "bg-orange-500", summary: "bg-orange-50 border-orange-300", summaryText: "text-orange-900" },
   STRATEGIC_CONFLICT:  { label: "Strategic Conflict",  icon: "✗",  section: "bg-red-50 border-red-400",       border: "border-red-400",     badge: "bg-red-100 border-red-400 text-red-800",         badgeText: "text-red-800",   bar: "bg-red-500",    summary: "bg-red-50 border-red-300",       summaryText: "text-red-900" },
-  NO_ACTION_CONSENSUS: { label: "No Action Consensus", icon: "✓",  section: "bg-teal-50 border-teal-300",     border: "border-teal-300",    badge: "bg-teal-100 border-teal-300 text-teal-800",      badgeText: "text-teal-800",  bar: "bg-teal-500",   summary: "bg-teal-50 border-teal-200",     summaryText: "text-teal-900" },
+  NO_ACTION_CONSENSUS:    { label: "No Action Consensus",    icon: "✓",  section: "bg-teal-50 border-teal-300",  border: "border-teal-300",  badge: "bg-teal-100 border-teal-300 text-teal-800",  badgeText: "text-teal-800",  bar: "bg-teal-500",  summary: "bg-teal-50 border-teal-200",  summaryText: "text-teal-900" },
+  NO_REBALANCE_CONSENSUS: { label: "No Rebalance Needed",    icon: "✓",  section: "bg-teal-50 border-teal-300",  border: "border-teal-300",  badge: "bg-teal-100 border-teal-300 text-teal-800",  badgeText: "text-teal-800",  bar: "bg-teal-500",  summary: "bg-teal-50 border-teal-200",  summaryText: "text-teal-900" },
 };
 
 const RISK_COLOR: Record<string, string> = {
@@ -1546,9 +1754,11 @@ function DecisionMemoryTimeline({ portfolioId }: { portfolioId: number }) {
 
 // ─── Result Panel ─────────────────────────────────────────────────────────────
 
-function ResultPanel({ result, loading, profiles, portfolioId }: {
+function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance, forceRunning }: {
   result: OptimizerResult | null;
   loading: boolean;
+  onForceRebalance?: () => void;
+  forceRunning?: boolean;
   profiles: StrategyProfile[];
   portfolioId: number | null;
 }) {
@@ -1620,8 +1830,17 @@ function ResultPanel({ result, loading, profiles, portfolioId }: {
         </div>
       )}
 
-      {/* NO_ACTION — calm informative card, shown prominently before layer details */}
-      {result.status === "NO_ACTION" && <NoActionCard result={result} />}
+      {/* Stabilization layer status — shown prominently for all non-REBALANCE outcomes */}
+      {result.stabilization && (
+        <StabilizationCard
+          meta={result.stabilization}
+          onForceRebalance={onForceRebalance ?? (() => {})}
+          forceRunning={forceRunning ?? false}
+        />
+      )}
+
+      {/* Legacy NO_ACTION card — shown only for AI-originated NO_ACTION when no stabilization meta */}
+      {!result.stabilization && result.status === "NO_ACTION" && <NoActionCard result={result} />}
 
       {/* Single-model header (shown when no layer data) */}
       {!result.layer1_result && (
@@ -1765,6 +1984,7 @@ export default function OptimizerPage() {
   const [history, setHistory] = useState<OptimizerHistoryItem[]>([]);
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
+  const [forceRunning, setForceRunning] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [error, setError] = useState("");
@@ -1813,12 +2033,16 @@ export default function OptimizerPage() {
     }
   }
 
-  async function handleRun() {
+  async function handleRun(forceRebalance = false) {
     if (portfolioId == null) return;
-    setRunning(true);
+    if (forceRebalance) {
+      setForceRunning(true);
+    } else {
+      setRunning(true);
+    }
     setError("");
     try {
-      const data = await runOptimizer(portfolioId);
+      const data = await runOptimizer(portfolioId, undefined, undefined, forceRebalance || undefined);
       setResult(data);
       setSelectedHistoryId(data.history_id ?? null);
       await loadHistory(portfolioId);
@@ -1826,6 +2050,7 @@ export default function OptimizerPage() {
       setError(err instanceof Error ? err.message : "Optimizer failed");
     } finally {
       setRunning(false);
+      setForceRunning(false);
     }
   }
 
@@ -1887,7 +2112,7 @@ export default function OptimizerPage() {
         )}
 
         <button
-          onClick={handleRun}
+          onClick={() => handleRun()}
           disabled={running || portfolioId == null}
           className="bg-blue-600 text-white px-5 py-1.5 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 self-end"
         >
@@ -1923,7 +2148,14 @@ export default function OptimizerPage() {
             />
           </div>
           <div className="flex-1 min-w-0">
-            <ResultPanel result={result} loading={loadingDetail} profiles={profiles} portfolioId={portfolioId} />
+            <ResultPanel
+              result={result}
+              loading={loadingDetail}
+              profiles={profiles}
+              portfolioId={portfolioId}
+              onForceRebalance={() => handleRun(true)}
+              forceRunning={forceRunning}
+            />
           </div>
         </div>
       )}

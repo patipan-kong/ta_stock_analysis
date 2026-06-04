@@ -444,13 +444,14 @@ def _derive_swap_suggestions(
 # ─── Consensus Engine ─────────────────────────────────────────────────────────
 
 _CONSENSUS_LEGACY_AGREES: dict[str, bool] = {
-    "STRONG_CONSENSUS":    True,
-    "REFINED_CONSENSUS":   True,
-    "PARTIAL_CONSENSUS":   True,
-    "WEAK_CONSENSUS":      False,
-    "RISK_CONFLICT":       True,
-    "STRATEGIC_CONFLICT":  False,
-    "NO_ACTION_CONSENSUS": True,
+    "STRONG_CONSENSUS":        True,
+    "REFINED_CONSENSUS":       True,
+    "PARTIAL_CONSENSUS":       True,
+    "WEAK_CONSENSUS":          False,
+    "RISK_CONFLICT":           True,
+    "STRATEGIC_CONFLICT":      False,
+    "NO_ACTION_CONSENSUS":     True,
+    "NO_REBALANCE_CONSENSUS":  True,  # stabilization-layer injected state
 }
 
 
@@ -569,7 +570,7 @@ def _consensus_engine(l1: dict, l2: dict, l3: dict) -> dict:
         consensus_decision = "REBALANCE"
 
     # ── Refinement summary (explainability) ───────────────────────────────────
-    if consensus_type == "NO_ACTION_CONSENSUS":
+    if consensus_type in ("NO_ACTION_CONSENSUS", "NO_REBALANCE_CONSENSUS"):
         refinement_summary = (
             no_action_summary
             or "All layers independently concluded the portfolio is well-balanced with insufficient edge for rebalancing."
@@ -614,7 +615,7 @@ def _consensus_engine(l1: dict, l2: dict, l3: dict) -> dict:
 
     # ── Recommended action text ───────────────────────────────────────────────
     parts: list[str] = []
-    if consensus_type == "NO_ACTION_CONSENSUS":
+    if consensus_type in ("NO_ACTION_CONSENSUS", "NO_REBALANCE_CONSENSUS"):
         parts.append("No rebalancing action recommended at this time.")
         if no_action_summary:
             parts.append(no_action_summary)
@@ -776,18 +777,24 @@ Forced sells: {sell_forced or "none"}
 STOCK COUNT: {current_count}/{max_stocks} max unique stocks after rebalancing.
 SIGNALS: BUY=add aggressively, ACCUMULATE=add gradually, HOLD=keep, WATCH=monitor, REDUCE=trim, SELL=exit
 
-MANDATE — evaluate ALL five before deciding:
-1. Sector concentration: any sector near or above its limit? → propose rebalancing swap
-2. Watchlist opportunities: any BUY/ACCUMULATE candidate available? → rank in top_buys
-3. Overweight positions: any swap-eligible stock >25% weight? → consider REDUCE (sell=SYM, buy=null)
-4. Low-score holdings: swap-eligible stocks with weak fa+ta vs higher-scored watchlist? → consider swap
-5. Incremental improvement: would a 2–5% shift improve diversification or expected return?
+STABILIZATION MANDATE — quality over quantity. Every proposed change must clear a high bar:
+- MINIMUM DRIFT: only propose allocation changes ≥ 3%. Smaller shifts create noise with no economic value.
+- HIGH CONVICTION: only propose swaps with strong, defensible signal quality improvement.
+- TURNOVER PENALTY: fewer trades are better. Each trade incurs real friction cost (~0.15% per 1% NAV).
+- PREFER holding well-positioned assets over constant micro-rotation.
 
-PREFER incremental REDUCE/ACCUMULATE over full SELL/BUY replacements.
-Small allocation shifts (2–5%) are meaningful — propose them when they improve the portfolio.
-Behave like a disciplined active portfolio manager, not a frozen allocator.
+EVALUATE ALL FIVE — but only act if improvement is material:
+1. Sector concentration: any sector at or above its limit? → propose meaningful rebalancing swap (≥5% shift)
+2. Watchlist opportunities: BUY/ACCUMULATE candidate with clear edge over current holdings? → rank in top_buys
+3. Overweight positions: swap-eligible stock >25%? → consider REDUCE, but only if drift ≥ 3%
+4. Low-score holdings: weak fa+ta vs watchlist with 10+ score advantage? → consider swap
+5. Policy violations: active CONCENTRATION_BREACH or SECTOR_BREACH? → propose remediation (mandatory)
 
-priority="no_action" ONLY when all 5 checks above show no meaningful improvement opportunity.
+priority="no_action" when ALL of the following are true:
+- No sector breach or position limit breach
+- No watchlist candidate has a clearly superior score (10+ advantage) over current holdings
+- All current positions are within 3% of their ideal weight
+- No urgent regime or policy signal
 
 Output schema — nothing else. Max 400 tokens.
 swaps: max 3 (sell or buy may be null for one-sided REDUCE or ACCUMULATE from cash)
@@ -878,14 +885,24 @@ Full watchlist for your analysis:
 Total portfolio value: {total_value:.0f}, Cash balance: {cash_balance:.0f}
 Thai stocks end in .BK.
 
-PHILOSOPHY: Unnecessary portfolio turnover destroys value through transaction costs and tax drag.
-Setting status="NO_ACTION" with rebalance_opportunity_score below 20 is HIGHLY ENCOURAGED when:
-- The portfolio is already well-balanced across sectors and signal quality
-- No watchlist candidate has a compelling BUY/ACCUMULATE signal with clear edge over existing holdings
-- Market conditions are uncertain or data quality is insufficient to justify rebalancing
-Only recommend changes with a clear, measurable, defensible improvement.
+STABILIZATION PHILOSOPHY:
+Unnecessary portfolio churn destroys value through transaction costs, tax drag, and operational complexity.
 
-score guide: 0-20=no action needed, 21-40=minor optimization, 41-70=moderate opportunity, 71-100=strong opportunity.
+BEFORE proposing any rebalancing, apply this 3-step discipline:
+1. DRIFT TEST: Is any allocation change < 3%? If yes, suppress it — noise, not signal.
+2. CONVICTION TEST: Does the proposed change have a clear, measurable benefit (10+ score advantage or breach repair)?
+3. COST TEST: Will the expected portfolio improvement exceed the ~0.15% trading cost per 1% NAV traded?
+
+status="NO_ACTION" with rebalance_opportunity_score below 25 is STRONGLY ENCOURAGED when:
+- All positions are within 3% of their natural weight (drift tolerance band)
+- No watchlist candidate has a compelling 10+ score advantage over existing holdings
+- No policy violations or sector concentration breaches exist
+- Market conditions are uncertain or data is insufficient to justify rebalancing
+
+PREFER large, high-conviction changes over many small adjustments.
+A portfolio with 2 targeted swaps beats one with 6 micro-adjustments.
+
+score guide: 0-25=no action needed, 26-45=minor optimization, 46-70=moderate opportunity, 71-100=strong opportunity.
 no_action_reason enum (use null if status=REBALANCE):
   WELL_BALANCED | LOW_CONFIDENCE | HIGH_DISAGREEMENT | CONSTRAINT_BLOCKED | MARKET_UNCERTAINTY | INSUFFICIENT_EDGE
 

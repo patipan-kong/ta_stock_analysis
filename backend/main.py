@@ -1814,6 +1814,7 @@ class OptimizerRequest(BaseModel):
     portfolio_id: int
     provider: str | None = None
     model: str | None = None
+    force_rebalance: bool = False   # bypass all stabilization filters when True
 
 
 @app.post("/analyze/optimizer")
@@ -2066,6 +2067,50 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
             if r.get("suggested_allocation_pct", 0) > 0:
                 r["suggested_allocation_pct"] = round(r["suggested_allocation_pct"] * scale, 1)
     result["watchlist_ranking"] = ranking
+
+    # ── Stabilization Layer ────────────────────────────────────────────────────
+    # Applies deterministic post-processing to suppress optimizer hyperactivity:
+    # drift threshold buffer, cooldown engine, NO_REBALANCE_REQUIRED state,
+    # minimum impact filter, and duplicate ticker diagnostics.
+    try:
+        from services.optimizer.stabilization import apply_stabilization
+
+        # Find the last REBALANCE run for this portfolio to compute cooldown
+        _last_rebalance: datetime | None = None
+        _prev_regime: str | None = None
+        _last_rebalance_row = (
+            db.query(OptimizerHistory)
+            .filter(
+                OptimizerHistory.portfolio_id == body.portfolio_id,
+                OptimizerHistory.workspace_id == ws,
+                OptimizerHistory.optimizer_status == "REBALANCE",
+            )
+            .order_by(OptimizerHistory.analyzed_at.desc())
+            .first()
+        )
+        if _last_rebalance_row:
+            _last_rebalance = _last_rebalance_row.analyzed_at
+            # Extract previous regime from stored result JSON for regime-change detection
+            try:
+                _prev_result = _json.loads(_last_rebalance_row.result_json or "{}")
+                _prev_regime = (_prev_result.get("market_regime") or {}).get("regime")
+            except Exception:
+                pass
+
+        result = apply_stabilization(
+            result,
+            last_rebalance_at=_last_rebalance,
+            prev_regime=_prev_regime,
+            force_rebalance=body.force_rebalance,
+        )
+        _log.info(
+            "analyze_optimizer: stabilization=%s original_status=%s cooldown_days_remaining=%d",
+            result.get("stabilization", {}).get("status", "?"),
+            result.get("stabilization", {}).get("original_optimizer_status", "?"),
+            result.get("stabilization", {}).get("cooldown", {}).get("days_remaining", 0),
+        )
+    except Exception as _stab_exc:
+        _log.warning("analyze_optimizer: stabilization layer failed — continuing without: %s", _stab_exc)
 
     entry = OptimizerHistory(
         workspace_id=ws,
