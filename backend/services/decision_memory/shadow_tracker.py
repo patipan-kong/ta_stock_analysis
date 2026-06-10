@@ -50,6 +50,7 @@ value_shadow_portfolio(db, shadow_id) → dict
 create_static_frozen_shadow(db, execution_decision_id, workspace_id) → dict
 create_active_model_shadow(db, portfolio_id, snapshot_id, workspace_id) → dict
 value_all_active_shadows(db, workspace_id) → list[dict]
+repair_shadow_portfolios(db, workspace_id) → list[dict]
 """
 from __future__ import annotations
 
@@ -67,8 +68,59 @@ _BENCHMARK_SYMBOL = "^GSPC"
 
 # ─── DB-only price helpers ────────────────────────────────────────────────────
 
+def _fetch_snapshot_prices(
+    db: Session,
+    symbols: list[str],
+    on_or_before: str | None = None,
+) -> dict[str, float]:
+    """Return {symbol: price} from PortfolioSnapshot.holdings_json valuations.
+
+    Portfolio snapshots store per-holding "current_price" written daily at
+    17:45 ICT from live yfinance — the most reliable DB-only price source.
+    Scans snapshot rows newest-first and keeps the first price seen per
+    symbol, so each symbol resolves to its most recent available valuation.
+    """
+    from models.database import PortfolioSnapshot
+
+    prices: dict[str, float] = {}
+    if not symbols:
+        return prices
+    wanted = set(symbols)
+
+    q = db.query(PortfolioSnapshot.snapshot_date, PortfolioSnapshot.holdings_json).filter(
+        PortfolioSnapshot.holdings_json.isnot(None)
+    )
+    if on_or_before:
+        q = q.filter(PortfolioSnapshot.snapshot_date <= on_or_before)
+    rows = q.order_by(PortfolioSnapshot.snapshot_date.desc()).limit(200).all()
+
+    for _, holdings_json in rows:
+        if not (wanted - prices.keys()):
+            break
+        try:
+            holdings = json.loads(holdings_json)
+        except Exception:
+            continue
+        for h in holdings:
+            sym = h.get("symbol")
+            price = h.get("current_price")
+            if sym in wanted and sym not in prices and price and float(price) > 0:
+                prices[sym] = float(price)
+
+    return prices
+
+
 def _fetch_cached_prices(db: Session, symbols: list[str]) -> dict[str, float]:
-    """Return {symbol: latest_price} using AgentCache.technical — no yfinance calls."""
+    """Return {symbol: latest_price} from DB only — no yfinance calls.
+
+    Source priority per symbol:
+      1. AgentCache.technical result_json (current_price / price / close)
+      2. PortfolioSnapshot.holdings_json valuation prices (daily close)
+
+    Source 2 matters: the technical agent does not currently store any price
+    key in its cache JSON, so without the snapshot fallback every shadow
+    holding froze at inception_price and daily_return_pct stayed 0.0 forever.
+    """
     from models.database import AgentCache
 
     prices: dict[str, float] = {}
@@ -94,6 +146,17 @@ def _fetch_cached_prices(db: Session, symbols: list[str]) -> dict[str, float]:
                 prices[row.symbol] = float(price)
         except Exception:
             pass
+
+    # Fallback: resolve remaining symbols from daily portfolio snapshot prices
+    missing = [s for s in symbols if s not in prices]
+    if missing:
+        snapshot_prices = _fetch_snapshot_prices(db, missing)
+        if snapshot_prices:
+            logger.info(
+                "[SHADOW] %d/%d prices resolved from portfolio snapshots (AgentCache miss)",
+                len(snapshot_prices), len(missing),
+            )
+        prices.update(snapshot_prices)
 
     return prices
 
@@ -658,3 +721,266 @@ def create_active_model_shadow(
         "holdings_priced": holdings_priced,
         "holdings_frozen": len(holdings) - holdings_priced,
     }
+
+
+# ─── One-time repair (price_frozen holdings + flat snapshot history) ─────────
+
+def _snapshot_price_history(db: Session) -> dict[str, dict[str, float]]:
+    """Return {snapshot_date: {symbol: price}} from all PortfolioSnapshot rows."""
+    from models.database import PortfolioSnapshot
+
+    history: dict[str, dict[str, float]] = {}
+    rows = (
+        db.query(PortfolioSnapshot.snapshot_date, PortfolioSnapshot.holdings_json)
+        .filter(PortfolioSnapshot.holdings_json.isnot(None))
+        .order_by(PortfolioSnapshot.snapshot_date.asc())
+        .all()
+    )
+    for snap_date, holdings_json in rows:
+        try:
+            holdings = json.loads(holdings_json)
+        except Exception:
+            continue
+        day = history.setdefault(snap_date, {})
+        for h in holdings:
+            sym = h.get("symbol")
+            price = h.get("current_price")
+            if sym and price and float(price) > 0:
+                day[sym] = float(price)
+    return history
+
+
+def _price_near_date(
+    history: dict[str, dict[str, float]],
+    date_str: str,
+    symbol: str,
+) -> float | None:
+    """Price for *symbol* on the nearest date ≤ date_str, else first date after."""
+    best: float | None = None
+    for d in sorted(history):
+        p = history[d].get(symbol)
+        if p is None:
+            continue
+        if d <= date_str:
+            best = p          # keep walking forward to the latest date ≤ target
+        elif best is None:
+            return p          # no observation before target — use first after
+        else:
+            break
+    return best
+
+
+def _rebuild_shadow_snapshots(
+    db: Session,
+    shadow: Any,
+    holdings: list[dict],
+    history: dict[str, dict[str, float]],
+) -> int:
+    """Re-derive every ShadowPortfolioSnapshot from daily snapshot prices (LOCF).
+
+    Walks all price-history dates in order, carrying prices forward, and
+    upserts one snapshot per date ≥ inception_date. Returns rows written.
+    """
+    from models.database import ShadowPortfolioSnapshot
+
+    existing_rows = {
+        s.snapshot_date: s
+        for s in db.query(ShadowPortfolioSnapshot)
+        .filter(ShadowPortfolioSnapshot.shadow_portfolio_id == shadow.id)
+        .all()
+    }
+    # Union of price dates and already-written snapshot dates ≥ inception
+    rebuild_dates = sorted(
+        {d for d in history if d >= shadow.inception_date}
+        | {d for d in existing_rows if d >= shadow.inception_date}
+    )
+
+    last_prices: dict[str, float] = {}
+    # Seed LOCF with prices observed on/before inception
+    for d in sorted(history):
+        if d > shadow.inception_date:
+            break
+        last_prices.update(history[d])
+
+    inception_value: float | None = shadow.inception_value
+    prev_total: float | None = None
+    written = 0
+
+    for d in rebuild_dates:
+        if d in history:
+            last_prices.update(history[d])
+
+        total, _ = _compute_paper_value(holdings, last_prices)
+        total += shadow.paper_cash_balance or 0.0
+        if total <= 0:
+            continue
+
+        if not inception_value or inception_value <= 0:
+            inception_value = total
+            shadow.inception_value = total
+
+        inception_ret: float | None = None
+        raw_ret = (total - inception_value) / inception_value * 100
+        if -99.9 <= raw_ret <= 1000.0:
+            inception_ret = round(raw_ret, 4)
+
+        daily_ret: float | None = None
+        if prev_total and prev_total > 0:
+            raw_daily = (total - prev_total) / prev_total * 100
+            if -50.0 <= raw_daily <= 50.0:
+                daily_ret = round(raw_daily, 4)
+        prev_total = total
+
+        snap = existing_rows.get(d)
+        if snap:
+            snap.total_value = total
+            snap.return_pct_since_inception = inception_ret
+            snap.daily_return_pct = daily_ret
+        else:
+            db.add(ShadowPortfolioSnapshot(
+                shadow_portfolio_id=shadow.id,
+                snapshot_date=d,
+                total_value=total,
+                return_pct_since_inception=inception_ret,
+                daily_return_pct=daily_ret,
+                holdings_json=None,
+                benchmark_symbol=_BENCHMARK_SYMBOL,
+                created_at=datetime.utcnow(),
+            ))
+        written += 1
+
+        shadow.current_value = total
+        shadow.inception_return_pct = inception_ret
+
+    return written
+
+
+def repair_shadow_portfolios(db: Session, workspace_id: int) -> list[dict[str, Any]]:
+    """One-time repair for shadows created while no DB price source resolved.
+
+    Fixes two historical defects (root cause: AgentCache.technical rows carry
+    no price keys, so _fetch_cached_prices returned {} at creation AND at
+    every daily valuation — all holdings froze at inception_price=1.0 and
+    daily_return_pct stayed 0.0 forever):
+
+      1. price_frozen dollar-value holdings → converted to real share counts
+         using the PortfolioSnapshot price nearest the shadow's inception date.
+      2. Empty inception_holdings_json (pre-fallback rows) → rebuilt from the
+         linked decision's approved allocations or the recommendation
+         snapshot's projected allocations.
+
+    Then re-derives the full ShadowPortfolioSnapshot history from daily
+    portfolio snapshot prices so shadow returns reflect real market moves.
+    """
+    from models.database import (
+        ShadowPortfolio, UserExecutionDecision, RecommendationSnapshot,
+    )
+
+    history = _snapshot_price_history(db)
+    if not history:
+        return [{"status": "no_price_history"}]
+
+    shadows = (
+        db.query(ShadowPortfolio)
+        .filter_by(workspace_id=workspace_id, is_active=True)
+        .order_by(ShadowPortfolio.id)
+        .all()
+    )
+
+    results: list[dict[str, Any]] = []
+    for shadow in shadows:
+        result: dict[str, Any] = {"shadow_id": shadow.id, "shadow_type": shadow.shadow_type}
+        try:
+            holdings: list[dict] = []
+            if shadow.inception_holdings_json:
+                try:
+                    holdings = json.loads(shadow.inception_holdings_json)
+                except Exception:
+                    holdings = []
+
+            # ── Rebuild empty holdings from linked allocations ────────────────
+            if not holdings:
+                decision = (
+                    db.query(UserExecutionDecision).filter_by(id=shadow.execution_decision_id).first()
+                    if shadow.execution_decision_id else None
+                )
+                snap = (
+                    db.query(RecommendationSnapshot).filter_by(id=shadow.recommendation_snapshot_id).first()
+                    if shadow.recommendation_snapshot_id else None
+                )
+                allocs_raw = (decision.approved_allocations_json if decision else None) or (
+                    snap.projected_allocations_json if snap else None
+                )
+                allocs: list[dict] = []
+                if allocs_raw:
+                    try:
+                        allocs = json.loads(allocs_raw)
+                    except Exception:
+                        pass
+                total_value = shadow.inception_value or (
+                    (snap.total_portfolio_value if snap else None) or 0.0
+                )
+                if not allocs or total_value <= 0:
+                    result.update(status="skipped_no_allocations", holdings=0)
+                    results.append(result)
+                    continue
+                for a in allocs:
+                    sym = a.get("symbol")
+                    if not sym:
+                        continue
+                    weight = float(a.get("target_weight") or 0)
+                    holdings.append({
+                        "symbol": sym,
+                        "target_weight_pct": weight,
+                        "action": a.get("action"),
+                        "shares": round(weight / 100.0 * total_value, 6),
+                        "inception_price": 1.0,
+                        "price_frozen": True,  # un-frozen below with real prices
+                    })
+                result["holdings_rebuilt"] = True
+
+            # ── Un-freeze dollar-value holdings with inception-date prices ────
+            unfrozen = 0
+            still_frozen = 0
+            for h in holdings:
+                frozen = h.get("price_frozen", False)
+                # Backward-compat inference (same rule as _compute_paper_value)
+                if not frozen and float(h.get("inception_price") or 0) == 1.0 and float(h.get("shares") or 0) > 1000:
+                    frozen = True
+                if not frozen:
+                    continue
+                price = _price_near_date(history, shadow.inception_date, h.get("symbol", ""))
+                if price and price > 0:
+                    dollars = float(h.get("shares") or 0)
+                    h["shares"] = round(dollars / price, 6)
+                    h["inception_price"] = price
+                    h["price_frozen"] = False
+                    unfrozen += 1
+                else:
+                    still_frozen += 1
+
+            shadow.inception_holdings_json = json.dumps(holdings, default=str)
+
+            # ── Rebuild snapshot history with real daily prices ───────────────
+            rows = _rebuild_shadow_snapshots(db, shadow, holdings, history)
+            db.commit()
+
+            result.update(
+                status="repaired",
+                holdings=len(holdings),
+                unfrozen=unfrozen,
+                still_frozen=still_frozen,
+                snapshots_rebuilt=rows,
+                inception_return_pct=shadow.inception_return_pct,
+            )
+            logger.info(
+                "[SHADOW] Repaired shadow_id=%s: %d holdings (%d unfrozen), %d snapshots rebuilt",
+                shadow.id, len(holdings), unfrozen, rows,
+            )
+        except Exception as exc:
+            db.rollback()
+            logger.error("[SHADOW] Repair failed for shadow_id=%s: %s", shadow.id, exc)
+            result.update(status="error", error=str(exc))
+        results.append(result)
+
+    return results

@@ -3506,9 +3506,13 @@ async def get_performance_comparison(
           ],
           "data": [
             {"date": "2026-05-21", "portfolio": 100.0, "bm_SET": 100.0, "bm_QQQ": 100.0},
-            {"date": "2026-05-22", "portfolio": 103.2, "bm_SET": 101.5, "bm_QQQ": null},
+            {"date": "2026-05-22", "portfolio": 103.2, "bm_SET": 101.5, "bm_QQQ": 101.5},
           ]
         }
+
+    Missing observations (market holidays, null DB rows) are forward-filled
+    (LOCF) so the timeline is continuous; a value is None only before the
+    series' first observation.
     """
     from services.benchmark_service import bench_key, benchmark_label
 
@@ -3592,13 +3596,23 @@ async def get_performance_comparison(
         all_dates.update(d for d in bench_map[sym] if d >= base_date)
     sorted_dates = sorted(all_dates)
 
-    # Build flat recharts data array
+    # Build flat recharts data array.
+    # Forward-fill (LOCF): when one market is closed on a date present in the
+    # union timeline (e.g. SET holiday Jun 1–3 while QQQ trades), carry the
+    # last observed index value forward so every row is fully populated and
+    # the chart renders a continuous line. Dates before a series' first
+    # observation remain None (nothing to carry forward yet).
     data: list[dict] = []
+    last_portfolio: float | None = None
+    last_bench: dict[str, float | None] = {sym: None for sym in bench_symbols}
     for d in sorted_dates:
         row: dict = {"date": d}
 
         # Portfolio — cumulative return index (base=100, capital-injection-stripped)
-        row["portfolio"] = portfolio_index.get(d)
+        pv = portfolio_index.get(d)
+        if pv is not None:
+            last_portfolio = pv
+        row["portfolio"] = last_portfolio
 
         # Each benchmark — normalised to base=100 from its own anchor price
         for sym in bench_symbols:
@@ -3606,9 +3620,8 @@ async def get_performance_comparison(
             bv = bench_base.get(sym)
             price = bench_map[sym].get(d)
             if price is not None and bv and bv > 0:
-                row[key] = round(price / bv * 100, 4)
-            else:
-                row[key] = None
+                last_bench[sym] = round(price / bv * 100, 4)
+            row[key] = last_bench[sym]
 
         data.append(row)
 
@@ -3655,6 +3668,28 @@ async def admin_benchmark_backfill(
     results = await backfill_benchmarks(db, symbols=sym_list, from_date=from_date, to_date=to_date)
     total_rows = sum(r.get("rows", 0) for r in results)
     return {"results": results, "total_rows_written": total_rows}
+
+
+@app.post("/admin/repair-shadow-portfolios")
+async def admin_repair_shadow_portfolios(db: Session = Depends(get_db)) -> dict:
+    """One-time repair for shadow portfolios stuck at 0.00% return.
+
+    Converts price_frozen dollar-value holdings to real share counts using
+    historical PortfolioSnapshot prices, rebuilds empty inception holdings
+    from linked decision/recommendation allocations, and re-derives the full
+    ShadowPortfolioSnapshot history so AI-vs-Human realized outcomes reflect
+    real market moves instead of a flat 0.00%.
+    """
+    from services.decision_memory.shadow_tracker import repair_shadow_portfolios
+
+    ws = _ws_id(db)
+    results = repair_shadow_portfolios(db, ws)
+    repaired = sum(1 for r in results if r.get("status") == "repaired")
+    return {
+        "results": results,
+        "shadows_total": len(results),
+        "shadows_repaired": repaired,
+    }
 
 
 @app.post("/admin/recalculate-cost-basis")
