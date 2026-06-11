@@ -946,6 +946,7 @@ export interface PortfolioDNA {
 export interface OptimizerResult {
   portfolio_name: string;
   status?: OptimizerStatus;
+  final_consensus_score?: number | null;
   rebalance_opportunity_score?: number;
   no_action_reason?: NoActionReason | null;
   no_action_summary?: string | null;
@@ -1012,6 +1013,7 @@ export interface OptimizerHistoryItem {
   analyzed_at: string;
   swap_count: number;
   optimizer_status?: OptimizerStatus;
+  final_consensus_score?: number | null;
   rebalance_opportunity_score?: number | null;
   no_action_reason?: NoActionReason | null;
 }

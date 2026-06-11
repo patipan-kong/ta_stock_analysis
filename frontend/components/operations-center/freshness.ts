@@ -14,6 +14,35 @@ export function optimizerFreshnessTh(lastRunAt: string | null): string {
   return `วิเคราะห์ล่าสุด ${days} วันที่แล้ว`;
 }
 
+/** Friendly Thai label used as a compact "last analysis" badge.
+ *  Relative for <24h, absolute date-time otherwise. */
+export function optimizerLastAnalysisBadgeTh(lastRunAt: string | null): string {
+  if (!lastRunAt) return "วิเคราะห์ล่าสุด: ยังไม่เคยวิเคราะห์";
+  const ts = new Date(lastRunAt);
+  const diffMs = Date.now() - ts.getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) {
+    return "วิเคราะห์ล่าสุด: ยังไม่เคยวิเคราะห์";
+  }
+
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return "วิเคราะห์ล่าสุด: สักครู่ก่อน";
+  if (minutes < 60) return `วิเคราะห์ล่าสุด: ${minutes} นาทีที่แล้ว`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `วิเคราะห์ล่าสุด: ${hours} ชั่วโมงก่อน`;
+
+  const absolute = ts.toLocaleString("th-TH", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Bangkok",
+  });
+  return `วิเคราะห์ล่าสุด: ${absolute}`;
+}
+
 /** True when the last run is old enough that a fresh analysis is worth suggesting. */
 export function isAnalysisStale(lastRunAt: string | null, staleDays = 3): boolean {
   if (!lastRunAt) return true;
@@ -34,6 +63,14 @@ export function marketDataFreshnessTh(snapshotDate: string | null): string {
   if (days === 0) return "ข้อมูลตลาดอัปเดตวันนี้";
   if (days === 1) return "ข้อมูลตลาดอัปเดตเมื่อวานนี้";
   return `ข้อมูลตลาดอัปเดตเมื่อ ${days} วันที่แล้ว`;
+}
+
+/** Friendly Thai text for time since last rebalance. */
+export function rebalanceFreshnessTh(daysSinceLastRebalance: number | null): string {
+  if (daysSinceLastRebalance == null) return "ยังไม่มีประวัติการรีบาลานซ์";
+  if (daysSinceLastRebalance === 0) return "รีบาลานซ์ล่าสุด: วันนี้";
+  if (daysSinceLastRebalance === 1) return "รีบาลานซ์ล่าสุด: เมื่อวาน";
+  return `รีบาลานซ์ล่าสุด: ${daysSinceLastRebalance} วันที่แล้ว`;
 }
 
 /** True when market data (snapshot) is stale beyond the given threshold.

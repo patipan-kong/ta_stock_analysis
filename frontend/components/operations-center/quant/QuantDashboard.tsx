@@ -10,10 +10,12 @@ const fmtBaht = (v: number) =>
   `฿${v.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export default function QuantDashboard({
+  portfolioId,
   status,
   optimizing,
   onRunOptimizer,
 }: {
+  portfolioId: number;
   status: OperationsCenterStatus;
   optimizing: boolean;
   onRunOptimizer: () => void;
@@ -57,6 +59,7 @@ export default function QuantDashboard({
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <MarketStatusCard market={status.market} snapshotDate={s.snapshot_date} />
         <ConsensusRoomCard
+          portfolioId={portfolioId}
           optimizer={status.optimizer}
           optimizing={optimizing}
           onRunOptimizer={onRunOptimizer}

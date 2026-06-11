@@ -277,7 +277,17 @@ def calculate_sharpe_ratio(
 
 
 def calculate_monthly_win_rate(snapshots: list) -> dict:
-    """Fraction of calendar months with a positive total return."""
+    """Fraction of calendar months with a positive investment return.
+
+    Uses the same TWR methodology as _twr() / calculate_cumulative_return():
+    compounds investment_return_pct (stored as daily_return_pct in _snap_to_df)
+    within each calendar month so that deposits, withdrawals, imported positions,
+    and quantity corrections are excluded — only true market performance counts.
+
+    Previous implementation used (last_total_value - first_total_value) / first,
+    which inflated months that contained cash inflows and produced figures
+    inconsistent with cumulative_return_pct.
+    """
     _empty_mwr: dict = {
         "win_rate": None,
         "wins": 0,
@@ -292,26 +302,33 @@ def calculate_monthly_win_rate(snapshots: list) -> dict:
     df = df.copy()
     df["month"] = df["date"].str[:7]
 
-    # First and last portfolio value per month
-    monthly_first = df.groupby("month")["total_value"].first()
-    monthly_last = df.groupby("month")["total_value"].last()
-    monthly = pd.DataFrame({"first": monthly_first, "last": monthly_last}).reset_index()
-    monthly = monthly[monthly["first"] > 0].copy()
-    monthly["return_pct"] = (monthly["last"] - monthly["first"]) / monthly["first"] * 100
+    wins = losses = 0
+    monthly_returns: list[dict] = []
 
-    wins = int((monthly["return_pct"] > 0).sum())
-    losses = int((monthly["return_pct"] <= 0).sum())
+    for month, group in df.groupby("month"):
+        # Compound all non-null investment returns within the month.
+        # daily_return_pct in _snap_to_df already prefers investment_return_pct
+        # (cash-flow-adjusted) and falls back to raw daily_return_pct for legacy rows.
+        month_dr = group["daily_return_pct"].dropna()
+        if len(month_dr) < 1:
+            continue
+        month_ret_pct = float((1.0 + month_dr / 100.0).prod()) - 1.0
+        month_ret_pct *= 100.0
+        if math.isnan(month_ret_pct) or math.isinf(month_ret_pct):
+            continue
+        if month_ret_pct > 0:
+            wins += 1
+        else:
+            losses += 1
+        monthly_returns.append({"month": str(month), "return_pct": _r(month_ret_pct, 2)})
+
     total = wins + losses
-
     return {
         "win_rate": _r(wins / total * 100, 1) if total > 0 else None,
         "wins": wins,
         "losses": losses,
         "total_months": total,
-        "monthly_returns": [
-            {"month": str(row["month"]), "return_pct": _r(row["return_pct"], 2)}
-            for _, row in monthly.iterrows()
-        ],
+        "monthly_returns": monthly_returns,
     }
 
 

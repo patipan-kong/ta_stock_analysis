@@ -1,8 +1,9 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import type { OperationsOptimizer } from "@/lib/api";
-import { optimizerFreshnessTh, contextualGuidanceTh } from "../freshness";
+import { listOptimizerHistory, type OperationsOptimizer } from "@/lib/api";
+import { optimizerFreshnessTh, contextualGuidanceTh, optimizerLastAnalysisBadgeTh } from "../freshness";
 
 const DECISION_CFG: Record<string, { text: string; badge: string; label_th: string }> = {
   NO_ACTION: { text: "text-emerald-700", badge: "bg-emerald-100 border-emerald-300", label_th: "ไม่ต้องดำเนินการ" },
@@ -22,20 +23,46 @@ const OPTIMIZER_STATUS_TH: Record<string, string> = {
 };
 
 export default function ConsensusRoomCard({
+  portfolioId,
   optimizer,
   optimizing,
   onRunOptimizer,
   daysSinceRebalance,
 }: {
+  portfolioId: number;
   optimizer: OperationsOptimizer;
   optimizing: boolean;
   onRunOptimizer: () => void;
   daysSinceRebalance: number | null;
 }) {
+  const [latestHistoryId, setLatestHistoryId] = useState<number | null>(null);
+  const [resolvingLatest, setResolvingLatest] = useState(false);
   const score = optimizer.consensus_score;
   const decision = optimizer.consensus_decision;
   const cfg = decision ? (DECISION_CFG[decision] ?? DECISION_CFG.NO_ACTION) : null;
   const guidance = contextualGuidanceTh(optimizer.last_run_at, daysSinceRebalance);
+
+  useEffect(() => {
+    let cancelled = false;
+    setResolvingLatest(true);
+    listOptimizerHistory(portfolioId)
+      .then((items) => {
+        if (!cancelled) setLatestHistoryId(items.length > 0 ? items[0].id : null);
+      })
+      .catch(() => {
+        if (!cancelled) setLatestHistoryId(null);
+      })
+      .finally(() => {
+        if (!cancelled) setResolvingLatest(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [portfolioId, optimizer.last_run_at]);
+
+  const latestHref = latestHistoryId != null
+    ? `/optimizer?history=${latestHistoryId}`
+    : "/optimizer?view=latest";
 
   const runButton = (
     <button
@@ -142,15 +169,49 @@ export default function ConsensusRoomCard({
       )}
 
       <div className="flex items-center justify-between gap-3 border-t border-gray-100 pt-3 flex-wrap">
-        <div className="flex items-center gap-3">
-          {runButton}
-          <Link href="/optimizer" className="font-mono text-[11px] font-semibold text-blue-600 hover:underline whitespace-nowrap">
-            เปิดหน้า Optimizer →
-          </Link>
+        <div className="flex items-center gap-3 flex-wrap">
+          {resolvingLatest ? (
+            <>
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-gray-100 px-3 py-1.5 font-mono text-xs font-bold text-gray-500">
+                ⏳ ตรวจสอบผลล่าสุด…
+              </span>
+              <button
+                onClick={onRunOptimizer}
+                disabled={optimizing}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-white px-3 py-1.5 font-mono text-xs font-bold text-blue-700 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {optimizing ? "กำลังวิเคราะห์…" : "⚡ วิเคราะห์ใหม่"}
+              </button>
+            </>
+          ) : latestHistoryId != null ? (
+            <>
+              <Link
+                href={latestHref}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 px-3 py-1.5 font-mono text-xs font-bold text-white hover:bg-blue-800 transition-colors"
+              >
+                📋 ดูผลล่าสุด
+              </Link>
+              <button
+                onClick={onRunOptimizer}
+                disabled={optimizing}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-white px-3 py-1.5 font-mono text-xs font-bold text-blue-700 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {optimizing ? "กำลังวิเคราะห์…" : "⚡ วิเคราะห์ใหม่"}
+              </button>
+            </>
+          ) : (
+            <>
+              {runButton}
+              <Link href="/optimizer" className="font-mono text-[11px] font-semibold text-blue-600 hover:underline whitespace-nowrap">
+                เปิดหน้า Optimizer →
+              </Link>
+            </>
+          )}
         </div>
-        <span className="text-[11px] text-gray-400">
-          {optimizerFreshnessTh(optimizer.last_run_at)}
-        </span>
+        <div className="text-right">
+          <p className="text-[11px] text-gray-500">{optimizerLastAnalysisBadgeTh(optimizer.last_run_at)}</p>
+          <span className="text-[11px] text-gray-400">{optimizerFreshnessTh(optimizer.last_run_at)}</span>
+        </div>
       </div>
     </div>
   );

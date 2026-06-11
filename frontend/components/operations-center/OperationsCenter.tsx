@@ -137,6 +137,7 @@ export default function OperationsCenter({ portfolioId }: { portfolioId: number 
           />
         ) : (
           <QuantDashboard
+            portfolioId={portfolioId}
             status={status}
             optimizing={optimizing}
             onRunOptimizer={handleRunOptimizer}

@@ -2,13 +2,14 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import BackBreadcrumb from "@/components/BackBreadcrumb";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import {
   runOptimizer, listOptimizerHistory, getOptimizerHistory,
   listStrategyProfiles, getPortfolioPersona, updatePortfolioPersona,
   recordDecisionBySnapshot, listExecutionDecisions,
-  getDecisionMemoryTimeline, getShadowPerformanceSummary,
+  getDecisionMemoryTimeline, getShadowPerformanceSummary, getOperationsStatus,
 } from "@/lib/api";
 import SignalBadge from "@/components/SignalBadge";
 import AIBadge from "@/components/AIBadge";
@@ -22,11 +23,34 @@ import type {
   BlockedOpportunity, NoActionReason, SwapSuggestion, ConsensusType,
   StrategyPersona, StrategyProfile, PortfolioDNA, DriftSeverity, MarketRegime,
   ActivePolicy, ExecutionDecision, ExecutionDecisionType, DecisionMemoryEntry,
-  ShadowPerformanceSummary, ExecutionRisk,
+  ShadowPerformanceSummary, ExecutionRisk, OperationsCenterStatus,
   StabilizationMeta, OptimizerStatus,
 } from "@/lib/api";
+import { marketDataFreshnessTh, optimizerLastAnalysisBadgeTh } from "@/components/operations-center/freshness";
 
 const TZ = "Asia/Bangkok";
+const SELECTED_HISTORY_MAP_KEY = "optimizer_selected_history_map";
+
+function readSelectedHistoryMap(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(SELECTED_HISTORY_MAP_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed as Record<string, number> : {};
+  } catch {
+    return {};
+  }
+}
+
+function rememberSelectedHistory(portfolioId: number, historyId: number): void {
+  const map = readSelectedHistoryMap();
+  map[String(portfolioId)] = historyId;
+  try {
+    localStorage.setItem(SELECTED_HISTORY_MAP_KEY, JSON.stringify(map));
+  } catch {
+    // Ignore storage failures; this is a UX enhancement only.
+  }
+}
 
 // ─── Persona config ───────────────────────────────────────────────────────────
 
@@ -266,6 +290,42 @@ function formatDate(iso: string): string {
     " " +
     d.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit", timeZone: TZ })
   );
+}
+
+function formatDecisionLabel(item: OptimizerHistoryItem, detail: OptimizerResult | null): string {
+  const c = detail?.consensus?.consensus_decision;
+  if (c) return c.replace(/_/g, " ");
+  if (item.optimizer_status === "NO_ACTION") return "NO ACTION";
+  return "REBALANCE";
+}
+
+function formatRegimeLabel(detail: OptimizerResult | null): string {
+  const r = detail?.market_regime?.regime;
+  return r ? r.replace(/_/g, " ") : "-";
+}
+
+function getFinalConsensusScore(
+  result: Pick<OptimizerResult, "final_consensus_score" | "consensus" | "rebalance_opportunity_score"> | null | undefined,
+): number | null {
+  if (!result) return null;
+  if (typeof result.final_consensus_score === "number") return result.final_consensus_score;
+  if (typeof result.consensus?.consensus_strength_score === "number") return result.consensus.consensus_strength_score;
+  if (typeof result.rebalance_opportunity_score === "number") return result.rebalance_opportunity_score;
+  return null;
+}
+
+function getHistoryFinalConsensusScore(item: OptimizerHistoryItem, detail: OptimizerResult | null): number | null {
+  if (detail) return getFinalConsensusScore(detail);
+  if (typeof item.final_consensus_score === "number") return item.final_consensus_score;
+  if (typeof item.rebalance_opportunity_score === "number") return item.rebalance_opportunity_score;
+  return null;
+}
+
+function daysSinceRebalanceText(days: number | null | undefined): string {
+  if (days == null) return "ยังไม่มีประวัติการรีบาลานซ์";
+  if (days === 0) return "รีบาลานซ์วันนี้";
+  if (days === 1) return "รีบาลานซ์ล่าสุดเมื่อวานนี้";
+  return `ผ่านมา ${days} วันนับจากรีบาลานซ์ครั้งล่าสุด`;
 }
 
 function scoreColor(score: number): string {
@@ -602,10 +662,10 @@ const BLOCKED_REASON_LABELS: Record<string, string> = {
 };
 
 function scoreZone(s: number): { label: string; fill: string; text: string } {
-  if (s <= 20) return { label: "Well Balanced",       fill: "bg-green-500",  text: "text-green-700" };
-  if (s <= 40) return { label: "Minor Opportunity",   fill: "bg-teal-500",   text: "text-teal-700"  };
-  if (s <= 70) return { label: "Moderate Opportunity",fill: "bg-amber-400",  text: "text-amber-700" };
-  return            { label: "Strong Opportunity",    fill: "bg-orange-500", text: "text-orange-600" };
+  if (s <= 20) return { label: "Very Low", fill: "bg-red-500", text: "text-red-700" };
+  if (s <= 40) return { label: "Low", fill: "bg-amber-500", text: "text-amber-700" };
+  if (s <= 70) return { label: "Moderate", fill: "bg-blue-500", text: "text-blue-700" };
+  return { label: "High", fill: "bg-green-500", text: "text-green-700" };
 }
 
 function OpportunityScoreGauge({ score }: { score: number }) {
@@ -614,7 +674,7 @@ function OpportunityScoreGauge({ score }: { score: number }) {
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-xs">
-        <span className="text-gray-500 font-medium">Rebalance Opportunity Score</span>
+        <span className="text-gray-500 font-medium">Final Consensus Score</span>
         <span className={`font-bold text-sm ${text}`}>
           {s}<span className="text-xs font-normal text-gray-400"> / 100</span>
         </span>
@@ -635,7 +695,7 @@ function OpportunityScoreGauge({ score }: { score: number }) {
 }
 
 function NoActionCard({ result }: { result: OptimizerResult }) {
-  const score  = result.rebalance_opportunity_score ?? 0;
+  const score  = getFinalConsensusScore(result) ?? 0;
   const reason = result.no_action_reason ?? null;
   const summary = result.no_action_summary ?? null;
   const blocked: BlockedOpportunity[] = result.blocked_opportunities ?? [];
@@ -1314,7 +1374,7 @@ function ConsensusSection({ consensus }: { consensus: OptimizerConsensus }) {
       {/* Consensus Strength gauge */}
       <div className="bg-white/70 rounded-xl border border-white/80 px-4 py-3 space-y-2">
         <div className="flex items-center justify-between text-xs">
-          <span className="text-gray-500 font-medium">Consensus Strength</span>
+          <span className="text-gray-500 font-medium">Final Consensus Score</span>
           <span className={`font-bold text-sm ${cfg.badgeText}`}>{s}<span className="text-xs font-normal text-gray-400"> / 100</span></span>
         </div>
         <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
@@ -1395,6 +1455,7 @@ function PortfolioMetricsBar({ result }: { result: OptimizerResult }) {
   const cashPct = total > 0 ? (cash / total * 100).toFixed(1) : "0.0";
   const turnover = result.portfolio_turnover_percent;
   const targetCashPct = result.target_cash_weight;
+  const finalConsensus = getFinalConsensusScore(result);
 
   return (
     <div className="bg-white border rounded-xl p-4 shadow-sm flex flex-wrap gap-4 text-sm">
@@ -1420,6 +1481,12 @@ function PortfolioMetricsBar({ result }: { result: OptimizerResult }) {
         <div>
           <span className="text-xs text-gray-500">Est. Turnover</span>
           <p className={`font-semibold ${turnover > 30 ? "text-amber-600" : "text-gray-700"}`}>{turnover.toFixed(1)}%</p>
+        </div>
+      )}
+      {finalConsensus != null && (
+        <div>
+          <span className="text-xs text-gray-500">Final Consensus Score</span>
+          <p className={`font-semibold ${scoreZone(finalConsensus).text}`}>{finalConsensus}/100</p>
         </div>
       )}
     </div>
@@ -1938,7 +2005,7 @@ function HistoryList({
         <ul className="space-y-1">
           {items.map((item) => {
             const isNoAction = item.optimizer_status === "NO_ACTION";
-            const score = item.rebalance_opportunity_score;
+            const score = getHistoryFinalConsensusScore(item, null);
             const { fill } = score != null ? scoreZone(score) : { fill: "bg-gray-300" };
             const activeCls = selectedId === item.id
               ? isNoAction ? "bg-green-50 border border-green-200" : "bg-blue-50 border border-blue-200"
@@ -1977,19 +2044,90 @@ function HistoryList({
   );
 }
 
+function RecentAnalysisList({
+  items,
+  details,
+  loading,
+  selectedId,
+  onSelect,
+}: {
+  items: OptimizerHistoryItem[];
+  details: Record<number, OptimizerResult | null>;
+  loading: boolean;
+  selectedId: number | null;
+  onSelect: (item: OptimizerHistoryItem) => void;
+}) {
+  const recent = items.slice(0, 5);
+
+  return (
+    <section className="bg-white border rounded-xl p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <h2 className="text-sm font-semibold text-gray-800">Recent Analysis</h2>
+        <span className="text-xs text-gray-400">ล่าสุด 5 ครั้ง</span>
+      </div>
+
+      {loading ? (
+        <p className="text-xs text-gray-400">กำลังโหลดประวัติการวิเคราะห์…</p>
+      ) : recent.length === 0 ? (
+        <p className="text-xs text-gray-400">ยังไม่มีประวัติการวิเคราะห์</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-xs">
+            <thead>
+              <tr className="border-b text-left text-gray-400">
+                <th className="py-2 pr-3">Date</th>
+                <th className="py-2 pr-3 text-right">Consensus Score</th>
+                <th className="py-2 pr-3">Decision</th>
+                <th className="py-2 pr-3">Regime</th>
+                <th className="py-2 text-right">Open</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recent.map((item) => {
+                const detail = details[item.id] ?? null;
+                const score = getHistoryFinalConsensusScore(item, detail);
+                const isActive = selectedId === item.id;
+                return (
+                  <tr key={item.id} className={isActive ? "bg-blue-50" : "border-b last:border-b-0"}>
+                    <td className="py-2 pr-3 text-gray-700">{formatDate(item.analyzed_at)}</td>
+                    <td className="py-2 pr-3 text-right font-semibold text-gray-700">{score != null ? score : "-"}</td>
+                    <td className="py-2 pr-3 text-gray-600">{formatDecisionLabel(item, detail)}</td>
+                    <td className="py-2 pr-3 text-gray-600">{formatRegimeLabel(detail)}</td>
+                    <td className="py-2 text-right">
+                      <button
+                        onClick={() => onSelect(item)}
+                        className="text-blue-600 hover:text-blue-700 font-medium"
+                      >
+                        เปิด
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function OptimizerPage() {
+  const searchParams = useSearchParams();
   const { portfolios, activeId } = usePortfolio();
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | null>(null);
   const [result, setResult] = useState<OptimizerResult | null>(null);
   const [history, setHistory] = useState<OptimizerHistoryItem[]>([]);
+  const [historyDetails, setHistoryDetails] = useState<Record<number, OptimizerResult | null>>({});
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
   const [forceRunning, setForceRunning] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [error, setError] = useState("");
+  const [opsStatus, setOpsStatus] = useState<OperationsCenterStatus | null>(null);
 
   const [profiles, setProfiles] = useState<StrategyProfile[]>([]);
   const [persona, setPersona] = useState<StrategyPersona>("BALANCED");
@@ -1997,13 +2135,38 @@ export default function OptimizerPage() {
 
   const portfolioId = selectedPortfolioId ?? activeId;
 
-  const loadHistory = useCallback(async (pid: number) => {
+  const loadHistory = useCallback(async (pid: number): Promise<OptimizerHistoryItem[]> => {
     setLoadingHistory(true);
     try {
-      setHistory(await listOptimizerHistory(pid));
+      const items = await listOptimizerHistory(pid);
+      setHistory(items);
+      return items;
+    } catch {
+      setHistory([]);
+      return [];
     } finally {
       setLoadingHistory(false);
     }
+  }, []);
+
+  const preloadRecentDetails = useCallback(async (items: OptimizerHistoryItem[]) => {
+    const top = items.slice(0, 5).map((h) => h.id);
+    const loaded = await Promise.all(
+      top.map(async (id) => {
+        try {
+          const detail = await getOptimizerHistory(id);
+          return [id, detail] as const;
+        } catch {
+          return [id, null] as const;
+        }
+      }),
+    );
+
+    setHistoryDetails((prev) => {
+      const next = { ...prev };
+      for (const [id, detail] of loaded) next[id] = detail;
+      return next;
+    });
   }, []);
 
   // Load strategy profiles once on mount
@@ -2019,10 +2182,55 @@ export default function OptimizerPage() {
 
   useEffect(() => {
     if (portfolioId == null) return;
+    getOperationsStatus(portfolioId).then(setOpsStatus).catch(() => setOpsStatus(null));
+  }, [portfolioId]);
+
+  useEffect(() => {
+    void preloadRecentDetails(history);
+  }, [history, preloadRecentDetails]);
+
+  useEffect(() => {
+    if (portfolioId == null) return;
+    let cancelled = false;
+
     setResult(null);
     setSelectedHistoryId(null);
-    loadHistory(portfolioId);
-  }, [portfolioId, loadHistory]);
+
+    const bootstrapLatestHistory = async () => {
+      const items = await loadHistory(portfolioId);
+      if (cancelled || items.length === 0) return;
+
+      const rawHistoryId = searchParams.get("history");
+      const historyFromQuery = rawHistoryId ? Number(rawHistoryId) : Number.NaN;
+      const queryTarget = Number.isFinite(historyFromQuery)
+        ? items.find((h) => h.id === historyFromQuery)
+        : undefined;
+      const target = queryTarget ?? items[0];
+      if (!target) return;
+
+      setSelectedHistoryId(target.id);
+      setLoadingDetail(true);
+      setError("");
+      try {
+        const detail = await getOptimizerHistory(target.id);
+        if (!cancelled) {
+          setResult(detail);
+          setHistoryDetails((prev) => ({ ...prev, [target.id]: detail }));
+          rememberSelectedHistory(portfolioId, target.id);
+        }
+      } catch {
+        if (!cancelled) setError("Failed to load history");
+      } finally {
+        if (!cancelled) setLoadingDetail(false);
+      }
+    };
+
+    bootstrapLatestHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [portfolioId, loadHistory, searchParams]);
 
   async function handlePersonaSave(p: StrategyPersona) {
     if (portfolioId == null) return;
@@ -2047,7 +2255,12 @@ export default function OptimizerPage() {
       const data = await runOptimizer(portfolioId, undefined, undefined, forceRebalance || undefined);
       setResult(data);
       setSelectedHistoryId(data.history_id ?? null);
+      if (data.history_id != null) {
+        setHistoryDetails((prev) => ({ ...prev, [data.history_id as number]: data }));
+        rememberSelectedHistory(portfolioId, data.history_id);
+      }
       await loadHistory(portfolioId);
+      getOperationsStatus(portfolioId).then(setOpsStatus).catch(() => {});
     } catch (err) {
       setError(err instanceof Error ? err.message : "Optimizer failed");
     } finally {
@@ -2059,10 +2272,15 @@ export default function OptimizerPage() {
   async function handleSelectHistory(item: OptimizerHistoryItem) {
     if (selectedHistoryId === item.id) return;
     setSelectedHistoryId(item.id);
+    if (portfolioId != null) {
+      rememberSelectedHistory(portfolioId, item.id);
+    }
     setLoadingDetail(true);
     setError("");
     try {
-      setResult(await getOptimizerHistory(item.id));
+      const detail = await getOptimizerHistory(item.id);
+      setResult(detail);
+      setHistoryDetails((prev) => ({ ...prev, [item.id]: detail }));
     } catch {
       setError("Failed to load history");
     } finally {
@@ -2071,6 +2289,13 @@ export default function OptimizerPage() {
   }
 
   const activePortfolio = portfolios.find((p) => p.id === portfolioId);
+  const latestAnalysisAt = history[0]?.analyzed_at ?? null;
+  const lastSnapshotDate = opsStatus?.portfolio_summary.snapshot_date ?? null;
+  const daysSinceLastRebalance = opsStatus?.portfolio_summary.days_since_last_rebalance ?? null;
+  const deepLinkedHistoryIdRaw = searchParams.get("history");
+  const deepLinkedHistoryId = deepLinkedHistoryIdRaw ? Number(deepLinkedHistoryIdRaw) : Number.NaN;
+  const hasDeepLinkedHistory = Number.isFinite(deepLinkedHistoryId);
+  const isViewingDeepLinkedHistory = hasDeepLinkedHistory && selectedHistoryId === deepLinkedHistoryId;
 
   return (
     <div className="space-y-6">
@@ -2080,10 +2305,30 @@ export default function OptimizerPage() {
         <p className="text-sm text-gray-500">
           Dynamic capital allocation — position sizing, rebalancing, cash deployment.
         </p>
+        {hasDeepLinkedHistory && (
+          <p className="mt-2 inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
+            {isViewingDeepLinkedHistory
+              ? "กำลังแสดงผลการวิเคราะห์ล่าสุดจาก Ops Center"
+              : "กำลังโหลดผลการวิเคราะห์ที่เลือกจาก Ops Center"}
+          </p>
+        )}
       </div>
 
       {/* Controls */}
-      <div className="bg-white border rounded-xl p-4 shadow-sm flex flex-wrap gap-4 items-end">
+      <div className="bg-white border rounded-xl p-4 shadow-sm space-y-4">
+        <div className="flex flex-wrap gap-2">
+          <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
+            {optimizerLastAnalysisBadgeTh(latestAnalysisAt)}
+          </span>
+          <span className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-medium text-gray-600">
+            {marketDataFreshnessTh(lastSnapshotDate)}
+          </span>
+          <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
+            {daysSinceRebalanceText(daysSinceLastRebalance)}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap gap-4 items-end">
         <div>
           <label className="block text-xs text-gray-500 mb-1">Portfolio</label>
           <select
@@ -2123,7 +2368,16 @@ export default function OptimizerPage() {
           {running ? "Optimizing…" : "Run Optimizer"}
         </button>
         {error && <p className="text-red-500 text-xs self-center">{error}</p>}
+        </div>
       </div>
+
+      <RecentAnalysisList
+        items={history}
+        details={historyDetails}
+        loading={loadingHistory}
+        selectedId={selectedHistoryId}
+        onSelect={handleSelectHistory}
+      />
 
       {running && portfolioId != null && (
         <div className="max-w-xl mx-auto py-6 space-y-3">
@@ -2142,7 +2396,7 @@ export default function OptimizerPage() {
               onSelect={handleSelectHistory}
             />
           </div>
-          <div className="flex-1 min-w-0">
+          <div className={`flex-1 min-w-0 rounded-xl transition-colors ${isViewingDeepLinkedHistory ? "ring-1 ring-blue-200 bg-blue-50/30" : ""}`}>
             <ResultPanel
               result={result}
               loading={loadingDetail}

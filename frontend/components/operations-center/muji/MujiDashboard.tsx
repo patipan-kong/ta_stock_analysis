@@ -73,8 +73,11 @@ export default function MujiDashboard({
       <MujiSummaryCard translation={status.muji_translation} />
 
       <ActionCard
+        portfolioId={portfolioId}
         action={status.muji_translation.action_required}
         lastRunAt={status.optimizer.last_run_at}
+        snapshotDate={s.snapshot_date}
+        daysSinceLastRebalance={s.days_since_last_rebalance}
         optimizing={optimizing}
         onRunOptimizer={onRunOptimizer}
       />

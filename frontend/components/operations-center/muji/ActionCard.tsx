@@ -1,8 +1,14 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import type { MujiAction } from "@/lib/api";
-import { optimizerFreshnessTh } from "../freshness";
+import { listOptimizerHistory, type MujiAction } from "@/lib/api";
+import {
+  optimizerFreshnessTh,
+  optimizerLastAnalysisBadgeTh,
+  marketDataFreshnessTh,
+  rebalanceFreshnessTh,
+} from "../freshness";
 
 const SEVERITY_CFG: Record<
   MujiAction["severity"],
@@ -32,18 +38,50 @@ const SEVERITY_CFG: Record<
 };
 
 export default function ActionCard({
+  portfolioId,
   action,
   lastRunAt,
+  snapshotDate,
+  daysSinceLastRebalance,
   optimizing,
   onRunOptimizer,
 }: {
+  portfolioId: number;
   action: MujiAction;
   lastRunAt: string | null;
+  snapshotDate: string | null;
+  daysSinceLastRebalance: number | null;
   optimizing: boolean;
   onRunOptimizer: () => void;
 }) {
+  const [latestHistoryId, setLatestHistoryId] = useState<number | null>(null);
+  const [resolvingLatest, setResolvingLatest] = useState(false);
   const neverRun = lastRunAt == null;
   const cfg = SEVERITY_CFG[action.severity] ?? SEVERITY_CFG.INFO;
+
+  useEffect(() => {
+    let cancelled = false;
+    setResolvingLatest(true);
+    listOptimizerHistory(portfolioId)
+      .then((items) => {
+        if (!cancelled) {
+          setLatestHistoryId(items.length > 0 ? items[0].id : null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setLatestHistoryId(null);
+      })
+      .finally(() => {
+        if (!cancelled) setResolvingLatest(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [portfolioId, lastRunAt]);
+
+  const latestHref = latestHistoryId != null
+    ? `/optimizer?history=${latestHistoryId}`
+    : "/optimizer?view=latest";
 
   // Never-analyzed state: dedicated headline + first-run call to action.
   if (neverRun) {
@@ -89,18 +127,56 @@ export default function ActionCard({
           <p className={`text-sm font-bold ${cfg.text}`}>{cfg.title}</p>
           <p className="text-sm text-gray-700">{action.action_th}</p>
           <div className="flex items-center gap-4 flex-wrap mt-1">
-            <button
-              onClick={onRunOptimizer}
-              disabled={optimizing}
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {optimizing ? "กำลังวิเคราะห์…" : "🪄 อัปเดตมุมมองพอร์ต"}
-            </button>
-            <Link href={action.link ?? "/optimizer"} className="text-sm font-semibold text-blue-700 underline">
-              ดูคำแนะนำล่าสุด →
-            </Link>
+            {resolvingLatest ? (
+              <>
+                <span className="inline-flex items-center gap-2 rounded-xl border border-gray-300 bg-gray-100 px-4 py-2 text-sm font-semibold text-gray-500">
+                  ⏳ กำลังตรวจสอบผลล่าสุด…
+                </span>
+                <button
+                  onClick={onRunOptimizer}
+                  disabled={optimizing}
+                  className="inline-flex items-center gap-2 rounded-xl border border-blue-300 bg-white px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {optimizing ? "กำลังวิเคราะห์…" : "⚡ วิเคราะห์ใหม่"}
+                </button>
+              </>
+            ) : latestHistoryId != null ? (
+              <>
+                <Link
+                  href={latestHref}
+                  className="inline-flex items-center gap-2 rounded-xl bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 transition-colors"
+                >
+                  📋 ดูผลการวิเคราะห์ล่าสุด
+                </Link>
+                <button
+                  onClick={onRunOptimizer}
+                  disabled={optimizing}
+                  className="inline-flex items-center gap-2 rounded-xl border border-blue-300 bg-white px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {optimizing ? "กำลังวิเคราะห์…" : "⚡ วิเคราะห์ใหม่"}
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={onRunOptimizer}
+                  disabled={optimizing}
+                  className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {optimizing ? "กำลังวิเคราะห์…" : "🪄 อัปเดตมุมมองพอร์ต"}
+                </button>
+                <Link href={action.link ?? "/optimizer"} className="text-sm font-semibold text-blue-700 underline">
+                  ดูคำแนะนำล่าสุด →
+                </Link>
+              </>
+            )}
           </div>
-          <p className="text-[11px] text-gray-400">{optimizerFreshnessTh(lastRunAt)}</p>
+          <div className="space-y-0.5">
+            <p className="text-[11px] text-gray-500">{optimizerLastAnalysisBadgeTh(lastRunAt)}</p>
+            <p className="text-[11px] text-gray-400">{optimizerFreshnessTh(lastRunAt)}</p>
+            <p className="text-[11px] text-gray-400">{marketDataFreshnessTh(snapshotDate)}</p>
+            <p className="text-[11px] text-gray-400">{rebalanceFreshnessTh(daysSinceLastRebalance)}</p>
+          </div>
         </div>
       </div>
     </div>

@@ -2211,6 +2211,9 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
 
     mark_stage(body.portfolio_id, "SAVING")
 
+    consensus_block = result.get("consensus") if isinstance(result.get("consensus"), dict) else {}
+    result["final_consensus_score"] = consensus_block.get("consensus_strength_score")
+
     entry = OptimizerHistory(
         workspace_id=ws,
         portfolio_id=body.portfolio_id,
@@ -2375,18 +2378,27 @@ async def list_optimizer_history(portfolio_id: int, db: Session = Depends(get_db
         .limit(30)
         .all()
     )
-    return [
-        {
+    result: list[dict] = []
+    for r in rows:
+        final_consensus_score = None
+        try:
+            payload = _json.loads(r.result_json) if r.result_json else {}
+            consensus = payload.get("consensus") if isinstance(payload.get("consensus"), dict) else {}
+            final_consensus_score = consensus.get("consensus_strength_score")
+        except Exception:
+            final_consensus_score = None
+
+        result.append({
             "id": r.id,
             "portfolio_name": r.portfolio_name,
             "analyzed_at": r.analyzed_at.isoformat() + "Z",
             "swap_count": r.swap_count,
             "optimizer_status": r.optimizer_status or "REBALANCE",
             "rebalance_opportunity_score": r.rebalance_opportunity_score,
+            "final_consensus_score": final_consensus_score,
             "no_action_reason": r.no_action_reason,
-        }
-        for r in rows
-    ]
+        })
+    return result
 
 
 @app.get("/optimizer/history/{history_id}")
@@ -2398,7 +2410,11 @@ async def get_optimizer_history_detail(history_id: int, db: Session = Depends(ge
     ).first()
     if not row:
         raise HTTPException(status_code=404, detail="History not found")
-    return _json.loads(row.result_json)
+    payload = _json.loads(row.result_json)
+    if "final_consensus_score" not in payload:
+        consensus = payload.get("consensus") if isinstance(payload.get("consensus"), dict) else {}
+        payload["final_consensus_score"] = consensus.get("consensus_strength_score")
+    return payload
 
 
 _DEFAULT_PORTFOLIO_SETTINGS = {"max_stocks": 12, "max_sector_pct": 40}
