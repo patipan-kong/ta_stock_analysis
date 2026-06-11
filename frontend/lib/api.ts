@@ -32,8 +32,61 @@ export interface Portfolio {
   id: number;
   name: string;
   cash_balance: number;
+  goal_target_value?: number | null;
   created_at: string;
 }
+
+export const updatePortfolioGoal = (portfolioId: number, goal: number | null) =>
+  apiFetch<{ id: number; goal_target_value: number | null; ok: boolean }>(
+    `/portfolios/${portfolioId}/goal`,
+    { method: "PATCH", body: JSON.stringify({ goal_target_value: goal }) },
+  );
+
+// ─── Goal Profile (Phase 4C.3 Goal Discovery Wizard) ─────────────────────────
+
+export type GoalType =
+  | "WEDDING"
+  | "HOUSE"
+  | "EDUCATION"
+  | "RETIREMENT"
+  | "FINANCIAL_FREEDOM"
+  | "WEALTH_GROWTH"
+  | "OTHER";
+
+export type GoalPriority = "ESSENTIAL" | "IMPORTANT" | "ASPIRATIONAL";
+
+export type RiskPersonality = "AGGRESSIVE" | "MODERATE" | "CONSERVATIVE";
+
+export interface GoalProfile {
+  portfolio_id: number | null;
+  configured: boolean;
+  goal_type: GoalType | null;
+  goal_emoji: string | null;
+  goal_label_th: string | null;
+  goal_target_value: number | null;
+  goal_target_date: string | null; // YYYY-MM-DD
+  goal_priority: GoalPriority | null;
+  goal_priority_label_th: string | null;
+  risk_personality: RiskPersonality | null;
+  risk_personality_label_th: string | null;
+}
+
+export interface GoalProfileUpdate {
+  goal_type?: GoalType | null;
+  goal_priority?: GoalPriority | null;
+  goal_target_date?: string | null;
+  risk_personality?: RiskPersonality | null;
+  goal_target_value?: number | null;
+}
+
+export const getGoalProfile = (portfolioId: number) =>
+  apiFetch<GoalProfile>(`/portfolios/${portfolioId}/goal-profile`);
+
+export const updateGoalProfile = (portfolioId: number, update: GoalProfileUpdate) =>
+  apiFetch<GoalProfile>(`/portfolios/${portfolioId}/goal-profile`, {
+    method: "PUT",
+    body: JSON.stringify(update),
+  });
 
 export type RiskLevel = "Low" | "Medium" | "High" | "Critical";
 
@@ -163,6 +216,8 @@ export interface SummaryResult {
   confidence: "high" | "medium" | "low";
   reasoning: string;
   risks: string;
+  executive_summary?: string | null;
+  ai_summary?: string | null;
   analyzed_at?: string | null;
   from_cache?: boolean;
   ai_provider?: string | null;
@@ -185,6 +240,8 @@ export interface AnalysisHistoryItem {
   confidence: "high" | "medium" | "low";
   reasoning: string;
   risks: string;
+  executive_summary?: string | null;
+  ai_summary?: string | null;
   ta_score: number | null;
   fa_score: number | null;
   ai_provider: string | null;
@@ -1394,7 +1451,7 @@ export interface RawMetricsSummary {
 }
 
 export interface FactorSectorConcentration {
-  sector_weights: Record<string, number>;
+  sector_weights: Record<string, number | null>;  // backend may emit null weights
   top_sector: string | null;
   top_sector_weight: number | null;
   diversification_score: number | null;
@@ -1664,13 +1721,14 @@ export type BenchmarkStatisticalConfidence = "UNRELIABLE" | "LOW" | "MODERATE" |
 
 export interface BenchmarkStat {
   symbol: string;
+  error?: string;               // set when backend couldn't compute metrics
   alpha: number | null;
   beta: number | null;
   r_squared: number | null;
   correlation: number | null;
   tracking_error_pct: number | null;
   information_ratio: number | null;
-  aligned_days: number;
+  aligned_days?: number;        // absent when error is set and < 5 aligned days
   // Data quality fields (present for aligned_days >= 5)
   data_quality?: BenchmarkDataQuality;
   statistical_confidence?: BenchmarkStatisticalConfidence;
@@ -2448,3 +2506,118 @@ export const recordDecisionBySnapshot = (
     `/optimizer/${snapshotId}/decision`,
     { method: "POST", body: JSON.stringify(payload) },
   );
+
+// ─── Operations Center (Phase 4C.1) ──────────────────────────────────────────
+
+export type OperationsMode = "MUJI" | "QUANT";
+
+export type StationStatus = "GREEN" | "YELLOW" | "RED";
+
+export interface OperationsStation {
+  status: StationStatus;
+  label_th: string;
+  detail: string;
+  detail_th: string;
+}
+
+export interface AgentHealth {
+  market_data_station: OperationsStation;
+  macro_station: OperationsStation;
+  risk_desk: OperationsStation;
+  quant_corner: OperationsStation;
+  portfolio_lab: OperationsStation;
+  consensus_room: OperationsStation;
+}
+
+export interface MujiAction {
+  required: boolean;
+  action_th: string;
+  severity: "INFO" | "WARN" | "ACTION";
+  link: string | null;
+}
+
+export interface MujiTranslation {
+  headline: string;
+  summary: string[];
+  action_required: MujiAction;
+}
+
+export interface OperationsPortfolioSummary {
+  portfolio_value: number | null;
+  daily_return_pct: number | null;
+  goal_target_value: number | null;
+  goal_progress_pct: number | null;
+  days_since_last_rebalance: number | null;
+  snapshot_date: string | null;
+}
+
+export interface OperationsMarket {
+  regime: string | null;
+  confidence_pct: number | null;
+  transition_stability: string | null;
+  vix_level: number | null;
+  regime_duration_days: number | null;
+  risk_level: "low" | "medium" | "high" | null;
+  label_th: string;
+  description_th: string;
+  narrative: string | null;
+}
+
+export interface OperationsOptimizer {
+  last_run_at: string | null;
+  optimizer_status: "REBALANCE" | "NO_ACTION" | null;
+  consensus_status: string | null;
+  consensus_decision: "NO_ACTION" | "REVIEW" | "REBALANCE" | null;
+  consensus_score: number | null;
+  final_risk_level: string | null;
+  recommendation_summary_th: string;
+  recommended_action: string | null;
+}
+
+export interface OperationsPolicy {
+  strictness_level: string | null;
+  violations: string[];
+  emergency_override: boolean;
+  emergency_reason: string | null;
+  deployment_bias: string | null;
+  policy_narrative: string | null;
+  hard_constraints: Record<string, number | boolean | null>;
+}
+
+export interface OperationsCenterStatus {
+  generated_at: string;
+  portfolio_id: number;
+  portfolio_name: string | null;
+  mode_capabilities: { modes: OperationsMode[]; default_mode: OperationsMode };
+  portfolio_summary: OperationsPortfolioSummary;
+  goal_profile: GoalProfile;
+  market: OperationsMarket;
+  optimizer: OperationsOptimizer;
+  policy: OperationsPolicy | null;
+  agent_health: AgentHealth;
+  muji_translation: MujiTranslation;
+}
+
+export interface OptimizerProgressStage {
+  key: string;
+  label_th: string;
+  status: "done" | "active" | "pending";
+  started_at: string | null;
+}
+
+export interface OptimizerProgress {
+  running: boolean;
+  stage: string | null;
+  ok: boolean | null;
+  stages: OptimizerProgressStage[];
+  started_at: string | null;
+  updated_at: string | null;
+}
+
+/** Unified Operations Center status (regime + consensus + station health + MUJI Thai) */
+export const getOperationsStatus = (portfolioId: number) =>
+  apiFetch<OperationsCenterStatus>(`/operations-center/status?portfolio_id=${portfolioId}`);
+
+/** Live optimizer run progress (poll ~1.5s while a run is active) */
+export const getOptimizerProgress = (portfolioId: number) =>
+  apiFetch<OptimizerProgress>(`/operations-center/optimizer-progress?portfolio_id=${portfolioId}`);

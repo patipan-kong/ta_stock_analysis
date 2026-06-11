@@ -2,16 +2,27 @@
 
 import { useState } from "react";
 
-type TabType = "scoring" | "signals" | "optimizer" | "factors" | "operations";
+type TabType =
+  | "overview"
+  | "scoring"
+  | "signals"
+  | "optimizer"
+  | "strategy"
+  | "factors"
+  | "intelligence"
+  | "operations";
 
 export default function SystemGuidePage() {
-  const [activeTab, setActiveTab] = useState<TabType>("scoring");
+  const [activeTab, setActiveTab] = useState<TabType>("overview");
 
   const tabs: { id: TabType; label: string }[] = [
+    { id: "overview", label: "ภาพรวมระบบ" },
     { id: "scoring", label: "Scoring System" },
     { id: "signals", label: "Signal Guide" },
     { id: "optimizer", label: "3-Layer Optimizer" },
+    { id: "strategy", label: "Strategy & Policy" },
     { id: "factors", label: "Factor Analysis" },
+    { id: "intelligence", label: "AI Intelligence" },
     { id: "operations", label: "Cache & Analytics" },
   ];
 
@@ -19,14 +30,14 @@ export default function SystemGuidePage() {
     <div className="space-y-8">
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-4xl font-bold mb-2 text-gray-900">📚 System Guide</h1>
+        <h1 className="text-4xl font-bold mb-2 text-gray-900">📚 คู่มือระบบ</h1>
         <p className="text-gray-600">
           Understand the logic and architecture behind your stock analysis system.
         </p>
       </div>
 
       {/* Tab Navigation */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-8">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-8">
         {tabs.map((tab) => (
           <button
             key={tab.id}
@@ -44,11 +55,134 @@ export default function SystemGuidePage() {
 
       {/* Tab Content */}
       <div className="bg-white rounded-lg p-8 shadow">
+        {activeTab === "overview" && <OverviewTab />}
         {activeTab === "scoring" && <ScoringTab />}
         {activeTab === "signals" && <SignalsTab />}
         {activeTab === "optimizer" && <OptimizerTab />}
+        {activeTab === "strategy" && <StrategyTab />}
         {activeTab === "factors" && <FactorsTab />}
+        {activeTab === "intelligence" && <IntelligenceTab />}
         {activeTab === "operations" && <OperationsTab />}
+      </div>
+    </div>
+  );
+}
+
+// ─── Overview: navigation & page map (Phase 4C.2) ─────────────────────────────
+
+function OverviewTab() {
+  const hubs = [
+    {
+      icon: "💼",
+      name: "พอร์ตโฟลิโอ",
+      color: "border-blue-500 bg-blue-50",
+      titleColor: "text-blue-700",
+      desc: "ศูนย์กลางทุกอย่างเกี่ยวกับพอร์ตของคุณ — แบ่งเป็น 3 แท็บย่อย",
+      items: [
+        "ภาพรวม — รายการหุ้น ราคา สัญญาณ AI ธุรกรรมซื้อ/ขาย/ปันผล และ DNA Analysis",
+        "ผลตอบแทน — กราฟ NAV, snapshot รายวัน, เทียบ benchmark",
+        "วิเคราะห์เชิงลึก — KPI เชิงปริมาณ, heatmap รายเดือน, drawdown, Sharpe",
+      ],
+    },
+    {
+      icon: "🤖",
+      name: "ศูนย์บัญชาการ AI",
+      color: "border-purple-500 bg-purple-50",
+      titleColor: "text-purple-700",
+      desc: "จุดเดียวสำหรับทุกฟีเจอร์ AI — ดูสถานะ สั่งวิเคราะห์ และเข้าเครื่องมือขั้นสูง",
+      items: [
+        "โหมด MUJI (สรุปเข้าใจง่าย) / โหมด Quant (ข้อมูลแน่น)",
+        "สั่งวิเคราะห์พอร์ต (Run Optimizer) ได้ตรงจากหน้านี้ พร้อม timeline สด",
+        "ลิงก์เข้า Optimizer (รายละเอียดผลเต็ม) และ Portfolio Intelligence (ความจำการตัดสินใจ)",
+      ],
+    },
+    {
+      icon: "👀",
+      name: "รายการเฝ้าดู",
+      color: "border-emerald-500 bg-emerald-50",
+      titleColor: "text-emerald-700",
+      desc: "หุ้นที่สนใจแต่ยังไม่ได้ถือ",
+      items: [
+        "วิเคราะห์ทีละตัวหรือ Analyze All ทั้งชุด",
+        "Optimizer ใช้รายการนี้จัดอันดับโอกาสซื้อใหม่",
+      ],
+    },
+    {
+      icon: "⚙",
+      name: "ระบบ (Admin)",
+      color: "border-gray-400 bg-gray-50",
+      titleColor: "text-gray-700",
+      desc: "เมนูดรอปดาวน์มุมขวาบน",
+      items: [
+        "ตั้งค่า — เลือกโมเดล AI, API keys",
+        "สถิติการใช้งาน — จำนวนการวิเคราะห์และสัญญาณ",
+        "รายงานค่าใช้จ่าย AI — ต้นทุนต่อโมเดล/ต่อวัน",
+      ],
+    },
+  ];
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h2 className="text-3xl font-bold mb-4 text-blue-600">ภาพรวมระบบ & การนำทาง</h2>
+        <p className="text-gray-700 mb-6">
+          แพลตฟอร์มจัดเมนูหลักเหลือ 4 หมวด เพื่อให้หาของเจอง่าย —
+          ทุกหน้าเดิมยังอยู่ครบ เพียงจัดกลุ่มใหม่ตามการใช้งานจริง
+        </p>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-5">
+        {hubs.map((h) => (
+          <div key={h.name} className={`border-l-4 ${h.color} rounded-lg p-5 shadow`}>
+            <h3 className={`text-xl font-bold mb-1 ${h.titleColor}`}>
+              {h.icon} {h.name}
+            </h3>
+            <p className="text-sm text-gray-600 mb-3">{h.desc}</p>
+            <ul className="space-y-1.5 text-sm text-gray-700">
+              {h.items.map((it) => (
+                <li key={it} className="flex gap-2">
+                  <span className="text-gray-400 shrink-0">•</span>
+                  <span>{it}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow">
+        <h3 className="text-xl font-bold mb-3 text-gray-800">หน้าวิเคราะห์หุ้นรายตัว — 3 ส่วน</h3>
+        <p className="text-sm text-gray-600 mb-4">
+          คลิกที่หุ้นตัวไหนก็ได้จากพอร์ตหรือรายการเฝ้าดู จะเข้าหน้าวิเคราะห์ที่แบ่งเนื้อหาชัดเจน:
+        </p>
+        <div className="grid md:grid-cols-3 gap-4 text-sm">
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="font-bold text-gray-900 mb-1">1. บทสรุปผู้บริหาร</p>
+            <p className="text-gray-600">
+              บริษัท<em>คืออะไร</em> — โมเดลธุรกิจ รายได้หลัก ตำแหน่งในอุตสาหกรรม (ข้อเท็จจริง ไม่มีความเห็น)
+            </p>
+          </div>
+          <div className="bg-blue-50 rounded-lg p-4">
+            <p className="font-bold text-blue-900 mb-1">2. AI Summary</p>
+            <p className="text-gray-600">
+              มุมมองการลงทุนปัจจุบัน — เล่าเรื่องเชิงคุณภาพภาษาไทย ไม่ทวนตัวเลขที่เห็นอยู่แล้วในตาราง
+            </p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="font-bold text-gray-900 mb-1">3. TA / FA Metrics</p>
+            <p className="text-gray-600">
+              ตัวเลขละเอียด — อินดิเคเตอร์หลายไทม์เฟรม อัตราส่วนการเงิน ข่าว และประวัติการวิเคราะห์
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <p className="text-sm text-blue-800">
+          <strong>ทางลัด:</strong> โลโก้ 📈 มุมซ้ายบนพากลับหน้า Dashboard เดิม ·
+          ปุ่ม ← breadcrumb บนหน้าย่อย (DNA, Optimizer, Portfolio Intelligence, หุ้นรายตัว)
+          พากลับหน้าแม่ได้ทันทีโดยไม่ต้องใช้ Nav Bar
+        </p>
       </div>
     </div>
   );
@@ -385,10 +519,163 @@ function OptimizerTab() {
         </p>
       </div>
 
+      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow">
+        <h3 className="text-xl font-bold mb-3 text-gray-800">What gets injected into every run</h3>
+        <p className="text-sm text-gray-600 mb-3">
+          Before Layer 1 even starts, the pipeline assembles a governance context that all three layers must respect
+          (see the <strong>Strategy &amp; Policy</strong> tab for details):
+        </p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div className="bg-gray-50 rounded-lg p-3 text-center">
+            <p className="font-bold text-gray-900">Strategy Persona</p>
+            <p className="text-xs text-gray-500 mt-1">บุคลิกการลงทุนของพอร์ต</p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-3 text-center">
+            <p className="font-bold text-gray-900">Market Regime</p>
+            <p className="text-xs text-gray-500 mt-1">สภาวะตลาด 7 สถานะ</p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-3 text-center">
+            <p className="font-bold text-gray-900">Policy Envelope</p>
+            <p className="text-xs text-gray-500 mt-1">กรอบนโยบาย adaptive</p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-3 text-center">
+            <p className="font-bold text-gray-900">Resolved Constraints</p>
+            <p className="text-xs text-gray-500 mt-1">ข้อจำกัดรวมแบบ deterministic</p>
+          </div>
+        </div>
+        <p className="text-xs text-gray-500 mt-3">
+          After Layer 3, a <strong>stabilization pass</strong> compares the new plan with the previous run —
+          suppressing churn-y flip-flop trades and tiny weight changes that don&apos;t justify fees.
+          Every run finishes by writing a decision-memory snapshot for attribution tracking.
+        </p>
+      </div>
+
       <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
         <p className="text-sm text-orange-800">
           <strong>Performance note:</strong> one optimizer run triggers three sequential AI calls,
-          so end-to-end latency can still be tens of seconds.
+          so end-to-end latency can still be tens of seconds. You can launch runs from either the
+          Optimizer page or ศูนย์บัญชาการ AI — both call the same pipeline and show live stage progress.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Strategy & Policy (Phases 3B.2–3B.5) ─────────────────────────────────────
+
+function StrategyTab() {
+  const personas = [
+    { icon: "⚖", name: "BALANCED", desc: "ค่าเริ่มต้น — สมดุลทุกปัจจัย", color: "bg-blue-50 border-blue-200" },
+    { icon: "🚀", name: "GROWTH", desc: "เน้นการเติบโต ยอมรับความผันผวนสูงขึ้น", color: "bg-green-50 border-green-200" },
+    { icon: "💎", name: "VALUE", desc: "เน้นหุ้นราคาถูกเทียบพื้นฐาน", color: "bg-purple-50 border-purple-200" },
+    { icon: "💰", name: "DIVIDEND", desc: "เน้นกระแสเงินปันผลสม่ำเสมอ", color: "bg-amber-50 border-amber-200" },
+    { icon: "⚡", name: "MOMENTUM", desc: "ตามแนวโน้มราคา หมุนเร็ว", color: "bg-orange-50 border-orange-200" },
+    { icon: "🌿", name: "PASSIVE", desc: "ซื้อถือยาว เทรดน้อยที่สุด", color: "bg-teal-50 border-teal-200" },
+  ];
+
+  const regimes = [
+    { name: "RISK_ON", desc: "ตลาดขาขึ้น เปิดรับความเสี่ยงได้", color: "bg-emerald-100 text-emerald-800" },
+    { name: "RISK_OFF", desc: "ตลาดขาลง เน้นป้องกัน", color: "bg-red-100 text-red-800" },
+    { name: "SIDEWAYS", desc: "ไร้ทิศทางชัด", color: "bg-gray-100 text-gray-700" },
+    { name: "HIGH_VOLATILITY", desc: "ผันผวนรุนแรง ลดขนาดการเทรด", color: "bg-orange-100 text-orange-800" },
+    { name: "DEFENSIVE_REGIME", desc: "หมุนเข้ากลุ่มปลอดภัย", color: "bg-blue-100 text-blue-800" },
+    { name: "TRANSITION_RISK_ON", desc: "กำลังเปลี่ยนเป็นขาขึ้น (ยังไม่ยืนยัน)", color: "bg-teal-100 text-teal-800" },
+    { name: "TRANSITION_RISK_OFF", desc: "กำลังเปลี่ยนเป็นขาลง (ยังไม่ยืนยัน)", color: "bg-amber-100 text-amber-800" },
+  ];
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h2 className="text-3xl font-bold mb-4 text-blue-600">Strategy Personas, Market Regime & Policy Engine</h2>
+        <p className="text-gray-700 mb-6">
+          Every optimizer run is shaped by three governance layers <em>before</em> any AI model is called:
+          your chosen persona, the detected market regime, and an adaptive policy envelope.
+          A deterministic constraint resolver merges all three into hard limits the AI cannot override.
+        </p>
+      </div>
+
+      {/* Personas */}
+      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow">
+        <h3 className="text-xl font-bold mb-3 text-gray-800">Strategy Personas (เลือกได้ต่อพอร์ต)</h3>
+        <p className="text-sm text-gray-600 mb-4">
+          Persona กำหนดบุคลิกการลงทุนของพอร์ต — เปลี่ยนเพดาน turnover, sector limits,
+          และน้ำหนักการให้คะแนนที่ฉีดเข้า prompt ของ optimizer ทุกครั้ง
+        </p>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          {personas.map((p) => (
+            <div key={p.name} className={`${p.color} border rounded-lg p-3`}>
+              <p className="font-bold text-gray-900 text-sm">{p.icon} {p.name}</p>
+              <p className="text-xs text-gray-600 mt-1">{p.desc}</p>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-gray-500 mt-3">
+          Portfolio DNA (factor exposure จริง) ถูกเทียบกับ persona ที่เลือก —
+          ถ้าพอร์ตเบี่ยงจากสไตล์ที่ตั้งใจ ระบบจะรายงาน <strong>Style Drift</strong> พร้อมระดับความรุนแรง
+        </p>
+      </div>
+
+      {/* Market Regime */}
+      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow">
+        <h3 className="text-xl font-bold mb-3 text-gray-800">Market Regime Detection (7 สถานะ)</h3>
+        <p className="text-sm text-gray-600 mb-4">
+          วิเคราะห์จากหลายสัญญาณของดัชนี benchmark (trend, volatility, VIX, breadth) แบบ deterministic —
+          ไม่ใช้ AI — แล้วส่งผลเป็น hard constraints เข้า optimizer เช่น ลดเพดานซื้อใหม่ช่วง RISK_OFF
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {regimes.map((r) => (
+            <span key={r.name} className={`${r.color} text-xs font-mono font-bold px-2.5 py-1.5 rounded-lg`} title={r.desc}>
+              {r.name}
+            </span>
+          ))}
+        </div>
+        <div className="mt-3 space-y-1 text-xs text-gray-500">
+          {regimes.map((r) => (
+            <p key={r.name}><span className="font-mono font-semibold">{r.name}</span> — {r.desc}</p>
+          ))}
+        </div>
+      </div>
+
+      {/* Policy Engine + Constraint Resolver */}
+      <div className="grid md:grid-cols-2 gap-6">
+        <div className="bg-indigo-50 border-l-4 border-indigo-500 rounded-lg p-6 border shadow">
+          <h3 className="text-xl font-bold mb-2 text-indigo-700">Adaptive Policy Engine</h3>
+          <p className="text-sm text-gray-700 mb-3">
+            สร้าง <strong>Policy Envelope</strong> อัตโนมัติจากสภาวะตลาด + สุขภาพพอร์ต:
+          </p>
+          <ul className="text-sm text-gray-700 space-y-1.5">
+            <li>• Strictness level และ deployment bias</li>
+            <li>• เงินสดขั้นต่ำ / เพดานหุ้นรายตัว / เพดานเซกเตอร์</li>
+            <li>• เพดาน turnover, เพดาน beta, จำกัดหุ้นใหม่ต่อรอบ</li>
+            <li>• ระงับหุ้นเก็งกำไรเมื่อตลาดเสี่ยง</li>
+          </ul>
+          <p className="text-xs text-gray-500 mt-3">
+            ดูกรอบที่บังคับใช้อยู่ได้ที่การ์ด &ldquo;กรอบนโยบายการลงทุน&rdquo; ในศูนย์บัญชาการ AI
+          </p>
+        </div>
+
+        <div className="bg-cyan-50 border-l-4 border-cyan-500 rounded-lg p-6 border shadow">
+          <h3 className="text-xl font-bold mb-2 text-cyan-700">Constraint Resolver</h3>
+          <p className="text-sm text-gray-700 mb-3">
+            Layer แบบ deterministic (pure Python) ที่รวมข้อจำกัดจากทุกแหล่งเป็น{" "}
+            <strong>EffectiveEnvelope</strong> เดียว:
+          </p>
+          <ul className="text-sm text-gray-700 space-y-1.5">
+            <li>• Persona + Regime + Policy → ใช้ค่าที่เข้มงวดที่สุด</li>
+            <li>• คำนวณ resolved limit รายเซกเตอร์</li>
+            <li>• ตรวจ violations แบบมีโครงสร้าง (ไม่ใช่ข้อความลอย ๆ)</li>
+            <li>• ผล AI ที่ละเมิดกรอบจะถูกบล็อกหรือปรับลดอัตโนมัติ</li>
+          </ul>
+          <p className="text-xs text-gray-500 mt-3">
+            เทียบกรอบจากแต่ละแหล่งได้ในตาราง Constraint Comparison บนหน้า Optimizer
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <p className="text-sm text-blue-800">
+          <strong>หลักการ:</strong> AI เสนอแผนได้อิสระ แต่กรอบความเสี่ยงทั้งหมดถูกบังคับโดยโค้ด deterministic
+          — ผลลัพธ์สุดท้ายจึงไม่มีทางหลุดกรอบนโยบายไม่ว่าโมเดลจะตอบอะไรมา
         </p>
       </div>
     </div>
@@ -519,6 +806,135 @@ function FactorsTab() {
   );
 }
 
+// ─── AI Intelligence (Phases 3B.7 + 4C.1) ─────────────────────────────────────
+
+function IntelligenceTab() {
+  const stations = [
+    { icon: "📡", name: "สถานีข้อมูลตลาด", desc: "ความสดของราคา/ข้อมูล yfinance" },
+    { icon: "🌐", name: "สถานีภาวะตลาด", desc: "สถานะ regime detection ล่าสุด" },
+    { icon: "🛡️", name: "ศูนย์บริหารความเสี่ยง", desc: "policy violations และ risk flags" },
+    { icon: "📐", name: "มุมวิเคราะห์เชิงปริมาณ", desc: "สุขภาพ analytics engine" },
+    { icon: "🧪", name: "ห้องทดลองพอร์ต", desc: "สถานะ snapshot และ factor exposure" },
+    { icon: "🤝", name: "ห้องประชุม AI", desc: "ผล consensus จาก optimizer ล่าสุด" },
+  ];
+
+  const stages = [
+    "PREPARING_DATA", "ANALYZING_CONTEXT", "LAYER1_PROPOSAL",
+    "LAYER2_CHALLENGE", "LAYER3_ARBITRATION", "STABILIZING", "SAVING",
+  ];
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h2 className="text-3xl font-bold mb-4 text-blue-600">ศูนย์บัญชาการ AI & Decision Memory</h2>
+        <p className="text-gray-700 mb-6">
+          ศูนย์บัญชาการ AI คือหน้าหลักสำหรับติดตามและสั่งงานระบบ AI ทั้งหมด
+          ส่วน Decision Memory เก็บประวัติทุกคำแนะนำเพื่อวัดว่า AI แม่นแค่ไหนเมื่อเทียบกับการตัดสินใจจริงของคุณ
+        </p>
+      </div>
+
+      {/* Dual mode */}
+      <div className="grid md:grid-cols-2 gap-6">
+        <div className="bg-stone-50 border-l-4 border-stone-400 rounded-lg p-6 border shadow">
+          <h3 className="text-xl font-bold mb-2 text-stone-700">🪄 โหมด MUJI</h3>
+          <p className="text-sm text-gray-700">
+            สรุปสถานการณ์เป็นภาษาคนปกติ — &ldquo;วันนี้ควรทำอะไรไหม?&rdquo; พร้อมการ์ดเป้าหมาย
+            และปุ่มวิเคราะห์พอร์ตปุ่มเดียว เหมาะกับการเช็คพอร์ตรายวันแบบเร็ว ๆ
+          </p>
+        </div>
+        <div className="bg-gray-900 rounded-lg p-6 shadow">
+          <h3 className="text-xl font-bold mb-2 text-emerald-400 font-mono">⚡ โหมด Quant</h3>
+          <p className="text-sm text-gray-300">
+            แดชบอร์ดข้อมูลแน่น — NAV strip, สถานีระบบ AI ทั้ง 6, สถานะตลาด, ห้องประชุม AI,
+            กรอบนโยบาย เหมาะกับการดูเชิงลึกก่อนตัดสินใจ
+          </p>
+        </div>
+      </div>
+
+      {/* Stations */}
+      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow">
+        <h3 className="text-xl font-bold mb-3 text-gray-800">สถานีระบบ AI ทั้ง 6 (โหมด Quant)</h3>
+        <p className="text-sm text-gray-600 mb-4">
+          แต่ละสถานีแสดงไฟสถานะ <span className="text-emerald-600 font-semibold">ปกติ</span> /{" "}
+          <span className="text-amber-600 font-semibold">ควรดู</span> /{" "}
+          <span className="text-red-600 font-semibold">แจ้งเตือน</span> — รีเฟรชอัตโนมัติทุก 60 วินาที
+        </p>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          {stations.map((s) => (
+            <div key={s.name} className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+              <p className="font-bold text-gray-900 text-sm">{s.icon} {s.name}</p>
+              <p className="text-xs text-gray-500 mt-1">{s.desc}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Run pipeline */}
+      <div className="bg-purple-50 border border-purple-200 rounded-lg p-6 shadow">
+        <h3 className="text-xl font-bold mb-3 text-purple-700">สั่งวิเคราะห์ตรงจากศูนย์บัญชาการ</h3>
+        <p className="text-sm text-gray-700 mb-4">
+          ปุ่ม 🪄/⚡ วิเคราะห์พอร์ต เรียก pipeline เดียวกับหน้า Optimizer ทุกประการ
+          ระหว่างรันจะเห็น timeline ความคืบหน้าจริงจาก backend:
+        </p>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {stages.map((st, i) => (
+            <span key={st} className="flex items-center gap-1.5">
+              <span className="font-mono text-[11px] font-bold bg-white border border-purple-300 text-purple-800 px-2 py-1 rounded">
+                {st}
+              </span>
+              {i < stages.length - 1 && <span className="text-purple-400 text-xs">→</span>}
+            </span>
+          ))}
+        </div>
+        <p className="text-xs text-gray-500 mt-3">
+          เสร็จแล้วแดชบอร์ดรีเฟรชเองทันที — ไม่ต้องโหลดหน้าใหม่ ·
+          ป้ายความสดบอกอายุของผลวิเคราะห์ล่าสุด และระบบจะแนะนำให้รันใหม่เมื่อเกิน 7 วัน
+        </p>
+      </div>
+
+      {/* Decision Memory */}
+      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow">
+        <h3 className="text-xl font-bold mb-3 text-gray-800">Decision Memory & Shadow Portfolio</h3>
+        <p className="text-sm text-gray-600 mb-4">
+          ทุกครั้งที่ optimizer รัน ระบบบันทึก snapshot คำแนะนำไว้ จากนั้นคุณบันทึกการตัดสินใจจริง
+          (APPROVED / REJECTED / PARTIAL_EXECUTION) — ดูทั้งหมดได้ที่หน้า{" "}
+          <strong>Portfolio Intelligence</strong>
+        </p>
+        <div className="grid md:grid-cols-3 gap-4 text-sm">
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="font-bold text-gray-900 mb-1">Shadow Portfolio</p>
+            <p className="text-gray-600">
+              พอร์ตเงา — จำลองว่า &ldquo;ถ้าทำตาม AI ทุกครั้ง&rdquo; ผลตอบแทนจะเป็นเท่าไร
+              อัปเดตอัตโนมัติทุกวันโดย scheduler
+            </p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="font-bold text-gray-900 mb-1">AI vs Human Timeline</p>
+            <p className="text-gray-600">
+              เทียบผลตอบแทนสะสมระหว่างเส้นทางที่ AI แนะนำกับเส้นทางที่คุณเลือกจริง
+              เห็นชัดว่าใครชนะในช่วงไหน
+            </p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="font-bold text-gray-900 mb-1">Confidence Calibration</p>
+            <p className="text-gray-600">
+              วัดว่าตอน AI มั่นใจสูง มันแม่นจริงไหม — แยกตามระดับความเชื่อมั่นและ regime
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <p className="text-sm text-blue-800">
+          <strong>ทำไมต้องบันทึกการตัดสินใจ:</strong> ข้อมูล attribution ทั้งหมดสร้างจากการเทียบ
+          &ldquo;สิ่งที่ AI แนะนำ&rdquo; กับ &ldquo;สิ่งที่คุณทำจริง&rdquo; —
+          ยิ่งบันทึกสม่ำเสมอ สถิติความแม่นของระบบยิ่งน่าเชื่อถือ
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function OperationsTab() {
   const cacheStrategies = [
     {
@@ -625,6 +1041,45 @@ function OperationsTab() {
           <li>Returns flat chart-ready rows for frontend rendering</li>
           <li>Supports default benchmark pair ^SET.BK and QQQ</li>
         </ul>
+      </div>
+
+      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow">
+        <h3 className="text-xl font-bold mb-3 text-gray-900">Performance Accounting (ความถูกต้องของผลตอบแทน)</h3>
+        <p className="text-sm text-gray-600 mb-4">
+          ระบบ snapshot รายวันถูกออกแบบให้เลข % ผลตอบแทนสะท้อน &ldquo;ฝีมือการลงทุน&rdquo; จริง
+          ไม่ถูกปนเปื้อนด้วยเงินเข้า-ออก:
+        </p>
+        <div className="space-y-3 text-sm text-gray-700">
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="font-semibold text-gray-900 mb-1">NAV Invariant</p>
+            <p>
+              <code className="bg-white border px-1.5 py-0.5 rounded text-xs">cash + equity_value = total_value</code>{" "}
+              — ตรวจสอบและ log ทุก snapshot
+            </p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="font-semibold text-gray-900 mb-1">Investment Return ตัดรายการที่ไม่ใช่ฝีมือออก</p>
+            <p>
+              เงินฝาก/ถอน (DEPOSIT/WITHDRAWAL), การ import หุ้นเดิมเข้าระบบ (INITIAL_POSITION/INITIAL_CASH)
+              และ manual adjustment ถูกแยกออกจาก daily return — กราฟผลตอบแทนใช้ TWR chaining
+            </p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="font-semibold text-gray-900 mb-1">ค่าธรรมเนียมแบบโบรกเกอร์จริง</p>
+            <p>
+              ทุก BUY/SELL คำนวณค่าคอม + VAT อัตโนมัติตาม fee profile ของตลาด (SET / US) ·{" "}
+              <code className="bg-white border px-1.5 py-0.5 rounded text-xs">avg_cost</code> รวมค่าธรรมเนียมแล้ว
+              (net buy amount ÷ shares) · snapshot เก็บ realized P&amp;L, ปันผล, และค่าธรรมเนียมสะสมของแต่ละช่วง
+            </p>
+          </div>
+          <div className="bg-gray-50 rounded-lg p-4">
+            <p className="font-semibold text-gray-900 mb-1">เวลาถ่าย Snapshot</p>
+            <p>
+              17:45 น. (ICT) ทุกวันโดย scheduler — หลังตลาดไทยปิดและราคา .BK บน yfinance
+              อัปเดตครบ (ราคามี lag ~15 นาทีหลังปิดตลาด)
+            </p>
+          </div>
+        </div>
       </div>
 
       <div className="bg-teal-50 border border-teal-200 rounded-lg p-4">

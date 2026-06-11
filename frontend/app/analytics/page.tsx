@@ -3,9 +3,11 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { usePortfolio } from "@/lib/PortfolioContext";
+import PortfolioTabs from "@/components/PortfolioTabs";
 import {
   getPerformanceStats,
   getPerformanceComparison,
+  benchmarkBackfill,
 } from "@/lib/api";
 import type {
   PerformanceStatsResult,
@@ -90,6 +92,8 @@ export default function AnalyticsPage() {
 
   const [dateRange, setDateRange] = useState<DateRangeKey>("ALL");
   const [benchmark, setBenchmark] = useState("^SET.BK,QQQ");
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillMsg, setBackfillMsg] = useState<string | null>(null);
 
   const portfolioName = portfolios.find((p) => p.id === activeId)?.name ?? "—";
 
@@ -111,6 +115,20 @@ export default function AnalyticsPage() {
       setLoading(false);
     }
   }, [activeId, benchmark]);
+
+  const handleBackfill = useCallback(async () => {
+    setBackfilling(true);
+    setBackfillMsg(null);
+    try {
+      const r = await benchmarkBackfill("2026-01-01", benchmark);
+      setBackfillMsg(`Backfill complete — ${r.total_rows_written} rows written. Reloading…`);
+      setTimeout(() => { load(); setBackfillMsg(null); }, 1500);
+    } catch {
+      setBackfillMsg("Backfill failed — check server logs.");
+    } finally {
+      setBackfilling(false);
+    }
+  }, [benchmark, load]);
 
   useEffect(() => {
     load();
@@ -163,6 +181,9 @@ export default function AnalyticsPage() {
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-6 space-y-5">
+      {/* ── Portfolio hub tabs (Phase 4C.2A) ──────────────────────────────── */}
+      <PortfolioTabs />
+
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div>
         <h1 className="text-lg font-bold text-gray-900">Analytics</h1>
@@ -230,33 +251,34 @@ export default function AnalyticsPage() {
         </Section>
       )}
 
-      {/* ── Monthly returns + Signal analytics ─────────────────────────────── */}
+      {/* ── Monthly returns ─────────────────────────────────────────────────── */}
       {(loading || hasData) && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          <Section
-            title="Monthly Returns"
-            subtitle="Calendar heatmap — compounded within year for annual total"
-          >
-            {loading ? (
-              <div className="h-48 animate-pulse bg-gray-100 rounded-xl" />
-            ) : (
-              <MonthlyHeatmap
-                monthlyReturns={pm?.monthly_win_rate?.monthly_returns ?? []}
-              />
-            )}
-          </Section>
+        <Section
+          title="Monthly Returns"
+          subtitle="Calendar heatmap — compounded within year for annual total"
+        >
+          {loading ? (
+            <div className="h-48 animate-pulse bg-gray-100 rounded-xl" />
+          ) : (
+            <MonthlyHeatmap
+              monthlyReturns={pm?.monthly_win_rate?.monthly_returns ?? []}
+            />
+          )}
+        </Section>
+      )}
 
-          <Section
-            title="Signal Analytics"
-            subtitle="BUY win rate, SELL accuracy, and holding-period returns from optimizer signals"
-          >
-            {loading ? (
-              <div className="h-48 animate-pulse bg-gray-100 rounded-xl" />
-            ) : (
-              <SignalAnalyticsPanel metrics={stats?.signal_metrics ?? null} />
-            )}
-          </Section>
-        </div>
+      {/* ── Signal analytics ─────────────────────────────────────────────────── */}
+      {(loading || hasData) && (
+        <Section
+          title="Signal Analytics"
+          subtitle="BUY win rate, SELL accuracy, and holding-period returns from optimizer signals"
+        >
+          {loading ? (
+            <div className="h-48 animate-pulse bg-gray-100 rounded-xl" />
+          ) : (
+            <SignalAnalyticsPanel metrics={stats?.signal_metrics ?? null} />
+          )}
+        </Section>
       )}
 
       {/* ── Allocation analytics ────────────────────────────────────────────── */}
@@ -274,80 +296,120 @@ export default function AnalyticsPage() {
       )}
 
       {/* ── Benchmark detail ────────────────────────────────────────────────── */}
-      {!loading && (stats?.benchmark_metrics?.benchmarks?.length ?? 0) > 0 && stats && (
-        <Section
-          title="Benchmark Comparison Detail"
-          subtitle="Alpha/Beta/R² from OLS regression of daily returns against each benchmark"
-        >
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs text-gray-500 border-b">
-                  {["Benchmark", "Alpha", "Beta", "R²", "Correlation", "Tracking Err", "Info Ratio", "Days"].map((h) => (
-                    <th key={h} className="py-2 pr-4 font-medium">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {stats.benchmark_metrics.benchmarks.map((b) => {
-                  const fmtR = (v: number | null, d = 2) =>
-                    v != null ? v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) : "—";
-                  const isUnreliable = b.statistical_confidence === "UNRELIABLE";
-                  const isLow = b.statistical_confidence === "LOW";
-                  const dimClass = isUnreliable ? "opacity-40" : isLow ? "opacity-60" : "";
-                  const hasLowSample = b.warnings?.includes("LOW_SAMPLE_SIZE");
-                  const hasUnreliableRegression = b.warnings?.includes("UNRELIABLE_REGRESSION");
-                  const hasSuspectAlpha = b.warnings?.includes("SUSPECT_ALPHA");
-                  return (
-                    <tr key={b.symbol} className="border-b last:border-0 hover:bg-gray-50">
-                      <td className="py-2.5 pr-4">
-                        <span className="font-semibold text-blue-700">{b.symbol}</span>
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {hasLowSample && (
-                            <span className="text-xs px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded font-medium">
-                              Low sample ({b.aligned_days}d)
-                            </span>
-                          )}
-                          {hasUnreliableRegression && (
-                            <span className="text-xs px-1.5 py-0.5 bg-red-100 text-red-600 rounded font-medium">
-                              Unreliable regression
-                            </span>
-                          )}
-                          {hasSuspectAlpha && !hasUnreliableRegression && (
-                            <span className="text-xs px-1.5 py-0.5 bg-orange-100 text-orange-600 rounded font-medium">
-                              Suspect alpha
-                            </span>
-                          )}
-                          {!hasLowSample && !hasUnreliableRegression && !hasSuspectAlpha && (
-                            <span className="text-xs text-gray-400">{b.aligned_days}d · {b.data_quality ?? "—"}</span>
-                          )}
-                        </div>
-                      </td>
-                      <td className={`py-2.5 pr-4 font-medium tabular-nums ${dimClass} ${b.alpha != null && b.alpha >= 0 ? "text-green-700" : "text-red-600"}`}>
-                        {b.alpha != null ? `${b.alpha >= 0 ? "+" : ""}${b.alpha.toFixed(2)}%` : "—"}
-                      </td>
-                      <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>{fmtR(b.beta)}</td>
-                      <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>{fmtR(b.r_squared)}</td>
-                      <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>{fmtR(b.correlation)}</td>
-                      <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>
-                        {b.tracking_error_pct != null ? `${b.tracking_error_pct.toFixed(2)}%` : "—"}
-                      </td>
-                      <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>{fmtR(b.information_ratio)}</td>
-                      <td className="py-2.5 text-gray-500">{b.aligned_days}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          {stats.benchmark_metrics.benchmarks.some((b) => (b.warnings?.length ?? 0) > 0) && (
-            <p className="mt-3 text-xs text-gray-400">
-              Dimmed metrics have limited statistical reliability. Regression requires ≥ 60 aligned trading days for stable estimates;
-              results from shorter periods should be treated as indicative only.
-            </p>
-          )}
-        </Section>
-      )}
+      {!loading && (stats?.benchmark_metrics?.benchmarks?.length ?? 0) > 0 && stats && (() => {
+        const benches = stats.benchmark_metrics.benchmarks;
+        const allErrors = benches.every((b) => !!b.error);
+        return (
+          <Section
+            title="Benchmark Comparison Detail"
+            subtitle="Alpha/Beta/R² from OLS regression of daily returns against each benchmark"
+          >
+            {allErrors && (
+              <div className="mb-4 flex items-start gap-3 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
+                <span className="text-amber-500 mt-0.5">⚠</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-amber-800">ไม่มีข้อมูล benchmark ประวัติ</p>
+                  <p className="text-xs text-amber-600 mt-0.5">
+                    ต้องดึงข้อมูลราคาย้อนหลังก่อน — กด Backfill เพื่อโหลดจาก yfinance
+                  </p>
+                  {backfillMsg && (
+                    <p className="text-xs text-amber-700 mt-1 font-medium">{backfillMsg}</p>
+                  )}
+                </div>
+                <button
+                  onClick={handleBackfill}
+                  disabled={backfilling}
+                  className="shrink-0 text-xs font-medium px-3 py-1.5 rounded-md bg-amber-100 text-amber-800 hover:bg-amber-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {backfilling ? "Loading…" : "Backfill"}
+                </button>
+              </div>
+            )}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-gray-500 border-b">
+                    {["Benchmark", "Alpha", "Beta", "R²", "Correlation", "Tracking Err", "Info Ratio", "Days"].map((h) => (
+                      <th key={h} className="py-2 pr-4 font-medium">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {benches.map((b) => {
+                    if (b.error) {
+                      const msg = b.error === "insufficient_benchmark_data"
+                        ? "ยังไม่มีข้อมูลราคา benchmark — กด Backfill"
+                        : b.error === "insufficient_aligned_data"
+                        ? `จุดข้อมูลที่ตรงกันน้อยเกินไป (${b.aligned_days ?? 0}d)`
+                        : b.error;
+                      return (
+                        <tr key={b.symbol} className="border-b last:border-0">
+                          <td className="py-2.5 pr-4">
+                            <span className="font-semibold text-blue-700">{b.symbol}</span>
+                          </td>
+                          <td colSpan={7} className="py-2.5 text-xs text-amber-600 italic">{msg}</td>
+                        </tr>
+                      );
+                    }
+                    const fmtR = (v: number | null, d = 2) =>
+                      v != null ? v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) : "—";
+                    const isUnreliable = b.statistical_confidence === "UNRELIABLE";
+                    const isLow = b.statistical_confidence === "LOW";
+                    const dimClass = isUnreliable ? "opacity-40" : isLow ? "opacity-60" : "";
+                    const hasLowSample = b.warnings?.includes("LOW_SAMPLE_SIZE");
+                    const hasUnreliableRegression = b.warnings?.includes("UNRELIABLE_REGRESSION");
+                    const hasSuspectAlpha = b.warnings?.includes("SUSPECT_ALPHA");
+                    return (
+                      <tr key={b.symbol} className="border-b last:border-0 hover:bg-gray-50">
+                        <td className="py-2.5 pr-4">
+                          <span className="font-semibold text-blue-700">{b.symbol}</span>
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {hasLowSample && (
+                              <span className="text-xs px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded font-medium">
+                                Low sample ({b.aligned_days}d)
+                              </span>
+                            )}
+                            {hasUnreliableRegression && (
+                              <span className="text-xs px-1.5 py-0.5 bg-red-100 text-red-600 rounded font-medium">
+                                Unreliable regression
+                              </span>
+                            )}
+                            {hasSuspectAlpha && !hasUnreliableRegression && (
+                              <span className="text-xs px-1.5 py-0.5 bg-orange-100 text-orange-600 rounded font-medium">
+                                Suspect alpha
+                              </span>
+                            )}
+                            {!hasLowSample && !hasUnreliableRegression && !hasSuspectAlpha && (
+                              <span className="text-xs text-gray-400">{b.aligned_days}d · {b.data_quality ?? "—"}</span>
+                            )}
+                          </div>
+                        </td>
+                        <td className={`py-2.5 pr-4 font-medium tabular-nums ${dimClass} ${b.alpha == null ? "text-gray-400" : b.alpha >= 0 ? "text-green-700" : "text-red-600"}`}>
+                          {b.alpha != null ? `${b.alpha >= 0 ? "+" : ""}${b.alpha.toFixed(2)}%` : "—"}
+                        </td>
+                        <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>{fmtR(b.beta)}</td>
+                        <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>{fmtR(b.r_squared)}</td>
+                        <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>{fmtR(b.correlation)}</td>
+                        <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>
+                          {b.tracking_error_pct != null ? `${b.tracking_error_pct.toFixed(2)}%` : "—"}
+                        </td>
+                        <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>{fmtR(b.information_ratio)}</td>
+                        <td className="py-2.5 text-gray-500">{b.aligned_days}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {benches.some((b) => !b.error && (b.warnings?.length ?? 0) > 0) && (
+              <p className="mt-3 text-xs text-gray-400">
+                Dimmed metrics have limited statistical reliability. Regression requires ≥ 60 aligned trading days for stable estimates;
+                results from shorter periods should be treated as indicative only.
+              </p>
+            )}
+          </Section>
+        );
+      })()}
 
       {/* ── Data freshness footer ───────────────────────────────────────────── */}
       {stats && (

@@ -7,25 +7,36 @@ import { logout } from "@/lib/auth";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import { getSystemStatus, type SystemStatus } from "@/lib/api";
 
-const NAV_MAIN = [
-  { label: "Dashboard",   href: "/" },
-  { label: "Portfolio",   href: "/portfolio" },
-  { label: "Performance", href: "/performance" },
-  { label: "Analytics",   href: "/analytics" },
-  { label: "Portfolio Intelligence", href: "/portfolio-intelligence" },
-  { label: "Watchlist",   href: "/watchlist" },
-  { label: "Optimizer",   href: "/optimizer" },
-  { label: "📚 Guide",    href: "/system-guide" },
+// Phase 4C.2A — Soft consolidation: 4 top-level destinations.
+// `match` lists every route prefix that belongs to this hub, so the nav item
+// stays highlighted while browsing sub-pages (e.g. /performance lives under
+// the Portfolio hub). All legacy routes (/, /optimizer, /portfolio-intelligence,
+// /performance, /analytics) remain fully functional — only nav exposure changed.
+const NAV_MAIN: { label: string; href: string; match: string[] }[] = [
+  {
+    label: "พอร์ตโฟลิโอ",
+    href: "/portfolio",
+    match: ["/portfolio", "/performance", "/analytics", "/stock"],
+  },
+  {
+    label: "ศูนย์บัญชาการ AI",
+    href: "/operations-center",
+    match: ["/operations-center", "/optimizer", "/portfolio-intelligence"],
+  },
+  { label: "รายการเฝ้าดู", href: "/watchlist", match: ["/watchlist"] },
+  { label: "📚 คู่มือ", href: "/system-guide", match: ["/system-guide"] },
 ];
 
 const NAV_ADMIN = [
-  { label: "Settings",    href: "/settings" },
-  { label: "Stats",       href: "/stats" },
-  { label: "Cost Report", href: "/model-cost-report" },
+  { label: "ตั้งค่า",            href: "/settings" },
+  { label: "สถิติการใช้งาน",     href: "/stats" },
+  { label: "รายงานค่าใช้จ่าย AI", href: "/model-cost-report" },
 ];
 
-function isActive(href: string, pathname: string) {
-  return href === "/" ? pathname === "/" : pathname.startsWith(href);
+function isActive(match: string[], pathname: string) {
+  return match.some((prefix) =>
+    prefix === "/" ? pathname === "/" : pathname.startsWith(prefix)
+  );
 }
 
 export default function Navbar() {
@@ -65,17 +76,22 @@ export default function Navbar() {
     setMobileOpen(false);
   }, [pathname]);
 
-  const activePortfolioName = portfolios.find((p) => p.id === activeId)?.name ?? "Portfolio";
+  const activePortfolioName = portfolios.find((p) => p.id === activeId)?.name ?? "พอร์ต";
 
-  const adminActive = NAV_ADMIN.some((n) => isActive(n.href, pathname));
+  const adminActive = NAV_ADMIN.some((n) => isActive([n.href], pathname));
 
   return (
     <nav className="bg-white border-b px-4 py-2.5">
       {/* ── Desktop row ── */}
-      <div className="max-w-5xl mx-auto flex items-center gap-1">
+      <div className="max-w-5xl mx-auto flex items-center gap-2">
 
-        {/* Brand */}
-        <span className="text-sm font-bold text-gray-800 shrink-0 mr-3">📈 Portfolio Intelligence</span>
+        {/* Brand — links to the legacy dashboard (route kept; removed from nav) */}
+        <Link
+          href="/"
+          className="text-sm font-bold text-gray-800 shrink-0 mr-4 hover:text-blue-700 transition-colors"
+        >
+          📈 Portfolio Intelligence
+        </Link>
 
         {/* Cloud Dashboard Mode badge — shown only when APP_ENV=vps */}
         {sysStatus?.read_only_market_data && (
@@ -88,13 +104,13 @@ export default function Navbar() {
         )}
 
         {/* Main nav — flat links */}
-        <div className="hidden md:flex items-center gap-0.5">
-          {NAV_MAIN.map(({ label, href }) => (
+        <div className="hidden md:flex items-center gap-1">
+          {NAV_MAIN.map(({ label, href, match }) => (
             <Link
               key={href}
               href={href}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                isActive(href, pathname)
+              className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
+                isActive(match, pathname)
                   ? "bg-blue-50 text-blue-700"
                   : "text-gray-600 hover:bg-gray-100 hover:text-gray-800"
               }`}
@@ -115,11 +131,13 @@ export default function Navbar() {
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors max-w-[160px]"
               >
                 <span className="truncate">{activePortfolioName}</span>
-                <span className={`text-xs text-gray-400 shrink-0 transition-transform ${portfolioOpen ? "rotate-180" : ""}`}>▼</span>
+                <span className="text-xs text-gray-400 shrink-0">
+                  {portfolioOpen ? "▲" : "▼"}
+                </span>
               </button>
               {portfolioOpen && (
                 <div className="absolute right-0 mt-1.5 w-48 bg-white border border-gray-200 rounded-xl shadow-lg py-1.5 z-50">
-                  <p className="px-4 pb-1 pt-0.5 text-xs font-semibold text-gray-400 uppercase tracking-wider">Switch Portfolio</p>
+                  <p className="px-4 pb-1 pt-0.5 text-xs font-semibold text-gray-400 uppercase tracking-wider">เลือกพอร์ต</p>
                   {portfolios.map((p) => (
                     <button
                       key={p.id}
@@ -150,18 +168,18 @@ export default function Navbar() {
               }`}
             >
               <span>⚙</span>
-              <span>Admin</span>
-              <span className={`text-xs text-gray-400 transition-transform ${adminOpen ? "rotate-180" : ""}`}>▼</span>
+              <span>ระบบ</span>
+              <span className="text-xs text-gray-400">{adminOpen ? "▲" : "▼"}</span>
             </button>
 
             {adminOpen && (
-              <div className="absolute right-0 mt-1.5 w-44 bg-white border border-gray-200 rounded-xl shadow-lg py-1.5 z-50">
+              <div className="absolute right-0 mt-1.5 w-48 bg-white border border-gray-200 rounded-xl shadow-lg py-1.5 z-50">
                 {NAV_ADMIN.map(({ label, href }) => (
                   <Link
                     key={href}
                     href={href}
                     className={`flex items-center px-4 py-2 text-sm transition-colors ${
-                      isActive(href, pathname)
+                      isActive([href], pathname)
                         ? "bg-blue-50 text-blue-700 font-medium"
                         : "text-gray-700 hover:bg-gray-50"
                     }`}
@@ -178,7 +196,7 @@ export default function Navbar() {
             onClick={logout}
             className="text-sm text-gray-400 hover:text-gray-600 border rounded px-2.5 py-1 hover:bg-gray-50"
           >
-            Logout
+            ออกจากระบบ
           </button>
         </div>
 
@@ -195,13 +213,13 @@ export default function Navbar() {
       {/* ── Mobile panel ── */}
       {mobileOpen && (
         <div className="md:hidden mt-2 border-t pt-3 pb-2 space-y-0.5">
-          <p className="px-3 pb-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">Menu</p>
-          {NAV_MAIN.map(({ label, href }) => (
+          <p className="px-3 pb-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">เมนูหลัก</p>
+          {NAV_MAIN.map(({ label, href, match }) => (
             <Link
               key={href}
               href={href}
               className={`block px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                isActive(href, pathname)
+                isActive(match, pathname)
                   ? "bg-blue-50 text-blue-700"
                   : "text-gray-700 hover:bg-gray-100"
               }`}
@@ -213,7 +231,7 @@ export default function Navbar() {
           {portfolios.length > 0 && (
             <>
               <div className="my-2 border-t" />
-              <p className="px-3 pb-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">Portfolio</p>
+              <p className="px-3 pb-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">เลือกพอร์ต</p>
               {portfolios.map((p) => (
                 <button
                   key={p.id}
@@ -233,13 +251,13 @@ export default function Navbar() {
 
           <div className="my-2 border-t" />
 
-          <p className="px-3 pb-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">Admin</p>
+          <p className="px-3 pb-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">ระบบ</p>
           {NAV_ADMIN.map(({ label, href }) => (
             <Link
               key={href}
               href={href}
               className={`block px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                isActive(href, pathname)
+                isActive([href], pathname)
                   ? "bg-blue-50 text-blue-700"
                   : "text-gray-600 hover:bg-gray-100"
               }`}
@@ -254,7 +272,7 @@ export default function Navbar() {
             onClick={logout}
             className="w-full text-left px-3 py-2 rounded-md text-sm text-gray-400 hover:text-gray-600 hover:bg-gray-50"
           >
-            Logout
+            ออกจากระบบ
           </button>
         </div>
       )}

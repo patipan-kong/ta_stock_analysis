@@ -99,10 +99,15 @@ export function rebaseToHundred(
   keys: string[],
 ): PerformanceDataPoint[] {
   if (!data.length) return data;
+  // Base each series on its FIRST NON-NULL value — series may start later than
+  // row 0 (e.g. portfolio snapshot on a weekend, benchmark prices resume Monday).
+  // Using data[0] blindly would null out the entire series.
   const bases: Record<string, number> = {};
   for (const k of keys) {
-    const v = data[0][k];
-    if (typeof v === "number" && v !== 0) bases[k] = v;
+    for (const row of data) {
+      const v = row[k];
+      if (typeof v === "number" && v !== 0) { bases[k] = v; break; }
+    }
   }
   return data.map((row) => {
     const out = { date: row.date } as PerformanceDataPoint;

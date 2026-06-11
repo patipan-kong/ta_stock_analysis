@@ -5,6 +5,8 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import { getFactorExposure } from "@/lib/api";
 import type { FactorExposureResult } from "@/lib/api";
+import BackBreadcrumb from "@/components/BackBreadcrumb";
+import PortfolioTabs from "@/components/PortfolioTabs";
 import PortfolioDNASummaryCard from "@/components/factor/PortfolioDNASummaryCard";
 import FactorExposureBars      from "@/components/factor/FactorExposureBars";
 import SectorConcentrationPanel from "@/components/factor/SectorConcentrationPanel";
@@ -92,28 +94,18 @@ function PageHeader({
   onRefresh: () => void;
 }) {
   return (
-    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
-      <div>
-        {/* Breadcrumb */}
-        <nav className="flex items-center gap-1.5 text-xs text-gray-400 mb-1.5">
-          <Link href="/portfolio" className="hover:text-blue-600 transition-colors">Portfolio</Link>
-          <span>/</span>
-          <span className="text-gray-600 font-medium">DNA Analysis</span>
-        </nav>
-        <h1 className="text-xl font-black text-gray-900">Portfolio DNA</h1>
-        <p className="text-sm text-gray-500 mt-0.5">Institutional factor exposure analysis · {name}</p>
-      </div>
-      <div className="flex items-center gap-2">
-        <Link
-          href="/portfolio"
-          className="text-xs font-medium text-gray-500 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 transition-colors"
-        >
-          ← Portfolio
-        </Link>
+    <div className="space-y-1 mb-6">
+      <PortfolioTabs />
+      <BackBreadcrumb parent="ภาพรวม" current="DNA Analysis" href="/portfolio" />
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-black text-gray-900">Portfolio DNA</h1>
+          <p className="text-sm text-gray-500 mt-0.5">Institutional factor exposure analysis · {name}</p>
+        </div>
         <button
           onClick={onRefresh}
           disabled={loading}
-          className="flex items-center gap-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg px-3 py-1.5 transition-colors"
+          className="flex items-center gap-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg px-3 py-1.5 transition-colors self-start sm:self-auto"
         >
           {loading ? (
             <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />

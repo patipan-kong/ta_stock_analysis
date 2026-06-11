@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Callable
 from services.ai_client import call_ai
 from services.json_utils import safe_parse_json
 from services.optimizer.strategy_profiles import build_persona_context, get_profile  # noqa: F401
@@ -18,6 +19,16 @@ from services.optimizer.constraint_resolver import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _emit_stage(on_stage: Callable[[str], None] | None, stage: str) -> None:
+    """Fire the optional progress callback; never let it break the run."""
+    if on_stage is None:
+        return
+    try:
+        on_stage(stage)
+    except Exception:  # pragma: no cover — presentation-only plumbing
+        pass
 
 
 def _make_envelope_from_dict(d: dict) -> _PolicyEnvelope:
@@ -1311,8 +1322,14 @@ def run_layered_optimizer(
     policy_context: dict | None = None,
     effective_envelope: "_EffectiveEnvelope | None" = None,
     execution_context: dict | None = None,
+    on_stage: Callable[[str], None] | None = None,
 ) -> dict:
-    """3-layer Dynamic Capital Allocation Engine with global single-shot fallback."""
+    """3-layer Dynamic Capital Allocation Engine with global single-shot fallback.
+
+    on_stage: optional presentation-only progress callback (Phase 4C.1) invoked
+    with a stage key before each AI layer call. Failures inside the callback are
+    swallowed — it can never affect optimizer behavior.
+    """
     if layers is None:
         layers = _DEFAULT_LAYERS
 
@@ -1403,6 +1420,7 @@ def run_layered_optimizer(
 
     try:
         # Layer 1 — Strategist
+        _emit_stage(on_stage, "LAYER1_PROPOSAL")
         l1_parse_failed = False
         try:
             l1_prompt = _layer1_prompt(
@@ -1459,6 +1477,7 @@ def run_layered_optimizer(
                 l1_latency_ms = 0
 
         # Layer 2 — Challenger
+        _emit_stage(on_stage, "LAYER2_CHALLENGE")
         try:
             l2_raw = call_ai(
                 _layer2_prompt(pc, wc, l1_result, l2_cfg.get("role", ""),
@@ -1514,6 +1533,7 @@ def run_layered_optimizer(
             l2_latency_ms = 0
 
         # Layer 3 — Risk Auditor
+        _emit_stage(on_stage, "LAYER3_ARBITRATION")
         try:
             l3_raw = call_ai(
                 _layer3_prompt(l1_result, l2_result, l3_cfg.get("role", ""), max_sector_pct=max_sector_pct,

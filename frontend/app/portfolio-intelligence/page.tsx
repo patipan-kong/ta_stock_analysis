@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import BackBreadcrumb from "@/components/BackBreadcrumb";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import {
   getAIvsHumanTimeline,
@@ -342,6 +343,7 @@ export default function PortfolioIntelligencePage() {
   if (!activeId) {
     return (
       <div className="space-y-5">
+        <BackBreadcrumb parent="ศูนย์บัญชาการ AI" current="Portfolio Intelligence" href="/operations-center" />
         <h1 className="text-xl font-semibold text-gray-900">Portfolio Intelligence</h1>
         <EmptyPanel
           title="No Portfolio Selected"
@@ -356,6 +358,7 @@ export default function PortfolioIntelligencePage() {
   return (
     <div className="space-y-5">
       <div>
+        <BackBreadcrumb parent="ศูนย์บัญชาการ AI" current="Portfolio Intelligence" href="/operations-center" />
         <h1 className="text-xl font-semibold text-gray-900">Portfolio Intelligence</h1>
         <p className="text-xs text-gray-500 mt-0.5">
           Decision Memory System for {portfolioName}.

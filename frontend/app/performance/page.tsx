@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { usePortfolio } from "@/lib/PortfolioContext";
+import PortfolioTabs from "@/components/PortfolioTabs";
 import {
   generateSnapshot,
   getSnapshots,
@@ -202,6 +203,9 @@ export default function PerformancePage() {
 
   return (
     <main className="max-w-5xl mx-auto px-4 py-6 space-y-6">
+      {/* Portfolio hub tabs (Phase 4C.2A) */}
+      <PortfolioTabs />
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

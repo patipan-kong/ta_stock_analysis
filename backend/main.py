@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -246,6 +246,8 @@ def _save_analysis_cache(
         existing.confidence  = summary.get("confidence", "low")
         existing.reasoning   = summary.get("reasoning", "")
         existing.risks       = summary.get("risks", "")
+        existing.executive_summary = summary.get("executive_summary") or existing.executive_summary
+        existing.ai_summary = summary.get("ai_summary") or existing.ai_summary
         existing.analyzed_at = now
         if ta_score    is not None: existing.ta_score    = ta_score
         if fa_score    is not None: existing.fa_score    = fa_score
@@ -260,6 +262,8 @@ def _save_analysis_cache(
             confidence=summary.get("confidence", "low"),
             reasoning=summary.get("reasoning", ""),
             risks=summary.get("risks", ""),
+            executive_summary=summary.get("executive_summary"),
+            ai_summary=summary.get("ai_summary"),
             analyzed_at=now,
             ta_score=ta_score, fa_score=fa_score,
             ai_provider=ai_provider, ai_model=ai_model,
@@ -293,6 +297,8 @@ def _save_analysis_history(
         confidence=summary.get("confidence", "low"),
         reasoning=summary.get("reasoning", ""),
         risks=summary.get("risks", ""),
+        executive_summary=summary.get("executive_summary"),
+        ai_summary=summary.get("ai_summary"),
         ta_score=ta_score, fa_score=fa_score,
         ai_provider=summary.get("ai_provider"),
         ai_model=summary.get("ai_model"),
@@ -324,6 +330,8 @@ def _history_row(r: AnalysisHistory) -> dict:
         "confidence": r.confidence,
         "reasoning": r.reasoning,
         "risks": r.risks,
+        "executive_summary": r.executive_summary,
+        "ai_summary": r.ai_summary,
         "ta_score": r.ta_score,
         "fa_score": r.fa_score,
         "ai_provider": r.ai_provider,
@@ -539,7 +547,7 @@ class PortfolioCreate(BaseModel):
 async def list_portfolios(db: Session = Depends(get_db)) -> list[dict]:
     ws = _ws_id(db)
     items = db.query(Portfolio).filter(Portfolio.workspace_id == ws).order_by(Portfolio.created_at).all()
-    return [{"id": p.id, "name": p.name, "cash_balance": p.cash_balance or 0.0, "created_at": p.created_at.isoformat()} for p in items]
+    return [{"id": p.id, "name": p.name, "cash_balance": p.cash_balance or 0.0, "goal_target_value": p.goal_target_value, "created_at": p.created_at.isoformat()} for p in items]
 
 
 @app.post("/portfolios", status_code=201)
@@ -549,11 +557,86 @@ async def create_portfolio(body: PortfolioCreate, db: Session = Depends(get_db))
     db.add(p)
     db.commit()
     db.refresh(p)
-    return {"id": p.id, "name": p.name, "cash_balance": p.cash_balance or 0.0, "created_at": p.created_at.isoformat()}
+    return {"id": p.id, "name": p.name, "cash_balance": p.cash_balance or 0.0, "goal_target_value": p.goal_target_value, "created_at": p.created_at.isoformat()}
 
 
 class CashUpdate(BaseModel):
     cash_balance: float
+
+
+class GoalUpdate(BaseModel):
+    goal_target_value: float | None = Field(default=None, gt=0)  # None clears the goal
+
+
+@app.patch("/portfolios/{portfolio_id}/goal")
+async def update_portfolio_goal(portfolio_id: int, body: GoalUpdate, db: Session = Depends(get_db)) -> dict:
+    """Set or clear the portfolio value goal (Phase 4C.1 Operations Center)."""
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p.goal_target_value = body.goal_target_value
+    db.commit()
+    return {"id": p.id, "goal_target_value": p.goal_target_value, "ok": True}
+
+
+# ── Goal Profile (Phase 4C.3 Goal Discovery Wizard) ──────────────────────────
+
+class GoalProfileUpdate(BaseModel):
+    """All fields optional — only provided keys are written (partial update).
+    Explicit null clears a field. Discovery data only, no projections."""
+    goal_type: str | None = None
+    goal_priority: str | None = None
+    goal_target_date: str | None = None     # YYYY-MM-DD
+    risk_personality: str | None = None
+    goal_target_value: float | None = Field(default=None, gt=0)
+
+
+@app.get("/portfolios/{portfolio_id}/goal-profile")
+async def get_portfolio_goal_profile(portfolio_id: int, db: Session = Depends(get_db)) -> dict:
+    """Display-ready goal profile (codes + Thai labels). configured=False until the wizard runs."""
+    from services.goal_profile import get_goal_profile
+    ws = _ws_id(db)
+    profile = get_goal_profile(db, ws, portfolio_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return profile
+
+
+@app.put("/portfolios/{portfolio_id}/goal-profile")
+async def put_portfolio_goal_profile(
+    portfolio_id: int, body: GoalProfileUpdate, db: Session = Depends(get_db)
+) -> dict:
+    """Save Goal Discovery Wizard answers. Partial updates supported; null clears."""
+    from services.goal_profile import (
+        update_goal_profile, valid_goal_type, valid_goal_priority,
+        valid_risk_personality, valid_goal_date,
+    )
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    provided = body.model_dump(exclude_unset=True)
+    validators = {
+        "goal_type": valid_goal_type,
+        "goal_priority": valid_goal_priority,
+        "goal_target_date": valid_goal_date,
+        "risk_personality": valid_risk_personality,
+    }
+    fields: dict = {}
+    for key, raw in provided.items():
+        if key == "goal_target_value":
+            fields[key] = raw  # gt=0 already enforced by Pydantic
+            continue
+        if raw is None:
+            fields[key] = None  # explicit clear
+            continue
+        normalized = validators[key](raw)
+        if normalized is None:
+            raise HTTPException(status_code=422, detail=f"Invalid {key}: {raw!r}")
+        fields[key] = normalized
+    return update_goal_profile(db, p, fields)
 
 
 @app.patch("/portfolios/{portfolio_id}/cash")
@@ -1044,6 +1127,8 @@ def _build_cached_result(symbol: str, cache: AnalysisCache, tech: dict, fund: di
             "confidence": cache.confidence,
             "reasoning": cache.reasoning,
             "risks": cache.risks,
+            "executive_summary": cache.executive_summary,
+            "ai_summary": cache.ai_summary,
             "analyzed_at": cache.analyzed_at.isoformat() + "Z",
             "from_cache": True,
             "ai_provider": cache.ai_provider,
@@ -1274,6 +1359,8 @@ async def get_stock_quick(symbol: str, db: Session = Depends(get_db)) -> dict:
             "confidence": cached.confidence,
             "reasoning": cached.reasoning,
             "risks": cached.risks,
+            "executive_summary": cached.executive_summary,
+            "ai_summary": cached.ai_summary,
             "analyzed_at": cached.analyzed_at.isoformat() + "Z",
             "from_cache": True,
             "ai_provider": cached.ai_provider,
@@ -1840,6 +1927,11 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     if not watchlist_items:
         raise HTTPException(status_code=400, detail="Watchlist is empty — add candidates first")
 
+    # Phase 4C.1 — presentation-only run-progress markers (Operations Timeline)
+    from functools import partial
+    from services.run_progress import start_run, mark_stage, finish_run
+    start_run(body.portfolio_id)  # stage: PREPARING_DATA
+
     all_symbols = [h.symbol for h in holdings] + [w.symbol for w in watchlist_items]
 
     cache_map = {
@@ -1960,6 +2052,8 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     for sym in scores_map:
         scores_map[sym]["valuation_percentile"] = pe_pct.get(sym)
 
+    mark_stage(body.portfolio_id, "ANALYZING_CONTEXT")
+
     # ── Portfolio DNA + Strategy Persona context ──────────────────────────────
     # compute_portfolio_dna needs market_value; _compute_portfolio_weights adds it
     from agents.optimizer import _compute_portfolio_weights
@@ -2024,6 +2118,7 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         persona_ctx, regime_ctx, policy_ctx,
         effective_env,
         execution_ctx,
+        on_stage=partial(mark_stage, body.portfolio_id),
     )
 
     # Surface regime in optimizer result for frontend display
@@ -2068,6 +2163,8 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
                 r["suggested_allocation_pct"] = round(r["suggested_allocation_pct"] * scale, 1)
     result["watchlist_ranking"] = ranking
 
+    mark_stage(body.portfolio_id, "STABILIZING")
+
     # ── Stabilization Layer ────────────────────────────────────────────────────
     # Applies deterministic post-processing to suppress optimizer hyperactivity:
     # drift threshold buffer, cooldown engine, NO_REBALANCE_REQUIRED state,
@@ -2111,6 +2208,8 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         )
     except Exception as _stab_exc:
         _log.warning("analyze_optimizer: stabilization layer failed — continuing without: %s", _stab_exc)
+
+    mark_stage(body.portfolio_id, "SAVING")
 
     entry = OptimizerHistory(
         workspace_id=ws,
@@ -2262,6 +2361,7 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         daemon=True,
     ).start()
 
+    finish_run(body.portfolio_id, ok=True)
     return result
 
 
@@ -4300,6 +4400,41 @@ async def get_market_regime(
 
     result = await asyncio.to_thread(detect_regime, db)
     return result
+
+
+# ─── Operations Center (Phase 4C.1) ──────────────────────────────────────────
+
+@app.get("/operations-center/status")
+async def operations_center_status(portfolio_id: int, db: Session = Depends(get_db)) -> dict:
+    """Unified Operations Center status — aggregates existing services only.
+
+    Combines: latest portfolio snapshot (NAV / daily return / goal progress),
+    market regime (60s TTL cache), latest optimizer consensus + active policy,
+    6-station agent health (GREEN/YELLOW/RED from real backend state), and a
+    deterministic plain-Thai MUJI translation block.  Presentation layer only —
+    no optimizer/regime/policy logic is recomputed here.
+    """
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    from services.operations_center import build_operations_status
+
+    return await asyncio.to_thread(build_operations_status, db, ws, portfolio_id)
+
+
+@app.get("/operations-center/optimizer-progress")
+async def operations_center_optimizer_progress(portfolio_id: int, db: Session = Depends(get_db)) -> dict:
+    """Live optimizer run progress for the Operations Timeline (poll ~1.5s).
+
+    Reads the in-memory run-progress registry written by /analyze/optimizer.
+    Stages reflect the REAL pipeline position (data prep, context, L1/L2/L3,
+    stabilization, save) — no simulated progress.
+    """
+    _ws_id(db)  # auth/workspace consistency (registry itself is per-process)
+    from services.run_progress import get_progress
+
+    return get_progress(portfolio_id)
 
 
 # ─── Phase 3B.7 — Decision Memory System ─────────────────────────────────────

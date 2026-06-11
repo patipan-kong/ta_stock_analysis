@@ -566,7 +566,7 @@ def build_benchmark_metrics(
             quality = _assess_data_quality(
                 aligned_days=n_aligned,
                 alpha=ab["alpha"],
-                beta=ab["beta"],
+                _beta=ab["beta"],
                 r_squared=ab["r_squared"],
                 tracking_error_pct=te,
             )

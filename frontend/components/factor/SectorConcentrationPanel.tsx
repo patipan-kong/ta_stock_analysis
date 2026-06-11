@@ -36,9 +36,21 @@ interface Props {
 }
 
 export default function SectorConcentrationPanel({ sector }: Props) {
-  const { sector_weights, top_sector, top_sector_weight, diversification_score, hhi, hhi_label, concentration_flags } = sector;
+  // Backend returns sector_concentration: {} for empty portfolios, and may emit
+  // null weights — default every field and coerce before sorting/formatting.
+  const {
+    sector_weights = {},
+    top_sector = null,
+    top_sector_weight = null,
+    diversification_score = null,
+    hhi = null,
+    hhi_label = null,
+    concentration_flags = [],
+  } = sector ?? {};
   const hhiCfg = hhi_label ? (HHI_CONFIG[hhi_label] ?? HHI_CONFIG.MEDIUM) : null;
-  const entries = Object.entries(sector_weights).sort(([, a], [, b]) => b - a);
+  const entries = Object.entries(sector_weights)
+    .map(([sec, w]) => [sec, w ?? 0] as [string, number])
+    .sort(([, a], [, b]) => b - a);
 
   const dominantFlag = concentration_flags.find(f => f.startsWith("DOMINANT_SECTOR:"));
   const dominantSector = dominantFlag

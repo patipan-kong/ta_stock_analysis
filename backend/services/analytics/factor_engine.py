@@ -794,7 +794,8 @@ def compute_portfolio_factor_exposure(db, portfolio_id: int, workspace_id: int) 
         yf_sym = normalize_dr_symbol(item.symbol)
         price_data = fetch_price_info(yf_sym)
         price = price_data.get("current_price") or 0.0
-        if price <= 0:
+        # NaN is truthy and fails <= comparisons — treat as missing price
+        if not math.isfinite(price) or price <= 0:
             price = float(item.avg_cost)  # fallback to cost basis
         market_values[item.symbol] = price * float(item.shares)
 

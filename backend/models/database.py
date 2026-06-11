@@ -62,6 +62,12 @@ class Portfolio(Base):
     name = Column(String, nullable=False)
     cash_balance = Column(Float, nullable=False, default=0.0)
     strategy_persona = Column(String, nullable=True, default="BALANCED")
+    goal_target_value = Column(Float, nullable=True)  # Phase 4C.1: portfolio value goal (NULL = no goal set)
+    # Phase 4C.3 Goal Discovery Wizard — all nullable, NULL = not configured yet.
+    goal_type = Column(String, nullable=True)         # WEDDING|HOUSE|EDUCATION|RETIREMENT|FINANCIAL_FREEDOM|WEALTH_GROWTH|OTHER
+    goal_priority = Column(String, nullable=True)     # ESSENTIAL|IMPORTANT|ASPIRATIONAL
+    goal_target_date = Column(String, nullable=True)  # YYYY-MM-DD
+    risk_personality = Column(String, nullable=True)  # AGGRESSIVE|MODERATE|CONSERVATIVE
     created_at = Column(DateTime, default=datetime.utcnow)
 
     workspace = relationship("Workspace", back_populates="portfolios")
@@ -125,6 +131,8 @@ class AnalysisCache(Base):
     confidence = Column(String, nullable=False)
     reasoning = Column(Text, nullable=False)
     risks = Column(Text, nullable=False)
+    executive_summary = Column(Text, nullable=True)  # plain-Thai "what the company is" (80-120 words)
+    ai_summary = Column(Text, nullable=True)         # plain-Thai investment-interpreter narrative (80-120 words)
     analyzed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     ta_score = Column(Integer, nullable=True)
     fa_score = Column(Integer, nullable=True)
@@ -172,6 +180,8 @@ class AnalysisHistory(Base):
     confidence = Column(String, nullable=False)
     reasoning = Column(Text, nullable=False)
     risks = Column(Text, nullable=False)
+    executive_summary = Column(Text, nullable=True)  # plain-Thai "what the company is" (80-120 words)
+    ai_summary = Column(Text, nullable=True)         # plain-Thai investment-interpreter narrative (80-120 words)
     ta_score = Column(Integer, nullable=True)
     fa_score = Column(Integer, nullable=True)
     ai_provider = Column(String, nullable=True)
@@ -591,6 +601,12 @@ def migrate_legacy_data() -> None:
                         conn.execute(text("ALTER TABLE portfolios ADD COLUMN cash_balance REAL NOT NULL DEFAULT 0"))
                     if "strategy_persona" not in p_cols:
                         conn.execute(text("ALTER TABLE portfolios ADD COLUMN strategy_persona TEXT DEFAULT 'BALANCED'"))
+                    if "goal_target_value" not in p_cols:
+                        conn.execute(text("ALTER TABLE portfolios ADD COLUMN goal_target_value REAL"))
+                    # Phase 4C.3 Goal Discovery Wizard columns
+                    for col in ("goal_type", "goal_priority", "goal_target_date", "risk_personality"):
+                        if col not in p_cols:
+                            conn.execute(text(f"ALTER TABLE portfolios ADD COLUMN {col} TEXT"))
 
             if "portfolio_items" in tables:
                 with engine.begin() as conn:
@@ -611,14 +627,15 @@ def migrate_legacy_data() -> None:
                     ac_cols = {c["name"] for c in inspector.get_columns("analysis_cache")}
                     for col, typedef in [("ta_score", "INTEGER"), ("fa_score", "INTEGER"),
                                          ("ai_provider", "TEXT"), ("ai_model", "TEXT"),
-                                         ("sources_used", "TEXT")]:
+                                         ("sources_used", "TEXT"), ("executive_summary", "TEXT"),
+                                         ("ai_summary", "TEXT")]:
                         if col not in ac_cols:
                             conn.execute(text(f"ALTER TABLE analysis_cache ADD COLUMN {col} {typedef}"))
 
             if "analysis_history" in tables:
                 with engine.begin() as conn:
                     ah_cols = {c["name"] for c in inspector.get_columns("analysis_history")}
-                    for col in ("sources_used", "scores"):
+                    for col in ("sources_used", "scores", "executive_summary", "ai_summary"):
                         if col not in ah_cols:
                             conn.execute(text(f"ALTER TABLE analysis_history ADD COLUMN {col} TEXT"))
                     for col in ("latency_ms", "total_latency_ms"):

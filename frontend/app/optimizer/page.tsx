@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
+import BackBreadcrumb from "@/components/BackBreadcrumb";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import {
   runOptimizer, listOptimizerHistory, getOptimizerHistory,
@@ -14,6 +15,7 @@ import AIBadge from "@/components/AIBadge";
 import MarketRegimeCard from "@/components/MarketRegimeCard";
 import ActivePolicyEnvelopeCard from "@/components/ActivePolicyEnvelopeCard";
 import AttributionPanel from "@/components/AttributionPanel";
+import OperationsTimeline from "@/components/operations-center/quant/OperationsTimeline";
 import type {
   OptimizerResult, OptimizerHistoryItem, TargetAllocation, AllocationAction,
   WatchlistRanking, Layer2Result, Layer3Result, OptimizerConsensus, RiskFlag, SectorWarning,
@@ -2073,6 +2075,7 @@ export default function OptimizerPage() {
   return (
     <div className="space-y-6">
       <div>
+        <BackBreadcrumb parent="ศูนย์บัญชาการ AI" current="Optimizer" href="/operations-center" />
         <h1 className="text-2xl font-bold mb-1">Portfolio Optimizer</h1>
         <p className="text-sm text-gray-500">
           Dynamic capital allocation — position sizing, rebalancing, cash deployment.
@@ -2122,18 +2125,10 @@ export default function OptimizerPage() {
         {error && <p className="text-red-500 text-xs self-center">{error}</p>}
       </div>
 
-      {running && (
-        <div className="text-center py-10 text-gray-400 text-sm space-y-3">
-          <Spinner size="lg" />
-          <p className="mt-2 font-medium">Running 3-layer allocation analysis…</p>
-          <div className="flex items-center justify-center gap-2 text-xs">
-            <span className="bg-orange-100 text-orange-700 px-2 py-0.5 rounded font-semibold">L1 Strategist</span>
-            <span>→</span>
-            <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-semibold">L2 Challenger</span>
-            <span>→</span>
-            <span className="bg-purple-100 text-purple-700 px-2 py-0.5 rounded font-semibold">L3 Risk Auditor</span>
-          </div>
-          <p className="text-xs text-gray-400">This may take 60–180 seconds</p>
+      {running && portfolioId != null && (
+        <div className="max-w-xl mx-auto py-6 space-y-3">
+          <OperationsTimeline portfolioId={portfolioId} active={running} />
+          <p className="text-xs text-gray-400 text-center">This may take 60–180 seconds</p>
         </div>
       )}
 

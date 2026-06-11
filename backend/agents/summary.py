@@ -10,6 +10,8 @@ class SummaryResult(TypedDict):
     confidence: str
     reasoning: str
     risks: str
+    executive_summary: str
+    ai_summary: str
 
 
 _CONF_ORDER = ["low", "medium", "high"]
@@ -208,6 +210,57 @@ Only assign BUY to stocks in the top 20% of overall opportunity (strong FA + str
 Stocks in the 21–50% opportunity range should be ACCUMULATE or WATCH.
 If data is limited, prefer HOLD or WATCH over BUY — be conservative.
 
+=== PAGE LAYOUT — RESPONSIBILITY SPLIT (do not mix these) ===
+The stock page shows three separate sections. Each output field feeds exactly one:
+- "executive_summary" → Executive Summary box  = "What the company IS."
+- "ai_summary"        → AI Summary box         = "What the AI THINKS about it right now."
+- Technical/Fundamental sections (rendered elsewhere) = evidence and metrics.
+The user can already see every chart, score, and ratio on the page.
+
+=== EXECUTIVE SUMMARY LAYER (field: "executive_summary") ===
+Explain WHAT THE COMPANY IS in plain Thai — its business, how it earns money,
+and its place in the industry. Do NOT give opinions, signals, or outlooks here;
+that belongs to "ai_summary".
+
+1. LANGUAGE & TONE:
+   - Natural, fluent Thai. Professional, calm, beginner-friendly, objective.
+   - NO promotional text, NO hype, NO investment advice.
+2. CONTENT: business model, revenue sources, market position, industry context.
+3. NO numbers/metrics already shown on the page.
+4. FORMAT: 80-120 Thai words, 2-4 short paragraphs separated by \\n\\n,
+   NO bullet points or numbered lists.
+
+=== AI SUMMARY — INVESTMENT INTERPRETER LAYER (field: "ai_summary") ===
+You are an Investment Interpreter, NOT a financial analyst. Translate the
+quantitative signals above into short, human-readable investment context.
+Answer within a 20-second read: "What should a normal investor understand
+about this stock right now based on the AI's current interpretation?"
+
+1. STRICT REPETITION PROHIBITION:
+   - DO NOT repeat or restate any number, indicator, ratio, or score shown
+     elsewhere on the page (P/E, P/BV, ROE, RSI, MACD, Beta, Alpha,
+     Momentum/Technical/Fundamental scores, percentiles). Focus strictly on
+     qualitative meaning, not metrics.
+2. LANGUAGE:
+   - Natural, fluid, elegant Thai ONLY. NO English finance jargon, no robotic
+     translations. Do not sound like a broker research report.
+   - BANNED boilerplate phrases (never use these or close variants):
+     "ข้อมูลพื้นฐานแสดงให้เห็นว่า...", "ด้านเทคนิคบ่งชี้ว่า...",
+     "การประเมินมูลค่าน่าสนใจ...", "Momentum remains positive..."
+3. FORMAT: strictly 80-120 Thai words, 2-4 short paragraphs separated by \\n\\n,
+   NO bullet points, NO dashes, NO numbered lists.
+4. REQUIRED PARAGRAPH STRUCTURE:
+   - Paragraph 1: the company's current business situation in everyday language.
+   - Paragraph 2: what the market appears to be expecting from this company now.
+   - Paragraph 3: the single most important opportunity or pressing risk right now.
+   - Paragraph 4 (optional): a calm, balanced, non-hyped observation.
+
+GOOD EXAMPLE (style to imitate):
+"COM7 ยังคงได้ประโยชน์จากความต้องการสินค้าเทคโนโลยีและอุปกรณ์ไอทีที่มีอยู่ต่อเนื่องในตลาดไทย\\n\\nนักลงทุนยังมองว่าบริษัทมีศักยภาพในการเติบโตจากการขยายสินค้าและบริการใหม่ ๆ แต่ในขณะเดียวกันก็มีความคาดหวังต่อผลประกอบการในระดับค่อนข้างสูง\\n\\nสิ่งที่ควรติดตามคือกำลังซื้อของผู้บริโภคและการแข่งขันในตลาด ซึ่งอาจส่งผลต่อการเติบโตในระยะถัดไป\\n\\nโดยรวมยังเป็นบริษัทที่มีพื้นฐานแข็งแรง แต่ควรติดตามพัฒนาการของธุรกิจอย่างต่อเนื่อง"
+
+BAD EXAMPLE (never write like this):
+"ข้อมูลพื้นฐานแสดงถึงความสามารถในการสร้างรายได้ที่ดี และการประเมินมูลค่าอยู่ในระดับที่น่าสนใจ ขณะที่ด้านเทคนิคแสดงถึงแนวโน้มที่แข็งแกร่งในระยะยาว..."
+
 [CRITICAL INSTRUCTION]
 Review the preliminary signal and confirm or override with expert judgment.
 Respond ONLY with a valid JSON object. No markdown. No text before or after.
@@ -215,8 +268,10 @@ Respond ONLY with a valid JSON object. No markdown. No text before or after.
 {{
   "signal": "ACCUMULATE" | "BUY" | "WATCH" | "HOLD" | "REDUCE" | "SELL",
   "confidence": "high" | "medium" | "low",
-  "reasoning": "2-3 sentences covering available data quality, trend alignment, and key catalyst",
-  "risks": "specific risks that could invalidate this signal"
+  "reasoning": "2-3 concise English sentences covering data quality, trend alignment, and key catalyst (used in compact tables — keep short)",
+  "risks": "specific risks that could invalidate this signal (concise English)",
+  "executive_summary": "Thai — what the company IS, per EXECUTIVE SUMMARY LAYER rules (80-120 words, 2-4 paragraphs separated by \\n\\n)",
+  "ai_summary": "Thai — Investment Interpreter narrative per AI SUMMARY LAYER rules (80-120 words, 2-4 paragraphs separated by \\n\\n)"
 }}"""
 
     try:
@@ -237,6 +292,8 @@ Respond ONLY with a valid JSON object. No markdown. No text before or after.
             "confidence": capped_conf,
             "reasoning": parsed.get("reasoning", ""),
             "risks": parsed.get("risks", ""),
+            "executive_summary": parsed.get("executive_summary", ""),
+            "ai_summary": parsed.get("ai_summary", ""),
             "ai_provider": provider,
             "ai_model": model,
             "latency_ms": ai_result["latency_ms"],

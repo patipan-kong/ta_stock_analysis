@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
+import BackBreadcrumb from "@/components/BackBreadcrumb";
 import dynamic from "next/dynamic";
 import {
   getStockQuick, analyzeSymbol, getAnalysisHistory,
@@ -418,6 +419,9 @@ export default function StockDetailPage() {
   return (
     <div className="space-y-6">
 
+      {/* ── Back breadcrumb ── */}
+      <BackBreadcrumb parent="กลับ" current={displaySymbol} />
+
       {/* ── Header ── */}
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-bold">
@@ -471,6 +475,21 @@ export default function StockDetailPage() {
         </div>
       </div>
 
+      {/* ── Executive Summary (plain-Thai qualitative context) ── */}
+      {summary && !("error" in summary) && summary.executive_summary && (
+        <section className="bg-white border rounded-xl p-5 shadow-sm">
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <h2 className="text-lg font-semibold">บทสรุปผู้บริหาร</h2>
+            <span className="text-xs text-gray-400 ml-auto">มุมมองเชิงคุณภาพ — ไม่ใช่คำแนะนำการลงทุน</span>
+          </div>
+          <div className="space-y-3">
+            {summary.executive_summary.split(/\n\n+/).map((para, i) => (
+              <p key={i} className="text-sm text-gray-800 leading-relaxed">{para.trim()}</p>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* ── AI Summary ── */}
       {summary && !("error" in summary) ? (
         <section className="bg-white border rounded-xl p-5 shadow-sm">
@@ -487,10 +506,21 @@ export default function StockDetailPage() {
           <div className="mb-3">
             <SourceBadges sources={data.sources_used} />
           </div>
-          <p className="text-sm text-gray-800 mb-2">{summary.reasoning}</p>
-          <p className="text-xs text-gray-500">
-            <span className="font-medium">Risks: </span>{summary.risks}
-          </p>
+          {summary.ai_summary ? (
+            <div className="space-y-3">
+              {summary.ai_summary.split(/\n\n+/).map((para, i) => (
+                <p key={i} className="text-sm text-gray-800 leading-relaxed">{para.trim()}</p>
+              ))}
+            </div>
+          ) : (
+            <>
+              {/* legacy cached analyses (pre-interpreter) fall back to reasoning/risks */}
+              <p className="text-sm text-gray-800 mb-2">{summary.reasoning}</p>
+              <p className="text-xs text-gray-500">
+                <span className="font-medium">Risks: </span>{summary.risks}
+              </p>
+            </>
+          )}
         </section>
       ) : (
         <section className="bg-white border border-dashed rounded-xl p-5">

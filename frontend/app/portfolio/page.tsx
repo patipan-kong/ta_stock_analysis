@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import PortfolioTable from "@/components/PortfolioTable";
+import PortfolioTabs from "@/components/PortfolioTabs";
 import PortfolioSummary from "@/components/PortfolioSummary";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import AnalyzeAllButton from "@/components/AnalyzeAllButton";
@@ -329,6 +330,9 @@ export default function PortfolioPage() {
 
   return (
     <div className="space-y-6">
+      {/* ── Portfolio hub tabs (Phase 4C.2A) ── */}
+      <PortfolioTabs />
+
       {/* ── Portfolio selector row ── */}
       <div className="flex items-center gap-2 flex-wrap">
         {creating ? (
