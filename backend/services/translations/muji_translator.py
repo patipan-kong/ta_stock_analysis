@@ -53,14 +53,14 @@ _REGIME_FALLBACK: dict[str, str] = {
 }
 
 CONSENSUS_TYPE_TH: dict[str, str] = {
-    "STRONG_CONSENSUS": "AI ทุกตัวเห็นตรงกัน",
-    "REFINED_CONSENSUS": "AI เห็นตรงกันหลังปรับปรุงข้อเสนอ",
-    "PARTIAL_CONSENSUS": "AI เห็นตรงกันบางส่วน",
-    "WEAK_CONSENSUS": "AI เห็นต่างกันพอสมควร",
-    "RISK_CONFLICT": "พี่ๆ AI ในระบบมีมุมมองเรื่องความเสี่ยงไม่ตรงกันนิดหน่อยค่ะ",
-    "STRATEGIC_CONFLICT": "AI เห็นต่างกันเชิงกลยุทธ์",
-    "NO_ACTION_CONSENSUS": "AI เห็นตรงกันว่ายังไม่ต้องปรับพอร์ต",
-    "NO_REBALANCE_CONSENSUS": "AI เห็นตรงกันว่ายังไม่ถึงเวลาปรับพอร์ต",
+    "STRONG_CONSENSUS": "ภาพการวิเคราะห์สอดคล้องกันทุกด้าน",
+    "REFINED_CONSENSUS": "การวิเคราะห์สอดคล้องกันหลังทบทวนข้อมูลอีกรอบ",
+    "PARTIAL_CONSENSUS": "การวิเคราะห์สอดคล้องกันในบางส่วน",
+    "WEAK_CONSENSUS": "มุมมองบางด้านยังแตกต่างกัน ควรติดตามเพิ่มเติม",
+    "RISK_CONFLICT": "มุมมองด้านความเสี่ยงยังไม่สอดคล้องกัน ควรพิจารณาด้วยความระมัดระวัง",
+    "STRATEGIC_CONFLICT": "มีมุมมองเชิงกลยุทธ์ที่แตกต่างกัน",
+    "NO_ACTION_CONSENSUS": "จากข้อมูลล่าสุด ยังไม่มีสัญญาณที่ต้องปรับพอร์ต",
+    "NO_REBALANCE_CONSENSUS": "จากข้อมูลล่าสุด ยังไม่ถึงเวลาปรับสัดส่วนพอร์ต",
 }
 
 DECISION_TH: dict[str, dict[str, str]] = {
@@ -69,33 +69,33 @@ DECISION_TH: dict[str, dict[str, str]] = {
         "severity": "INFO",
     },
     "REVIEW": {
-        "action_th": "ควรเข้าไปตรวจสอบคำแนะนำล่าสุด",
+        "action_th": "ควรเข้าไปตรวจสอบแผนการลงทุนล่าสุด",
         "severity": "WARN",
     },
     "REBALANCE": {
-        "action_th": "ระบบแนะนำให้ปรับพอร์ต — เปิดหน้า Optimizer เพื่อดูรายละเอียด",
+        "action_th": "แนะนำให้ปรับสัดส่วนพอร์ต — ดูแผนการลงทุนเพื่อดูรายละเอียด",
         "severity": "ACTION",
     },
 }
 
 _DECISION_FALLBACK: dict[str, str] = {
-    "action_th": "ยังไม่มีคำแนะนำ — ลองรันการวิเคราะห์พอร์ตครั้งแรก",
+    "action_th": "ยังไม่มีคำแนะนำ — ลองอัปเดตมุมมองพอร์ตครั้งแรก",
     "severity": "INFO",
 }
 
 RISK_TH: dict[str, str] = {
-    "low": "ความเสี่ยงอยู่ในระดับต่ำ",
-    "medium": "ความเสี่ยงอยู่ในระดับปานกลาง รับได้",
-    "high": "ระดับความเสี่ยงรอบนี้ค่อนข้างพอดีๆ อยู่ในเกณฑ์ที่เราควบคุมได้ค่ะ",
+    "low": "ระดับความเสี่ยงอยู่ในเกณฑ์ต่ำ สบายใจได้",
+    "medium": "ระดับความเสี่ยงอยู่ในเกณฑ์ปานกลาง รับได้",
+    "high": "ระดับความเสี่ยงยังอยู่ในเกณฑ์ที่ควบคุมได้",
 }
 
 STATION_TH: dict[str, str] = {
     "market_data_station": "สถานีข้อมูลตลาด",
     "macro_station": "สถานีภาพรวมเศรษฐกิจ",
-    "risk_desk": "โต๊ะดูแลความเสี่ยง",
+    "risk_desk": "การตรวจสอบความเสี่ยง",
     "quant_corner": "มุมวิเคราะห์เชิงปริมาณ",
-    "portfolio_lab": "ห้องทดลองพอร์ต",
-    "consensus_room": "ห้องประชุม AI",
+    "portfolio_lab": "ห้องบันทึกมูลค่าพอร์ต",
+    "consensus_room": "สรุปคำแนะนำการลงทุน",
 }
 
 
@@ -110,8 +110,8 @@ def translate_regime(regime: str | None) -> dict[str, str]:
 
 def translate_consensus(consensus_type: str | None) -> str:
     if not consensus_type:
-        return "ยังไม่มีผลการวิเคราะห์จาก AI"
-    return CONSENSUS_TYPE_TH.get(consensus_type.upper(), "ระบบ AI ให้ผลการวิเคราะห์ล่าสุดแล้ว")
+        return "ยังไม่มีผลการวิเคราะห์ล่าสุด"
+    return CONSENSUS_TYPE_TH.get(consensus_type.upper(), "มีผลการวิเคราะห์ล่าสุดแล้ว")
 
 
 def translate_risk(risk_level: str | None) -> str:
@@ -155,17 +155,17 @@ def build_muji_translation(
     red_stations = [k for k, v in station_statuses.items() if v == "RED"]
 
     if emergency_override:
-        headline = "ระบบเข้าสู่โหมดป้องกันพิเศษ — โปรดตรวจสอบ"
+        headline = "กรอบการลงทุนเข้าสู่โหมดป้องกันพิเศษ — โปรดตรวจสอบ"
     elif red_stations:
-        headline = "พอร์ตของเรามีจุดที่อยากให้ช่วยตรวจเช็กเล็กน้อยค่ะ"
+        headline = "มีจุดที่ควรให้ความสนใจในพอร์ตของคุณ"
     elif decision == "REBALANCE":
-        headline = "มีคำแนะนำให้ปรับพอร์ต"
+        headline = "มีคำแนะนำให้ปรับสัดส่วนพอร์ต"
     elif decision == "REVIEW":
         headline = "คำแนะนำวันนี้"
     elif decision == "NO_ACTION":
         headline = "พอร์ตของคุณอยู่ในสถานะดี ไม่ต้องทำอะไรเพิ่ม"
     else:
-        headline = "ยังไม่มีข้อมูลวิเคราะห์ — ลองรัน Optimizer ครั้งแรก"
+        headline = "เริ่มต้นด้วยการอัปเดตมุมมองพอร์ตครั้งแรก"
 
     # Summary bullets — skip pieces with no data, never render "None".
     summary: list[str] = []
@@ -178,20 +178,20 @@ def build_muji_translation(
     if decision:
         summary.append(translate_decision(decision)["action_th"])
     if goal_progress_pct is not None:
-        summary.append(f"พอร์ตคืบหน้า {goal_progress_pct:.0f}% สู่เป้าหมายของคุณ")
+        summary.append(f"คุณเดินทางมาถึง {goal_progress_pct:.0f}% ของเป้าหมายแล้ว")
     if days_since_rebalance is not None:
-        summary.append(f"ปรับพอร์ตครั้งล่าสุดเมื่อ {days_since_rebalance} วันก่อน")
+        summary.append(f"ปรับสัดส่วนพอร์ตครั้งล่าสุดเมื่อ {days_since_rebalance} วันก่อน")
     for k in red_stations:
-        summary.append(f"{station_label_th(k)}แนะนำให้แวะเข้าไปช่วยดูแนวคิดของระบบสักนิดนะคะ")
+        summary.append(f"{station_label_th(k)} ต้องการความสนใจเพิ่มเติม")
     if not summary:
-        summary.append("ระบบยังไม่มีข้อมูลเพียงพอ — เริ่มจากการรันการวิเคราะห์พอร์ต")
+        summary.append("ยังไม่มีข้อมูลเพียงพอ — เริ่มต้นด้วยการสร้างแผนการลงทุน")
 
     action = translate_decision(decision)
     required = emergency_override or decision in ("REVIEW", "REBALANCE")
     link = "/optimizer" if decision in ("REVIEW", "REBALANCE") else None
     if emergency_override:
         action = {
-            "action_th": "ระบบจำกัดความเสี่ยงอัตโนมัติ — เปิดหน้า Optimizer เพื่อดูรายละเอียด",
+            "action_th": "กรอบการลงทุนจำกัดความเสี่ยงอัตโนมัติ — ดูแผนการลงทุนเพื่อดูรายละเอียด",
             "severity": "ACTION",
         }
         link = "/optimizer"

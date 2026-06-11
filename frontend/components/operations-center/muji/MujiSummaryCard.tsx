@@ -6,7 +6,7 @@ export default function MujiSummaryCard({ translation }: { translation: MujiTran
   return (
     <div className="rounded-2xl border-2 border-gray-200 bg-white p-5 space-y-3 shadow-sm">
       <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest">
-        สรุปจาก AI
+        ภาพรวมวันนี้
       </p>
       <p className="text-lg font-bold text-gray-900">{translation.headline}</p>
       <ul className="space-y-2">

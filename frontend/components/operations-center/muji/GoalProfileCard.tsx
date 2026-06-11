@@ -11,14 +11,23 @@ import { formatThaiDate, fmtBaht } from "@/lib/goal";
 export default function GoalProfileCard({ profile }: { profile: GoalProfile }) {
   if (!profile.configured) {
     return (
-      <div className="rounded-2xl border-2 border-dashed border-gray-300 bg-white p-5 text-center space-y-3">
-        <p className="text-sm text-gray-500">ยังไม่ได้กำหนดเป้าหมายการลงทุน</p>
-        <Link
-          href="/goal-wizard"
-          className="inline-block rounded-xl bg-gray-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
-        >
-          🎯 เริ่มตั้งเป้าหมาย
-        </Link>
+      <div className="rounded-2xl border-2 border-dashed border-gray-200 bg-gray-50 p-6 space-y-3">
+        <div className="text-center space-y-1.5">
+          <p className="text-base font-semibold text-gray-800">
+            เริ่มต้นด้วยการกำหนดเป้าหมายการลงทุนของคุณ
+          </p>
+          <p className="text-xs text-gray-500 max-w-xs mx-auto leading-relaxed">
+            เป้าหมายจะช่วยให้ระบบติดตามความคืบหน้าและสรุปผลได้ชัดเจนขึ้น
+          </p>
+        </div>
+        <div className="flex justify-center">
+          <Link
+            href="/goal-wizard"
+            className="inline-block rounded-xl bg-gray-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
+          >
+            🎯 เริ่มตั้งเป้าหมาย
+          </Link>
+        </div>
       </div>
     );
   }

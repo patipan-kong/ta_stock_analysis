@@ -55,9 +55,9 @@ export default function ActionCard({
         <div className="flex items-start gap-3">
           <span className="text-2xl leading-none">🔵</span>
           <div className="space-y-2">
-            <p className="text-sm font-bold text-blue-800">ยังไม่เคยวิเคราะห์พอร์ตนี้</p>
+            <p className="text-sm font-bold text-blue-800">เริ่มสร้างแผนการลงทุนของคุณ</p>
             <p className="text-sm text-gray-700">
-              ให้ AI ช่วยวิเคราะห์พอร์ตของคุณ เพื่อดูคำแนะนำการจัดพอร์ตที่เหมาะสม
+              รับคำแนะนำการจัดพอร์ตที่เหมาะสมกับสถานการณ์ตลาดและเป้าหมายของคุณ
             </p>
             <div className="flex items-center gap-4 flex-wrap mt-1">
               <button
@@ -65,10 +65,10 @@ export default function ActionCard({
                 disabled={optimizing}
                 className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                {optimizing ? "กำลังวิเคราะห์…" : "🪄 เริ่มวิเคราะห์พอร์ต"}
+                {optimizing ? "กำลังวิเคราะห์…" : "🪄 สร้างแผนการลงทุน"}
               </button>
               <Link href="/optimizer" className="text-sm font-semibold text-blue-700 underline">
-                เปิดหน้า Optimizer →
+                ดูแผนการลงทุน →
               </Link>
             </div>
             <p className="text-[11px] text-gray-400">{optimizerFreshnessTh(lastRunAt)}</p>
@@ -94,10 +94,10 @@ export default function ActionCard({
               disabled={optimizing}
               className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              {optimizing ? "กำลังวิเคราะห์…" : "🪄 วิเคราะห์พอร์ตล่าสุด"}
+              {optimizing ? "กำลังวิเคราะห์…" : "🪄 อัปเดตมุมมองพอร์ต"}
             </button>
             <Link href={action.link ?? "/optimizer"} className="text-sm font-semibold text-blue-700 underline">
-              เปิดหน้า Optimizer →
+              ดูคำแนะนำล่าสุด →
             </Link>
           </div>
           <p className="text-[11px] text-gray-400">{optimizerFreshnessTh(lastRunAt)}</p>

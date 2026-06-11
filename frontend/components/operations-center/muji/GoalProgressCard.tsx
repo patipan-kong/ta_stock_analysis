@@ -6,6 +6,13 @@ import { updatePortfolioGoal } from "@/lib/api";
 const fmtBaht = (v: number) =>
   `฿${v.toLocaleString("th-TH", { maximumFractionDigits: 0 })}`;
 
+function progressInsight(pct: number): string {
+  if (pct < 25) return "ก้าวแรกของทุกเป้าหมายใหญ่เริ่มที่นี่";
+  if (pct < 50) return "มาได้ไกลกว่าหนึ่งในสี่แล้ว ไปต่อได้เลย";
+  if (pct < 75) return "คุณเดินทางมาถึงครึ่งทางแล้ว";
+  return "เกือบถึงเป้าหมายแล้ว ยังคงเดินหน้าต่อไป";
+}
+
 export default function GoalProgressCard({
   portfolioId,
   portfolioValue,
@@ -51,7 +58,7 @@ export default function GoalProgressCard({
     <div className="rounded-2xl border-2 border-gray-200 bg-white p-5 space-y-3 shadow-sm">
       <div className="flex items-center justify-between">
         <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest">
-          เป้าหมายของคุณ
+          ความคืบหน้าสู่เป้าหมาย
         </p>
         {goalTargetValue != null && !editing && (
           <button
@@ -121,13 +128,23 @@ export default function GoalProgressCard({
               style={{ width: `${pct ?? 0}%` }}
             />
           </div>
-          <p className="text-[11px] text-gray-400">
-            {pct == null
-              ? "รอข้อมูลมูลค่าพอร์ตเพื่อคำนวณความคืบหน้า"
-              : pct >= 100
-                ? "ยินดีด้วย! คุณถึงเป้าหมายแล้ว 🎉"
-                : `อีก ${fmtBaht(Math.max(0, (goalTargetValue as number) - (portfolioValue ?? 0)))} จะถึงเป้าหมาย`}
-          </p>
+          {/* Progress interpretation */}
+          {pct == null ? (
+            <p className="text-[11px] text-gray-400">รอข้อมูลมูลค่าพอร์ตเพื่อคำนวณความคืบหน้า</p>
+          ) : pct >= 100 ? (
+            <p className="text-[11px] text-emerald-600 font-semibold">ยินดีด้วย! คุณถึงเป้าหมายแล้ว 🎉</p>
+          ) : (
+            <div className="space-y-0.5">
+              <p className="text-[11px] text-gray-500">{progressInsight(pct)}</p>
+              <p className="text-[11px] text-gray-400">
+                เหลืออีก{" "}
+                <span className="font-semibold text-gray-600">
+                  {fmtBaht(Math.max(0, (goalTargetValue as number) - (portfolioValue ?? 0)))}
+                </span>{" "}
+                จะถึงเป้าหมาย
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>
