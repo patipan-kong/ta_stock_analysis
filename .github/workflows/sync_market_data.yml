@@ -19,15 +19,22 @@ on:
         default: ''
 
   schedule:
-    # After SET close: 17:00 ICT = 10:00 UTC — run at 10:30 UTC Mon–Fri
-    - cron: '30 10 * * 1-5'
-    # After NYSE close: 16:00 EST = 21:00 UTC — run at 21:30 UTC Mon–Fri
-    - cron: '30 21 * * 1-5'
+  # 10:30 ICT
+  - cron: '30 3 * * 1-5'
+  # 12:50 ICT
+  - cron: '50 5 * * 1-5'
+  # 16:50 ICT
+  - cron: '50 9 * * 1-5'
+  # 23:30 ICT
+  - cron: '30 16 * * 1-5'
+  # 04:30 ICT (+1 day)
+  - cron: '30 21 * * 1-5'
 
 jobs:
   sync:
     name: Sync Market Prices
     runs-on: ubuntu-latest
+    environment: production
 
     steps:
       - name: Checkout repository
