@@ -270,6 +270,10 @@ class BenchmarkPrice(Base):
     price_date = Column(String, nullable=False, index=True)  # "YYYY-MM-DD"
     close_price = Column(Float, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Phase S.3: data freshness / provenance (set by sync_prices.py)
+    updated_at = Column(DateTime, nullable=True)
+    data_source = Column(String, nullable=True)   # "yfinance_github_actions" | "yfinance_local"
+    sync_status = Column(String, nullable=True)   # "ok" | "error" | "stale"
 
     __table_args__ = (UniqueConstraint("symbol", "price_date", name="uq_benchmark_symbol_date"),)
 
@@ -949,11 +953,25 @@ def migrate_legacy_data() -> None:
                             price_date TEXT NOT NULL,
                             close_price REAL NOT NULL,
                             created_at DATETIME,
+                            updated_at DATETIME,
+                            data_source TEXT,
+                            sync_status TEXT,
                             UNIQUE (symbol, price_date)
                         )
                     """))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_benchmark_prices_symbol ON benchmark_prices (symbol)"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_benchmark_prices_price_date ON benchmark_prices (price_date)"))
+            else:
+                # Phase S.3: add freshness columns to existing table
+                with engine.begin() as conn:
+                    bp_cols = {c["name"] for c in inspector.get_columns("benchmark_prices")}
+                    for col, typedef in [
+                        ("updated_at", "DATETIME"),
+                        ("data_source", "TEXT"),
+                        ("sync_status", "TEXT"),
+                    ]:
+                        if col not in bp_cols:
+                            conn.execute(text(f"ALTER TABLE benchmark_prices ADD COLUMN {col} {typedef}"))
 
         # Data migration: copy from old flat 'portfolio' table if it still exists (both DB types)
         if "portfolio" in tables:

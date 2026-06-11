@@ -1,0 +1,70 @@
+name: Sync Market Data
+
+on:
+  # Manual trigger with optional parameter overrides
+  workflow_dispatch:
+    inputs:
+      period:
+        description: 'yfinance history period (e.g. 5d, 30d, 1mo, 2y)'
+        required: false
+        default: '5d'
+      dry_run:
+        description: 'Dry run — print planned writes without touching the DB'
+        type: boolean
+        required: false
+        default: false
+      symbols:
+        description: 'Space-separated symbols to sync (blank = all active symbols + benchmarks)'
+        required: false
+        default: ''
+
+  schedule:
+    # After SET close: 17:00 ICT = 10:00 UTC — run at 10:30 UTC Mon–Fri
+    - cron: '30 10 * * 1-5'
+    # After NYSE close: 16:00 EST = 21:00 UTC — run at 21:30 UTC Mon–Fri
+    - cron: '30 21 * * 1-5'
+
+jobs:
+  sync:
+    name: Sync Market Prices
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Build CLI flags
+        id: flags
+        run: |
+          PERIOD="${{ inputs.period || '5d' }}"
+          FLAGS="--period $PERIOD"
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            FLAGS="$FLAGS --dry-run"
+          fi
+
+          SYMBOLS="${{ inputs.symbols }}"
+          if [ -n "$SYMBOLS" ]; then
+            # Pass as --symbols A B C (space-separated, already safe from the input)
+            FLAGS="$FLAGS --symbols $SYMBOLS"
+          fi
+
+          echo "flags=$FLAGS" >> "$GITHUB_OUTPUT"
+          echo "Resolved flags: $FLAGS"
+
+      - name: Sync market data
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SYNC_DATA_SOURCE: yfinance_github_actions
+        run: |
+          python backend/scripts/sync_prices.py ${{ steps.flags.outputs.flags }}

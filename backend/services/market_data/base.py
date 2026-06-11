@@ -31,6 +31,15 @@ class MarketDataProvider(ABC):
         Each item: {title, publisher, link, published}."""
         ...
 
+    def get_quotes(self, symbols: list[str]) -> dict[str, dict]:
+        """Batch-fetch current quotes for multiple symbols.
+
+        Returns {symbol: {current_price, change_percent, last_updated}}.
+        Default implementation calls get_quote() sequentially.
+        Override for batch efficiency.
+        """
+        return {sym: self.get_quote(sym) for sym in symbols}
+
     def get_history_batch(
         self, symbols: list[str], period: str = "6mo", interval: str = "1d"
     ) -> dict[str, pd.DataFrame]:
