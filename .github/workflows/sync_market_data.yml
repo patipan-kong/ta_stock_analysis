@@ -40,6 +40,11 @@ jobs:
     environment: production
 
     steps:
+      - name: Debug Trigger
+        run: | 
+          echo "EVENT: ${{ github.event_name }}"
+          echo "SCHEDULE: ${{ github.event.schedule }}"
+
       - name: Checkout repository
         uses: actions/checkout@v4
 

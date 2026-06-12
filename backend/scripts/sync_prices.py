@@ -19,8 +19,8 @@ Usage
     # Preview without writing to DB
     python backend/scripts/sync_prices.py --dry-run
 
-    # Specific symbols only
-    python backend/scripts/sync_prices.py --symbols ^SET.BK QQQ AAPL
+    # Specific symbols (fixed benchmarks are always added to the list)
+    python backend/scripts/sync_prices.py --symbols AAPL NVDA
 
 Exit codes
 ----------
@@ -32,7 +32,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import re
 import sys
 from datetime import datetime
 
@@ -45,17 +44,15 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(_BACKEND_DIR, ".env"))
 
 from models.database import BenchmarkPrice, PortfolioItem, SessionLocal, Watchlist
+from services.data_fetcher import normalize_dr_symbol
 from services.market_data.provider import YahooFinanceProvider
 
 _log = logging.getLogger(__name__)
 
-# ── DR symbol normalisation (strips AAPL01.BK → AAPL for yfinance) ───────────
-_DR_RE = re.compile(r"^([A-Z]+)\d{2}\.BK$")
-
-
-def _normalize(symbol: str) -> str:
-    m = _DR_RE.match(symbol)
-    return m.group(1) if m else symbol
+# ── DR symbol normalisation (AAPL01.BK → AAPL, MICRON01.BK → MU) ──────────────
+# Canonical implementation lives in services.data_fetcher so name-based DR
+# aliases (e.g. MICRON → MU) stay in one place.
+_normalize = normalize_dr_symbol
 
 
 # ── Benchmark symbols always included in every sync run ───────────────────────
@@ -115,23 +112,31 @@ def _upsert(
 
 
 def _mark_error(db, symbol: str, error_msg: str) -> None:
-    """Record today's row with sync_status=error so freshness checks can detect failures."""
+    """Record a sync failure WITHOUT fabricating synthetic prices.
+
+    Data-integrity rules:
+      - Never overwrite a valid close_price with 0.0.
+      - Never insert a fabricated 0.0 price row (close_price is NOT NULL, so a
+        placeholder row cannot carry a NULL price — we simply don't insert one).
+      - If today's row already holds a valid price (from an earlier successful
+        run), mark it "stale" so freshness checks see the failed re-fetch while
+        the price stays usable by analytics.
+      - Absence of today's row + the error log IS the failure signal for
+        freshness checks.
+    """
     today = datetime.utcnow().strftime("%Y-%m-%d")
     now = datetime.utcnow()
     entry = db.query(BenchmarkPrice).filter_by(symbol=symbol, price_date=today).first()
     if entry:
-        entry.sync_status = "error"
+        # Preserve the existing close_price; only update status metadata.
+        entry.sync_status = "stale" if entry.close_price and entry.close_price > 0 else "error"
         entry.updated_at = now
         entry.data_source = _DATA_SOURCE
     else:
-        db.add(BenchmarkPrice(
-            symbol=symbol,
-            price_date=today,
-            close_price=0.0,
-            updated_at=now,
-            data_source=_DATA_SOURCE,
-            sync_status="error",
-        ))
+        _log.warning(
+            "sync_failed symbol=%s date=%s error=%s — no row written (no synthetic prices)",
+            symbol, today, error_msg,
+        )
 
 
 # ── Per-symbol sync ───────────────────────────────────────────────────────────
@@ -193,7 +198,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--symbols", nargs="*",
-        help="Override symbol list (default: all active portfolio + watchlist + benchmarks)",
+        help=(
+            "Extra symbols to sync; fixed benchmarks are always included "
+            "(default: all active portfolio + watchlist + benchmarks)"
+        ),
     )
     args = parser.parse_args()
 
@@ -213,8 +221,10 @@ def main() -> int:
 
     try:
         if args.symbols:
-            symbols = args.symbols
-            _log.info("explicit symbol list: %s", symbols)
+            # Fixed benchmarks are ALWAYS synced — a manual --symbols override
+            # must never silently drop QQQ/SPY/^SET.BK/^GSPC/GLD from the run.
+            symbols = sorted(set(args.symbols) | set(_FIXED_BENCHMARKS))
+            _log.info("explicit symbol list (+ fixed benchmarks): %s", symbols)
         else:
             symbols = _active_symbols(db)
             _log.info("collected %d symbols from DB", len(symbols))

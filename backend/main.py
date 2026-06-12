@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_ as sa_or
 
 _log = logging.getLogger(__name__)
 
@@ -129,9 +129,28 @@ async def auth_middleware(request: Request, call_next):
 
 
 def _resolve_symbol(symbol: str) -> str:
-    s = symbol.upper()
+    s = symbol.strip().upper()
     if "." in s:
         return s
+    return s
+
+
+def _normalize_transaction_symbol(symbol: str) -> str:
+    """Normalize user-entered transaction symbols.
+
+    Rules:
+      1) Trim whitespace
+      2) Uppercase
+      3) If no suffix and symbol is a known SET ticker, append .BK
+      4) Preserve any symbol that already has a suffix (e.g. .BK, .US, etc.)
+    """
+    s = (symbol or "").strip().upper()
+    if not s:
+        return s
+    if "." in s:
+        return s
+    if f"{s}.BK" in THAI_SECTOR_MAP:
+        return f"{s}.BK"
     return s
 
 
@@ -2414,6 +2433,15 @@ async def get_optimizer_history_detail(history_id: int, db: Session = Depends(ge
     if "final_consensus_score" not in payload:
         consensus = payload.get("consensus") if isinstance(payload.get("consensus"), dict) else {}
         payload["final_consensus_score"] = consensus.get("consensus_strength_score")
+    # recommendation_snapshot_id is injected into result after result_json is committed,
+    # so it is absent from stored history rows. Look it up and inject it here.
+    if not payload.get("recommendation_snapshot_id"):
+        snap = db.query(RecommendationSnapshot).filter_by(
+            optimizer_history_id=history_id,
+            workspace_id=ws,
+        ).first()
+        if snap:
+            payload["recommendation_snapshot_id"] = snap.id
     return payload
 
 
@@ -3152,7 +3180,7 @@ async def transaction_buy(
     if not p:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
-    symbol = _resolve_symbol(body.symbol)
+    symbol = _normalize_transaction_symbol(body.symbol)
 
     if body.shares <= 0:
         raise HTTPException(status_code=422, detail="shares must be positive")
@@ -3192,7 +3220,7 @@ async def transaction_sell(
     if not p:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
-    symbol = _resolve_symbol(body.symbol)
+    symbol = _normalize_transaction_symbol(body.symbol)
 
     if body.shares <= 0:
         raise HTTPException(status_code=422, detail="shares must be positive")
@@ -3239,7 +3267,7 @@ async def list_transactions(
         Transaction.portfolio_id == portfolio_id,
     )
     if symbol:
-        q = q.filter(Transaction.symbol == _resolve_symbol(symbol))
+        q = q.filter(Transaction.symbol == _normalize_transaction_symbol(symbol))
 
     txs = q.order_by(Transaction.transaction_date.desc()).limit(min(limit, 500)).all()
     return [_tx_row(tx) for tx in txs]
@@ -3318,7 +3346,7 @@ async def transaction_initial_position(
     if body.avg_cost <= 0:
         raise HTTPException(status_code=422, detail="avg_cost must be positive")
 
-    symbol = _resolve_symbol(body.symbol)
+    symbol = _normalize_transaction_symbol(body.symbol)
     tx_date = _parse_tx_date(body.transaction_date)
     sector = await _fetch_sector(symbol)
 
@@ -3367,7 +3395,7 @@ async def transaction_quantity_correction(
     if body.price_per_share <= 0:
         raise HTTPException(status_code=422, detail="price_per_share must be positive")
 
-    symbol = _resolve_symbol(body.symbol)
+    symbol = _normalize_transaction_symbol(body.symbol)
     tx_date = _parse_tx_date(body.transaction_date)
     try:
         return execute_quantity_correction(
@@ -3425,7 +3453,7 @@ async def transaction_dividend(
     if body.amount <= 0:
         raise HTTPException(status_code=422, detail="amount must be positive")
 
-    symbol = _resolve_symbol(body.symbol) if body.symbol else None
+    symbol = _normalize_transaction_symbol(body.symbol) if body.symbol else None
     tx_date = _parse_tx_date(body.transaction_date)
     try:
         return execute_dividend(
@@ -3685,30 +3713,50 @@ async def get_performance_comparison(
     # Parse requested benchmark symbols
     bench_symbols: list[str] = [s.strip() for s in benchmarks.split(",") if s.strip()]
 
-    # Load benchmark prices for those symbols
+    # Load benchmark prices for those symbols.
+    # Data-integrity filter: sync_prices.py historically wrote close_price=0.0
+    # rows with sync_status="error" on fetch failures. A 0.0 anchor poisons the
+    # entire series (bv > 0 check fails → every point renders as None), so
+    # exclude invalid rows BEFORE anchor discovery and return calculations.
+    # sync_status semantics: "ok"/"stale" = usable price; NULL = legacy rows
+    # written before Phase S.3 (scheduler, manual seed) — treated as valid for
+    # backward compatibility; "error" = fabricated row, never usable.
     bench_map: dict[str, dict[str, float]] = {sym: {} for sym in bench_symbols}
     bench_base: dict[str, float] = {}
 
     if bench_symbols:
         bm_rows = (
             db.query(BenchmarkPrice)
-            .filter(BenchmarkPrice.symbol.in_(bench_symbols))
+            .filter(
+                BenchmarkPrice.symbol.in_(bench_symbols),
+                BenchmarkPrice.close_price > 0,
+                sa_or(
+                    BenchmarkPrice.sync_status.in_(["ok", "stale"]),
+                    BenchmarkPrice.sync_status.is_(None),
+                ),
+            )
             .order_by(BenchmarkPrice.price_date.asc())
             .all()
         )
         for row in bm_rows:
             bench_map[row.symbol][row.price_date] = row.close_price
 
-        # Anchor each benchmark to the closest available price on or after base_date
+        # Anchor each benchmark to the closest available VALID price on or
+        # after base_date (bench_map now contains only close_price > 0 rows).
         for sym in bench_symbols:
             dated = {d: v for d, v in bench_map[sym].items() if d >= base_date}
             if dated:
                 anchor_date = min(dated.keys())
                 bench_base[sym] = dated[anchor_date]
 
-    # Collect all dates from portfolio + all benchmarks, sorted
+    # Keep only benchmarks that have at least one valid anchored observation.
+    # Symbols with no valid rows degrade to an empty series (dropped from the
+    # legend + data keys) instead of rendering an all-None line or raising.
+    valid_bench_symbols: list[str] = [sym for sym in bench_symbols if sym in bench_base]
+
+    # Collect all dates from portfolio + all valid benchmarks, sorted
     all_dates: set[str] = set(portfolio_index.keys())
-    for sym in bench_symbols:
+    for sym in valid_bench_symbols:
         all_dates.update(d for d in bench_map[sym] if d >= base_date)
     sorted_dates = sorted(all_dates)
 
@@ -3720,7 +3768,7 @@ async def get_performance_comparison(
     # observation remain None (nothing to carry forward yet).
     data: list[dict] = []
     last_portfolio: float | None = None
-    last_bench: dict[str, float | None] = {sym: None for sym in bench_symbols}
+    last_bench: dict[str, float | None] = {sym: None for sym in valid_bench_symbols}
     for d in sorted_dates:
         row: dict = {"date": d}
 
@@ -3731,7 +3779,7 @@ async def get_performance_comparison(
         row["portfolio"] = last_portfolio
 
         # Each benchmark — normalised to base=100 from its own anchor price
-        for sym in bench_symbols:
+        for sym in valid_bench_symbols:
             key = bench_key(sym)
             bv = bench_base.get(sym)
             price = bench_map[sym].get(d)
@@ -3741,7 +3789,9 @@ async def get_performance_comparison(
 
         data.append(row)
 
-    # Series metadata for the frontend legend / line colours
+    # Series metadata for the frontend legend / line colours.
+    # Benchmarks with no valid price rows are omitted (empty benchmark series)
+    # rather than emitted as an all-None line.
     series = [
         {"key": "portfolio", "label": portfolio.name, "type": "portfolio", "symbol": None}
     ] + [
@@ -3751,7 +3801,7 @@ async def get_performance_comparison(
             "type": "benchmark",
             "symbol": sym,
         }
-        for sym in bench_symbols
+        for sym in valid_bench_symbols
     ]
 
     return {

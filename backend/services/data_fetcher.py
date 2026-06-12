@@ -39,6 +39,14 @@ _log = logging.getLogger(__name__)
 # ── DR symbol regex ────────────────────────────────────────────────────────────
 _DR_RE = re.compile(r"^([A-Z]+)\d{2}\.BK$")
 
+# Some Thai DRs are listed under the COMPANY NAME, not the US ticker, so the
+# regex-stripped prefix is not a valid yfinance symbol. Map those prefixes to
+# the real underlying ticker here.
+#   MICRON01.BK → prefix "MICRON" → actual US ticker "MU"
+_DR_UNDERLYING_ALIASES: dict[str, str] = {
+    "MICRON": "MU",      # Micron Technology
+}
+
 # ── Provider singleton ─────────────────────────────────────────────────────────
 _provider: YahooProvider = YahooProvider()
 
@@ -223,12 +231,16 @@ def _payload_to_df(payload: dict) -> Optional[pd.DataFrame]:
 def normalize_dr_symbol(symbol: str) -> str:
     """Strip DR digit-suffix so yfinance can find the underlying US company.
 
-    AAPL01.BK → 'AAPL'   (DR → base ticker)
-    PTT.BK    → 'PTT.BK' (unchanged – regular Thai stock)
-    AAPL      → 'AAPL'   (unchanged – US ticker)
+    AAPL01.BK   → 'AAPL'   (DR → base ticker)
+    MICRON01.BK → 'MU'     (DR prefix is a company name → aliased to real ticker)
+    PTT.BK      → 'PTT.BK' (unchanged – regular Thai stock)
+    AAPL        → 'AAPL'   (unchanged – US ticker)
     """
     m = _DR_RE.match(symbol)
-    return m.group(1) if m else symbol
+    if not m:
+        return symbol
+    base = m.group(1)
+    return _DR_UNDERLYING_ALIASES.get(base, base)
 
 
 def is_dr_symbol(symbol: str) -> bool:

@@ -51,6 +51,14 @@ def test_normalize_meta01():
 def test_normalize_aapl01():
     assert normalize_dr_symbol("AAPL01.BK") == "AAPL"
 
+def test_normalize_micron01_aliased_to_mu():
+    """Name-based DR prefix (MICRON) must map to the real US ticker (MU)."""
+    assert normalize_dr_symbol("MICRON01.BK") == "MU"
+
+def test_normalize_micron80_aliased_to_mu():
+    """Alias applies regardless of the DR issuer digit-suffix."""
+    assert normalize_dr_symbol("MICRON80.BK") == "MU"
+
 def test_normalize_regular_thai_unchanged():
     assert normalize_dr_symbol("SCB.BK") == "SCB.BK"
 
