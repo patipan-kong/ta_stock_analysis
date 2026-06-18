@@ -4,6 +4,100 @@ Markdown
 ไฟล์นี้ทำหน้าที่เป็นลานจอดรถทางไอเดียสำหรับกัปตัน Ta 
 กางกฎเหล็ก: "จดให้จบ ปิดไฟล์หนี ห้ามแอบหลุดโฟกัสรื้อโค้ดเด็ดขาดในช่วง Hardening Phase!" 🛑🧊
 
+Phase 4C.6
+Timing Intelligence Layer
+
+Phase 4C.6A
+
+Momentum Gate
+
+เช่น
+
+BUY signal
++
+RS > 70
++
+Above MA50
++
+Breadth supportive
+
+= BUY NOW
+
+แต่
+
+BUY signal
++
+Momentum negative
++
+Below MA50
+
+= WAIT
+
+อันนี้ผมคิดว่าจะยกระดับผลลัพธ์ได้มากกว่า AI Committee V2 อีก
+
+Phase 4C.6B
+
+Entry Score
+
+ทำคะแนน
+
+Strategic Score
++
+Technical Score
++
+Momentum Score
++
+Market Breadth Score
+
+ออกมาเป็น
+
+Entry Score 82/100
+
+แทนที่จะบอกแค่
+
+BUY
+
+4C.5 Basket Simulation
+
+Phase 4C.7
+
+Human + AI Hybrid
+
+อันนี้คือสิ่งที่คุณเพิ่งสร้างด้วย Human Idea Intake
+
+ตอนนี้คุณทำแบบ
+
+BL Marketing
+↓
+Patipan
+↓
+AI Committee
+
+แล้ว
+
+ผมว่ารอบหน้า
+
+Idea Intake ควรกลายเป็น
+
+Human Alpha Feed
+
+อย่างเป็นทางการเลย
+
+เช่น
+
+BH
+NVDA01
+MICRON01
+
+แล้วระบบช่วยตอบ
+
+- Strategic Fit
+- Timing
+- Policy Impact
+- Allocation Suggestion
+
+
+
 ## 📥 Active Parking Slots (รายชื่อไอเดียรอคิวเปิดอู่)
 1. ⏱️ [Phase 3B.6] - Execution Timing Layer (สยบมีดบิน / เพิ่มสมองซีก Action Timing)
 2. 🧠 [Phase 5.x]  - AI Learning Memory (ระบบจำประวัติการสั่งงานและ Preference ของกัปตัน)

@@ -14,16 +14,17 @@ interface KPICardProps {
   sub?: string;
   tooltip?: string;
   highlight?: "positive" | "negative" | "neutral";
+  compact?: boolean;
 }
 
-function KPICard({ label, value, valueClass, sub, tooltip }: KPICardProps) {
+function KPICard({ label, value, valueClass, sub, tooltip, compact }: KPICardProps) {
   return (
     <div
       className="bg-white border border-gray-200 rounded-xl p-4 hover:border-gray-300 transition-colors"
       title={tooltip}
     >
       <p className="text-xs text-gray-500 mb-1 font-medium">{label}</p>
-      <p className={`text-lg font-bold tabular-nums ${valueClass ?? "text-gray-900"}`}>{value}</p>
+      <p className={`${compact ? "text-xs font-semibold leading-snug" : "text-lg font-bold"} tabular-nums ${valueClass ?? "text-gray-900"}`}>{value}</p>
       {sub && <p className="text-xs text-gray-400 mt-0.5">{sub}</p>}
     </div>
   );
@@ -61,6 +62,16 @@ export default function KPIGrid({
 
   const primaryBm = bm?.benchmarks?.[0] ?? null;
 
+  const MIN_DAYS_FOR_ANN = 30;
+  const spanDays = pm?.date_range?.from && pm?.date_range?.to
+    ? Math.floor((new Date(pm.date_range.to).getTime() - new Date(pm.date_range.from).getTime()) / 86_400_000)
+    : null;
+  const collecting = (metric: number | null) =>
+    metric == null && spanDays != null && spanDays < MIN_DAYS_FOR_ANN;
+  const collectingLabel = spanDays != null
+    ? `Collecting Data (${spanDays}/${MIN_DAYS_FOR_ANN} days)`
+    : "—";
+
   const totalReturn = pm?.cumulative_return_pct ?? null;
   const annReturn   = pm?.annualized_return_pct ?? null;
   const maxDd       = pm?.max_drawdown?.max_drawdown_pct ?? null;
@@ -85,8 +96,9 @@ export default function KPIGrid({
       />
       <KPICard
         label="Ann. Return"
-        value={fmtPct(annReturn)}
-        valueClass={pnlColorClass(annReturn)}
+        value={annReturn != null ? fmtPct(annReturn) : collectingLabel}
+        valueClass={collecting(annReturn) ? "text-amber-600" : pnlColorClass(annReturn)}
+        compact={collecting(annReturn)}
         tooltip="Annualized return (CAGR) scaled to a 365-day year"
       />
       <KPICard
@@ -98,19 +110,22 @@ export default function KPIGrid({
       />
       <KPICard
         label="Volatility"
-        value={fmtPct(vol, false)}
-        valueClass="text-gray-800"
+        value={vol != null ? fmtPct(vol, false) : collectingLabel}
+        valueClass={collecting(vol) ? "text-amber-600" : "text-gray-800"}
+        compact={collecting(vol)}
         tooltip="Annualized standard deviation of daily returns"
       />
       <KPICard
         label="Sharpe Ratio"
-        value={sharpe != null ? fmtNum(sharpe) : "—"}
+        value={sharpe != null ? fmtNum(sharpe) : collecting(sharpe) ? collectingLabel : "—"}
         valueClass={
-          sharpe == null ? "text-gray-500"
-          : sharpe >= 1   ? "text-green-700"
-          : sharpe >= 0   ? "text-gray-800"
+          collecting(sharpe) ? "text-amber-600"
+          : sharpe == null   ? "text-gray-500"
+          : sharpe >= 1      ? "text-green-700"
+          : sharpe >= 0      ? "text-gray-800"
           : "text-red-600"
         }
+        compact={collecting(sharpe)}
         tooltip="Risk-adjusted return: (return − risk-free rate) / volatility. >1 is good"
       />
       <KPICard
