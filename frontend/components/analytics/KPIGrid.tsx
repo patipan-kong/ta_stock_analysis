@@ -127,7 +127,7 @@ export default function KPIGrid({
       />
       <KPICard
         label="Alpha"
-        value={alpha != null ? fmtPct(alpha * 100) : "—"}
+        value={alpha != null ? fmtPct(alpha) : "—"}
         valueClass={pnlColorClass(alpha)}
         sub={primaryBm ? `vs ${primaryBm.symbol}` : undefined}
         tooltip="Excess return above the benchmark (annualized, from OLS regression)"
