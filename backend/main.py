@@ -2383,6 +2383,16 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         daemon=True,
     ).start()
 
+    # ── Presentation layer: noise filter ─────────────────────────────────────────
+    # Suppresses micro-rebalance BUY/SELL recommendations for the HTTP response
+    # only. DB records (history, signal history, snapshots) already saved above
+    # with unfiltered optimizer output.
+    try:
+        from services.noise_filter import apply_noise_filter
+        apply_noise_filter(result)
+    except Exception as _nf_exc:
+        _log.warning("analyze_optimizer: noise filter failed — continuing: %s", _nf_exc)
+
     finish_run(body.portfolio_id, ok=True)
     return result
 
@@ -5433,6 +5443,35 @@ async def get_ai_vs_human_timeline(
         "timeline": limited,
         "summary": comparison.get("summary"),
     }
+
+
+# ─── Phase 4C.4 — Human Idea Intake / AI Committee Review ────────────────────
+
+class IdeaReviewRequest(BaseModel):
+    symbols: list[str]
+
+
+@app.post("/portfolios/{portfolio_id}/idea-review")
+async def idea_review(
+    portfolio_id: int,
+    body: IdeaReviewRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Evaluate user-supplied stock ideas against the active portfolio's
+    constraint envelope, persona, regime, and latest optimizer output.
+
+    No AI calls — deterministic scoring over existing cached intelligence.
+    Maximum 10 symbols per request.
+    """
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
+    ).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    from services.idea_review import review_ideas
+    return await asyncio.to_thread(review_ideas, body.symbols, portfolio_id, db, ws)
 
 
 @app.get("/analytics/calibration-history")

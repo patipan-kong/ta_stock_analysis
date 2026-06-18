@@ -20,3 +20,6 @@ Markdown
 
 ### Another Idea
 - Another suggestion history benchmark like BLS Dr 01 news
+
+[ระบบแอบไปคำนวณด้านหลัง] ➔ เจอ Market Breadth ตลาดสหรัฐฯ หักหัวลง + RS ของ AMZN อ่อนแอ
+[ผลลัพธ์หน้าจอ MUJI ของพี่ Ta] ➔ เปลี่ยนจากสั่ง BUY เป็นสั่ง WAIT อัตโนมัติ! 😎🛡️

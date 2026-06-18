@@ -606,6 +606,9 @@ export interface TargetAllocation {
   asset_type?: AssetType;
   slippage_est_pct?: number;
   execution_capped?: boolean;
+  // Presentation-layer noise filter (micro-rebalance suppression)
+  noise_suppressed?: boolean;
+  noise_reason?: string;
 }
 
 export interface OptimizerLayerConfig {
@@ -2623,3 +2626,52 @@ export const getOperationsStatus = (portfolioId: number) =>
 /** Live optimizer run progress (poll ~1.5s while a run is active) */
 export const getOptimizerProgress = (portfolioId: number) =>
   apiFetch<OptimizerProgress>(`/operations-center/optimizer-progress?portfolio_id=${portfolioId}`);
+
+// ─── Phase 4C.4 — Human Idea Intake / AI Committee Review ────────────────────
+
+export interface IdeaReview {
+  symbol: string;
+  sector: string | null;
+  data_available: boolean;
+  existing_signal: "ACCUMULATE" | "BUY" | "WATCH" | "HOLD" | "REDUCE" | "SELL" | null;
+  signal_confidence: number | null;
+  existing_position: boolean;
+  current_allocation_pct: number;
+  position_limit_pct: number;
+  sector_current_pct: number;
+  sector_limit_pct: number;
+  strategic_fit_score: number;
+  strategic_fit_label: "STRONG" | "MODERATE" | "WEAK";
+  risk_impact: "LOW" | "MEDIUM" | "HIGH";
+  policy_check: "PASS" | "WARNING" | "FAIL";
+  committee_decision: "APPROVE" | "WATCH" | "REVIEW" | "DECLINE";
+  reason: string;
+  optimizer_alignment: "ALIGNED" | "CONTRADICTING" | "NEUTRAL";
+  optimizer_action: string | null;
+  target_allocation_pct: number | null;
+  portfolio_priority: "HIGH" | "MEDIUM" | "LOW";
+  warnings: string[];
+}
+
+export interface IdeaReviewPortfolioContext {
+  portfolio_id: number;
+  portfolio_name: string;
+  persona: string;
+  regime: string | null;
+  emergency_active: boolean;
+  total_value: number;
+  last_optimizer_run_at: string | null;
+  generated_at: string;
+}
+
+export interface IdeaReviewResponse {
+  portfolio_context: IdeaReviewPortfolioContext;
+  reviews: IdeaReview[];
+  error?: string;
+}
+
+export const reviewIdeas = (portfolioId: number, symbols: string[]) =>
+  apiFetch<IdeaReviewResponse>(`/portfolios/${portfolioId}/idea-review`, {
+    method: "POST",
+    body: JSON.stringify({ symbols }),
+  });

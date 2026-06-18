@@ -419,10 +419,10 @@ function AllocationTable({
   }
 
   const significant = allocations.filter(
-    (a) => a.action !== "HOLD" || Math.abs(a.allocation_change_percent) >= 2
+    (a) => a.action !== "HOLD" || Math.abs(a.allocation_change_percent) >= 2 || a.noise_suppressed
   );
   const hold = allocations.filter(
-    (a) => a.action === "HOLD" && Math.abs(a.allocation_change_percent) < 2
+    (a) => a.action === "HOLD" && Math.abs(a.allocation_change_percent) < 2 && !a.noise_suppressed
   );
 
   return (
@@ -475,7 +475,11 @@ function AllocationTable({
                       {amt > 0 ? `฿${amt.toLocaleString("th-TH")}` : "—"}
                     </td>
                   )}
-                  <td className="py-1.5 text-gray-500 max-w-xs truncate" title={a.reason}>{a.reason}</td>
+                  <td className="py-1.5 text-gray-500 max-w-xs truncate" title={a.noise_suppressed ? a.noise_reason : a.reason}>
+                    {a.noise_suppressed
+                      ? <span className="text-amber-600 italic">{a.noise_reason}</span>
+                      : a.reason}
+                  </td>
                 </tr>
               );
             })}

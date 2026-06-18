@@ -5,6 +5,7 @@ import AgentStationGrid from "./AgentStationGrid";
 import MarketStatusCard from "./MarketStatusCard";
 import ConsensusRoomCard from "./ConsensusRoomCard";
 import PolicyEnvelopeCard from "./PolicyEnvelopeCard";
+import IdeaIntakeCard from "../idea-intake/IdeaIntakeCard";
 
 const fmtBaht = (v: number) =>
   `฿${v.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -68,6 +69,8 @@ export default function QuantDashboard({
       </div>
 
       <PolicyEnvelopeCard policy={status.policy} />
+
+      <IdeaIntakeCard portfolioId={portfolioId} />
     </div>
   );
 }
