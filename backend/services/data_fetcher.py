@@ -45,6 +45,8 @@ _DR_RE = re.compile(r"^([A-Z]+)\d{2}\.BK$")
 #   MICRON01.BK → prefix "MICRON" → actual US ticker "MU"
 _DR_UNDERLYING_ALIASES: dict[str, str] = {
     "MICRON": "MU",      # Micron Technology
+    "INTEL": "INTC",      # Intel
+    "QUALCOMM": "QCOM",   # Qualcomm
 }
 
 # ── Provider singleton ─────────────────────────────────────────────────────────

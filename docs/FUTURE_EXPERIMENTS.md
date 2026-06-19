@@ -97,9 +97,35 @@ MICRON01
 - Allocation Suggestion
 
 
+Phase 4D Position Sizing
+Kelly
+Secure f
 
 ## 📥 Active Parking Slots (รายชื่อไอเดียรอคิวเปิดอู่)
-1. ⏱️ [Phase 3B.6] - Execution Timing Layer (สยบมีดบิน / เพิ่มสมองซีก Action Timing)
+Phase 4C.6 Timing
+(สำคัญสุด)
+
+↓
+
+Stability
+
+↓
+
+Goal Projection MVP
+(1-2 วัน)
+
+↓
+
+Phase 4C.5 Basket Simulation
+
+↓
+
+Phase 4D Position Sizing
+
+↓
+
+Phase 4A / 4B เต็มรูปแบบ
+
 2. 🧠 [Phase 5.x]  - AI Learning Memory (ระบบจำประวัติการสั่งงานและ Preference ของกัปตัน)
 3. 📈 [Phase 4B]    - Goal Projection Engine & DCA Planner (ระบบพยากรณ์เป้าหมายพอร์ตลงทุน)
 4. 🧓 [Phase 4A]    - Net Worth & Retirement Simulator (รวมสินทรัพย์และระบบจำลองวัยเกษียณ)
