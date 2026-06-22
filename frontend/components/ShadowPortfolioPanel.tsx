@@ -181,7 +181,9 @@ export default function ShadowPortfolioPanel({ portfolioId }: { portfolioId: num
 
         <div className="border border-gray-200 rounded-lg p-4 bg-blue-50/40">
           <p className="text-xs uppercase tracking-wide text-gray-500">AI Model Portfolio</p>
-          <p className="text-xs text-gray-400 mt-0.5">What if AI was followed perfectly?</p>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Cumulative track record · since {aiModel?.inception_date ?? "—"}
+          </p>
           {aiIsNew ? (
             <div className="mt-3 flex items-center gap-2">
               <span className="inline-block w-2 h-2 rounded-full bg-blue-400 animate-pulse" />

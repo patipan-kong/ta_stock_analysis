@@ -2675,3 +2675,93 @@ export const reviewIdeas = (portfolioId: number, symbols: string[]) =>
     method: "POST",
     body: JSON.stringify({ symbols }),
   });
+
+// ── Phase 4C.5A — Basket Simulation ──────────────────────────────────────────
+
+export interface BasketImpact {
+  sector: string;
+  before_pct: number;
+  after_pct: number;
+  delta_pct: number;
+  sector_limit_pct: number;
+  status: "PASS" | "WARNING" | "FAIL";
+}
+
+export interface BasketSimulationResult {
+  portfolio_id: number;
+  symbols: string[];
+  allocation_pct: number;
+  total_capital_required_pct: number;
+  cash_before_pct: number;
+  cash_after_pct: number;
+  impacts: BasketImpact[];
+  warnings: string[];
+  overall_status: "PASS" | "WARNING" | "FAIL";
+  error?: string;
+}
+
+export const simulateBasket = (
+  portfolioId: number,
+  symbols: string[],
+  allocation_pct: number,
+) =>
+  apiFetch<BasketSimulationResult>(`/portfolios/${portfolioId}/basket-simulation`, {
+    method: "POST",
+    body: JSON.stringify({ symbols, allocation_pct }),
+  });
+
+export interface SuggestedBasketAllocation {
+  symbol: string;
+  suggested_pct: number;
+}
+
+export interface PortfolioConstructionResult {
+  overall_status: "PASS" | "WARNING" | "FAIL";
+  recommended_allocation_pct: number;
+  total_deployment_pct: number;
+  cash_after_pct: number;
+  allocations: SuggestedBasketAllocation[];
+  reasoning: string[];
+  simulation: BasketSimulationResult;
+  error?: string;
+}
+
+export const suggestAllocation = (portfolioId: number, symbols: string[]) =>
+  apiFetch<PortfolioConstructionResult>(
+    `/portfolios/${portfolioId}/portfolio-construction`,
+    {
+      method: "POST",
+      body: JSON.stringify({ symbols }),
+    },
+  );
+
+export interface ScoreBreakdown {
+  signal_points: number;
+  confidence_points: number;
+  fit_points: number;
+  priority_points: number;
+}
+
+export interface PositionSuggestion {
+  symbol: string;
+  position_score: number;
+  suggested_pct: number;
+  signal: string;
+  confidence: number;
+  breakdown: ScoreBreakdown;
+}
+
+export interface PositionSizingResult {
+  deployable_cash_pct: number;
+  total_allocated_pct: number;
+  status: "PASS" | "WARNING" | "FAIL";
+  suggestions: PositionSuggestion[];
+  reasoning: string[];
+  error?: string;
+}
+
+export const suggestPositionSizes = (portfolioId: number, symbols: string[]) =>
+  apiFetch<PositionSizingResult>(`/portfolios/${portfolioId}/position-sizing`, {
+    method: "POST",
+    body: JSON.stringify({ symbols }),
+  });

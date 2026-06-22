@@ -3868,6 +3868,28 @@ async def admin_repair_shadow_portfolios(db: Session = Depends(get_db)) -> dict:
     }
 
 
+@app.post("/admin/reset-active-model-inception")
+async def admin_reset_active_model_inception(db: Session = Depends(get_db)) -> dict:
+    """Reset ACTIVE_MODEL shadow inception to today's date and current NAV.
+
+    Clears all ShadowPortfolioSnapshot rows and resets inception_date /
+    inception_value for every active ACTIVE_MODEL shadow in the workspace.
+
+    Call once after deploying the Option B shadow rebalancing fix to discard
+    previously corrupted (always-0%) history and start a clean cumulative
+    track record from the current point in time.
+    """
+    from services.decision_memory.shadow_tracker import reset_active_model_inception
+
+    ws = _ws_id(db)
+    results = await asyncio.to_thread(reset_active_model_inception, db, ws)
+    return {
+        "results": results,
+        "count": len(results),
+        "reset": sum(1 for r in results if r.get("status") == "reset"),
+    }
+
+
 @app.post("/admin/recalculate-cost-basis")
 async def admin_recalculate_cost_basis(
     from_date: str = "2026-05-27",
@@ -5474,6 +5496,114 @@ async def idea_review(
     return await asyncio.to_thread(review_ideas, body.symbols, portfolio_id, db, ws)
 
 
+# ─── Phase 4C.5A — Basket Simulation Engine ──────────────────────────────────
+
+class BasketSimulationRequest(BaseModel):
+    symbols: list[str]
+    allocation_pct: float
+
+
+@app.post("/portfolios/{portfolio_id}/basket-simulation")
+async def basket_simulation(
+    portfolio_id: int,
+    body: BasketSimulationRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Simulate purchasing a basket of symbols against the active portfolio.
+
+    No AI calls.  No trades executed.  Read-only deterministic analysis.
+    Returns sector-level impacts, cash impact, warnings, and overall status.
+    """
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
+    ).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    if body.allocation_pct <= 0 or body.allocation_pct > 100:
+        raise HTTPException(status_code=422, detail="allocation_pct must be between 0 and 100")
+
+    from services.basket_simulation import simulate_basket
+    result = await asyncio.to_thread(
+        simulate_basket, portfolio_id, body.symbols, body.allocation_pct, ws, db
+    )
+    return result.model_dump()
+
+
+# ─── Phase 4C.5B — Portfolio Construction Assistant ───────────────────────────
+
+class PortfolioConstructionRequest(BaseModel):
+    symbols: list[str]
+
+
+@app.post("/portfolios/{portfolio_id}/portfolio-construction")
+async def portfolio_construction(
+    portfolio_id: int,
+    body: PortfolioConstructionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Suggest the safest equal-weight allocation for a basket of symbols.
+
+    Iterates from 5% down to 1% per position, returning the largest allocation
+    that satisfies sector caps and cash-floor constraints.
+
+    No AI calls.  No trades executed.  Read-only deterministic analysis.
+    """
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
+    ).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    from services.portfolio_construction import suggest_basket_allocation
+    try:
+        result = await asyncio.to_thread(
+            suggest_basket_allocation, portfolio_id, body.symbols, ws, db
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return result.model_dump()
+
+
+# ─── Phase 4D.1 — Constraint-Aware Position Sizing ───────────────────────────
+
+class PositionSizingRequest(BaseModel):
+    symbols: list[str]
+
+
+@app.post("/portfolios/{portfolio_id}/position-sizing")
+async def position_sizing(
+    portfolio_id: int,
+    body: PositionSizingRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Size a basket proportionally by signal quality, confidence, fit, and priority.
+
+    Allocates deployable cash (cash − cash floor) across symbols in proportion
+    to each symbol's position score.  Scales allocations downward when a sector
+    cap would be breached.
+
+    No AI calls.  No trades executed.  Read-only deterministic analysis.
+    """
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
+    ).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    from services.position_sizing import suggest_position_sizes
+    try:
+        result = await asyncio.to_thread(
+            suggest_position_sizes, portfolio_id, body.symbols, ws, db
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return result.model_dump()
+
+
 @app.get("/analytics/calibration-history")
 async def get_calibration_history(
     portfolio_id: int | None = None,
@@ -5518,3 +5648,283 @@ async def get_calibration_history(
         }
         for r in rows
     ]
+
+
+# ─── Phase 4C.6A — Timing Intelligence: Allocation Periods ───────────────────
+
+@app.get("/analytics/timing-periods")
+async def get_timing_periods(
+    portfolio_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return all allocation periods for a portfolio.
+
+    Each period spans from one RecommendationSnapshot becoming active to the
+    moment the next snapshot replaced it.  The most-recent period is open-ended
+    (end_date=null, is_current=true).
+
+    Periods are sorted ascending by start_date and never overlap.
+    """
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
+    ).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    from services.timing_periods import build_allocation_periods
+
+    periods = await asyncio.to_thread(build_allocation_periods, portfolio_id, ws, db)
+
+    return {
+        "portfolio_id": portfolio_id,
+        "periods": [
+            {
+                "recommendation_snapshot_id": period.recommendation_snapshot_id,
+                "start_date": period.start_date.isoformat().replace("+00:00", "Z"),
+                "end_date": (
+                    period.end_date.isoformat().replace("+00:00", "Z")
+                    if period.end_date is not None
+                    else None
+                ),
+                "days_active": period.days_active,
+                "is_current": period.is_current,
+            }
+            for period in periods
+        ],
+    }
+
+
+# ─── Phase 4C.6B — Timing Intelligence: Period Performance ───────────────────
+
+@app.get("/analytics/timing-performance")
+async def get_timing_performance(
+    portfolio_id: int,
+    benchmark: str = "^SET.BK",
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return per-allocation-period performance metrics for a portfolio.
+
+    For each period (defined by when a RecommendationSnapshot became active),
+    computes four deterministic metrics from PortfolioSnapshot and BenchmarkPrice:
+
+        period_return_pct    — portfolio TWR over the period
+        benchmark_return_pct — benchmark price return over same window
+        excess_return_pct    — period_return_pct − benchmark_return_pct
+        max_drawdown_pct     — peak-to-trough decline in portfolio total_value
+
+    No AI calls.  No new tables.  Periods sorted ascending by start_date.
+    """
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
+    ).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    from services.timing_performance import build_period_performances
+
+    performances = await asyncio.to_thread(
+        build_period_performances, portfolio_id, ws, db, benchmark
+    )
+
+    return {
+        "portfolio_id": portfolio_id,
+        "benchmark": benchmark,
+        "periods": [
+            {
+                "recommendation_snapshot_id": perf.recommendation_snapshot_id,
+                "start_date": perf.start_date.isoformat().replace("+00:00", "Z"),
+                "end_date": (
+                    perf.end_date.isoformat().replace("+00:00", "Z")
+                    if perf.end_date is not None
+                    else None
+                ),
+                "days_active": perf.days_active,
+                "is_current": perf.is_current,
+                "period_return_pct": perf.period_return_pct,
+                "benchmark_return_pct": perf.benchmark_return_pct,
+                "excess_return_pct": perf.excess_return_pct,
+                "max_drawdown_pct": perf.max_drawdown_pct,
+                "snapshot_count": perf.snapshot_count,
+            }
+            for perf in performances
+        ],
+    }
+
+
+# ─── Phase 4C.6C — Timing Intelligence: Timing Score ────────────────────────
+
+@app.get("/analytics/timing-scores")
+async def get_timing_scores(
+    portfolio_id: int,
+    benchmark: str = "^SET.BK",
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return a deterministic 0-100 timing quality score per allocation period.
+
+    Scoring components (base 50):
+        excess_return_component  excess_return_pct × 4, capped ±30
+        drawdown_component       tiered bonus/penalty on max_drawdown_pct
+        duration_component       stability bonus based on days_active
+
+    Grade: EXCELLENT / GOOD / NEUTRAL / WEAK / POOR
+    Confidence: HIGH / MEDIUM / LOW (based on snapshot_count)
+    """
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
+    ).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    from services.timing_performance import build_period_performances
+    from services.timing_score import calculate_timing_score
+
+    performances = await asyncio.to_thread(
+        build_period_performances, portfolio_id, ws, db, benchmark
+    )
+    scored = [calculate_timing_score(perf) for perf in performances]
+
+    scores = [s.timing_score for s in scored]
+    average_score = round(sum(scores) / len(scores)) if scores else None
+
+    return {
+        "portfolio_id": portfolio_id,
+        "benchmark": benchmark,
+        "average_score": average_score,
+        "best_score": max(scores) if scores else None,
+        "worst_score": min(scores) if scores else None,
+        "total_periods": len(scored),
+        "periods": [
+            {
+                "recommendation_snapshot_id": s.recommendation_snapshot_id,
+                "timing_score": s.timing_score,
+                "timing_grade": s.timing_grade,
+                "confidence_level": s.confidence_level,
+                "excess_return_component": s.excess_return_component,
+                "drawdown_component": s.drawdown_component,
+                "duration_component": s.duration_component,
+            }
+            for s in scored
+        ],
+    }
+
+
+# ─── Phase 4C.6D — Timing Intelligence: Regime Attribution ───────────────────
+
+@app.get("/analytics/timing-regime-attribution")
+async def get_timing_regime_attribution(
+    portfolio_id: int,
+    benchmark: str = "^SET.BK",
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return timing quality aggregated by market regime.
+
+    Each period is assigned to the regime active on its start date
+    (looked up from RegimeSnapshot history).  Regimes with no historical
+    data before a period start are labelled UNKNOWN.
+
+    Aggregate statistics per regime:
+        average_score, best_score, worst_score
+        average_excess_return_pct, average_drawdown_pct, average_duration_days
+
+    Summary fields identify the best/worst regime by average timing score.
+    """
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
+    ).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    from services.regime_attribution import build_regime_attribution, build_summary
+
+    results = await asyncio.to_thread(
+        build_regime_attribution, portfolio_id, ws, db, benchmark
+    )
+    summary = build_summary(results)
+
+    return {
+        "portfolio_id": portfolio_id,
+        "benchmark": benchmark,
+        **summary,
+        "regimes": [
+            {
+                "regime": r.regime,
+                "periods": r.periods,
+                "average_score": r.average_score,
+                "best_score": r.best_score,
+                "worst_score": r.worst_score,
+                "average_excess_return_pct": r.average_excess_return_pct,
+                "average_drawdown_pct": r.average_drawdown_pct,
+                "average_duration_days": r.average_duration_days,
+            }
+            for r in results
+        ],
+    }
+
+
+# ─── Phase 4C.6E — Timing Intelligence: Human vs AI Timing Attribution ───────
+
+@app.get("/analytics/human-vs-ai-timing")
+async def get_human_vs_ai_timing(
+    portfolio_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Attribute portfolio outcomes to human override decisions vs AI recommendations.
+
+    For each UserExecutionDecision linked to an allocation period:
+      - REJECTED / MANUAL_OVERRIDE / PARTIAL_EXECUTION → override = True
+      - APPROVED                                        → override = False
+
+    Compares actual portfolio return (human) vs STATIC_FROZEN shadow return (AI)
+    within the allocation period window.
+
+    delta_return_pct = human_return - ai_return
+      positive → human outperformed AI  → GOOD_OVERRIDE
+      negative → AI outperformed human  → BAD_OVERRIDE
+      |delta| < 0.25                   → NEUTRAL_OVERRIDE
+    """
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
+    ).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    from services.human_vs_ai_timing import build_human_vs_ai_timing
+
+    attributions, summary = await asyncio.to_thread(
+        build_human_vs_ai_timing, portfolio_id, ws, db
+    )
+
+    return {
+        "portfolio_id": portfolio_id,
+        "summary": {
+            "overrides": summary.overrides,
+            "good_overrides": summary.good_overrides,
+            "bad_overrides": summary.bad_overrides,
+            "neutral_overrides": summary.neutral_overrides,
+            "override_win_rate": summary.override_win_rate,
+            "total_added_return_pct": summary.total_added_return_pct,
+            "total_saved_drawdown_pct": summary.total_saved_drawdown_pct,
+        },
+        "details": [
+            {
+                "recommendation_snapshot_id": a.recommendation_snapshot_id,
+                "symbol": a.symbol,
+                "ai_action": a.ai_action,
+                "human_action": a.human_action,
+                "override": a.override,
+                "human_return_pct": a.human_return_pct,
+                "ai_return_pct": a.ai_return_pct,
+                "delta_return_pct": a.delta_return_pct,
+                "human_drawdown_pct": a.human_drawdown_pct,
+                "ai_drawdown_pct": a.ai_drawdown_pct,
+                "saved_drawdown_pct": a.saved_drawdown_pct,
+                "outcome": a.outcome,
+            }
+            for a in attributions
+        ],
+    }

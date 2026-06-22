@@ -454,6 +454,7 @@ class ShadowPortfolioSnapshot(Base):
     benchmark_symbol = Column(String, nullable=True)               # e.g. "^SET.BK" or "^GSPC"
     benchmark_return_pct = Column(Float, nullable=True)            # benchmark cumulative return same period
     alpha = Column(Float, nullable=True)                           # shadow return - benchmark return
+    recommendation_snapshot_id = Column(Integer, ForeignKey("recommendation_snapshots.id", ondelete="SET NULL"), nullable=True, index=True)  # Phase 4C.6 Timing Intelligence: links each SPS row to the active allocation period
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     shadow_portfolio = relationship("ShadowPortfolio", back_populates="daily_snapshots")
@@ -872,6 +873,16 @@ def migrate_legacy_data() -> None:
                     """))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_sps_shadow ON shadow_portfolio_snapshots (shadow_portfolio_id)"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_sps_date ON shadow_portfolio_snapshots (snapshot_date)"))
+            else:
+                # Add new columns to existing shadow_portfolio_snapshots table
+                with engine.begin() as conn:
+                    sps_cols = {c["name"] for c in inspector.get_columns("shadow_portfolio_snapshots")}
+                    if "recommendation_snapshot_id" not in sps_cols:
+                        conn.execute(text(
+                            "ALTER TABLE shadow_portfolio_snapshots "
+                            "ADD COLUMN recommendation_snapshot_id INTEGER "
+                            "REFERENCES recommendation_snapshots(id)"
+                        ))
 
             if "attribution_metrics" not in tables:
                 with engine.begin() as conn:

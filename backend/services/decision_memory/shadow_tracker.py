@@ -51,6 +51,7 @@ create_static_frozen_shadow(db, execution_decision_id, workspace_id) → dict
 create_active_model_shadow(db, portfolio_id, snapshot_id, workspace_id) → dict
 value_all_active_shadows(db, workspace_id) → list[dict]
 repair_shadow_portfolios(db, workspace_id) → list[dict]
+reset_active_model_inception(db, workspace_id) → list[dict]
 """
 from __future__ import annotations
 
@@ -433,6 +434,7 @@ def value_shadow_portfolio(db: Session, shadow_id: int) -> dict[str, Any]:
             existing.benchmark_symbol = benchmark_symbol
             existing.benchmark_return_pct = benchmark_ret
             existing.alpha = alpha
+            existing.recommendation_snapshot_id = shadow.recommendation_snapshot_id
         else:
             snap = ShadowPortfolioSnapshot(
                 shadow_portfolio_id=shadow_id,
@@ -444,6 +446,7 @@ def value_shadow_portfolio(db: Session, shadow_id: int) -> dict[str, Any]:
                 benchmark_symbol=benchmark_symbol,
                 benchmark_return_pct=benchmark_ret,
                 alpha=alpha,
+                recommendation_snapshot_id=shadow.recommendation_snapshot_id,
                 created_at=datetime.utcnow(),
             )
             db.add(snap)
@@ -634,8 +637,9 @@ def create_active_model_shadow(
 ) -> dict[str, Any]:
     """Create or refresh an ACTIVE_MODEL shadow from the latest optimizer snapshot.
 
-    If an existing ACTIVE_MODEL shadow for the same portfolio exists, its
-    snapshot link and holdings are updated rather than creating a duplicate.
+    On refresh, computes the shadow's own running NAV from current holdings and
+    prices before rebalancing — never resets inception_date or inception_value so
+    the shadow accumulates a true cumulative track record across optimizer runs.
 
     Holdings with no cached price are marked price_frozen=True to prevent
     future NAV inflation when prices become available.
@@ -653,13 +657,9 @@ def create_active_model_shadow(
         except Exception:
             pass
 
-    total_portfolio_value = snap.total_portfolio_value or 0.0
+    today_str = date.today().isoformat()
     symbols = [a.get("symbol") for a in allocs if a.get("symbol")]
     prices = _fetch_cached_prices(db, symbols)
-    holdings = _resolve_shares_from_weights(allocs, total_portfolio_value, prices)
-
-    today_str = date.today().isoformat()
-    holdings_json = json.dumps(holdings, default=str)
 
     existing = (
         db.query(ShadowPortfolio)
@@ -668,28 +668,62 @@ def create_active_model_shadow(
         .first()
     )
 
-    holdings_priced = len([h for h in holdings if not h.get("price_frozen")])
-
     if existing:
+        # Compute shadow's own running NAV from current holdings — never use actual
+        # portfolio NAV, which would tether the shadow to deposits/withdrawals.
+        old_holdings: list[dict] = []
+        try:
+            if existing.inception_holdings_json:
+                old_holdings = json.loads(existing.inception_holdings_json)
+        except Exception:
+            pass
+
+        if old_holdings:
+            old_syms = [h["symbol"] for h in old_holdings if h.get("symbol")]
+            old_prices = _fetch_cached_prices(db, old_syms)
+            running_nav, _ = _compute_paper_value(old_holdings, old_prices)
+            running_nav += existing.paper_cash_balance or 0.0
+            if running_nav < 1.0:
+                running_nav = (
+                    _get_last_valid_nav(db, existing.id)
+                    or existing.inception_value
+                    or snap.total_portfolio_value
+                    or 0.0
+                )
+        else:
+            running_nav = snap.total_portfolio_value or 0.0
+
+        if running_nav <= 0:
+            running_nav = snap.total_portfolio_value or 1.0
+
+        new_holdings = _resolve_shares_from_weights(allocs, running_nav, prices)
+        holdings_priced = len([h for h in new_holdings if not h.get("price_frozen")])
+
+        # inception_date and inception_value are NEVER touched after first creation
         existing.recommendation_snapshot_id = snapshot_id
-        existing.inception_holdings_json = holdings_json
-        existing.inception_value = total_portfolio_value if total_portfolio_value > 0 else existing.inception_value
-        existing.inception_date = today_str
+        existing.inception_holdings_json = json.dumps(new_holdings, default=str)
         db.commit()
+
         logger.info(
-            "[SHADOW] Refreshed ACTIVE_MODEL id=%s for portfolio_id=%s "
-            "(%d holdings, %d priced, %d frozen)",
-            existing.id, portfolio_id, len(holdings),
-            holdings_priced, len(holdings) - holdings_priced,
+            "[SHADOW] Rebalanced ACTIVE_MODEL id=%s portfolio_id=%s "
+            "running_nav=%.2f → new weights (%d holdings, %d priced, %d frozen)",
+            existing.id, portfolio_id, running_nav,
+            len(new_holdings), holdings_priced, len(new_holdings) - holdings_priced,
         )
         return {
             "shadow_id": existing.id,
             "shadow_type": "ACTIVE_MODEL",
-            "action": "refreshed",
-            "holdings_count": len(holdings),
+            "action": "rebalanced",
+            "running_nav": round(running_nav, 2),
+            "holdings_count": len(new_holdings),
             "holdings_priced": holdings_priced,
-            "holdings_frozen": len(holdings) - holdings_priced,
+            "holdings_frozen": len(new_holdings) - holdings_priced,
         }
+
+    # First-time creation — use actual portfolio NAV as inception baseline
+    total_portfolio_value = snap.total_portfolio_value or 0.0
+    holdings = _resolve_shares_from_weights(allocs, total_portfolio_value, prices)
+    holdings_priced = len([h for h in holdings if not h.get("price_frozen")])
 
     shadow = ShadowPortfolio(
         workspace_id=workspace_id,
@@ -699,7 +733,7 @@ def create_active_model_shadow(
         inception_date=today_str,
         inception_value=total_portfolio_value if total_portfolio_value > 0 else None,
         recommendation_snapshot_id=snapshot_id,
-        inception_holdings_json=holdings_json,
+        inception_holdings_json=json.dumps(holdings, default=str),
         paper_cash_balance=0.0,
         is_active=True,
         created_at=datetime.utcnow(),
@@ -961,6 +995,27 @@ def repair_shadow_portfolios(db: Session, workspace_id: int) -> list[dict[str, A
 
             shadow.inception_holdings_json = json.dumps(holdings, default=str)
 
+            # ── Skip full snapshot rebuild for ACTIVE_MODEL ──────────────────
+            # ACTIVE_MODEL allocation changes at each optimizer run; replaying its
+            # full SPS history from a single static holdings set produces wrong values.
+            # Holdings are still un-frozen above to keep running_nav accurate.
+            if shadow.shadow_type == "ACTIVE_MODEL":
+                db.commit()
+                result.update(
+                    status="unfrozen_holdings_only",
+                    holdings=len(holdings),
+                    unfrozen=unfrozen,
+                    still_frozen=still_frozen,
+                    snapshots_rebuilt=0,
+                )
+                logger.info(
+                    "[SHADOW] Repair skipped snapshot rebuild for ACTIVE_MODEL shadow_id=%s "
+                    "(%d holdings, %d unfrozen)",
+                    shadow.id, len(holdings), unfrozen,
+                )
+                results.append(result)
+                continue
+
             # ── Rebuild snapshot history with real daily prices ───────────────
             rows = _rebuild_shadow_snapshots(db, shadow, holdings, history)
             db.commit()
@@ -983,4 +1038,71 @@ def repair_shadow_portfolios(db: Session, workspace_id: int) -> list[dict[str, A
             result.update(status="error", error=str(exc))
         results.append(result)
 
+    return results
+
+
+def reset_active_model_inception(db: Session, workspace_id: int) -> list[dict[str, Any]]:
+    """Reset ACTIVE_MODEL shadow inception to today's date and current NAV.
+
+    Clears all ShadowPortfolioSnapshot history for each ACTIVE_MODEL shadow
+    and resets inception_date/inception_value so the cumulative track record
+    starts fresh from the current point in time.
+
+    Call once after deploying the Option B rebalancing fix to clear previously
+    corrupted history before the new compounding logic takes over.
+    """
+    from models.database import ShadowPortfolio, ShadowPortfolioSnapshot
+
+    today_str = date.today().isoformat()
+    shadows = (
+        db.query(ShadowPortfolio)
+        .filter_by(workspace_id=workspace_id, shadow_type="ACTIVE_MODEL", is_active=True)
+        .all()
+    )
+    results: list[dict[str, Any]] = []
+    for shadow in shadows:
+        result: dict[str, Any] = {"shadow_id": shadow.id, "portfolio_id": shadow.portfolio_id}
+        try:
+            db.query(ShadowPortfolioSnapshot).filter_by(shadow_portfolio_id=shadow.id).delete()
+
+            holdings: list[dict] = []
+            if shadow.inception_holdings_json:
+                try:
+                    holdings = json.loads(shadow.inception_holdings_json)
+                except Exception:
+                    pass
+
+            current_nav = 0.0
+            if holdings:
+                syms = [h["symbol"] for h in holdings if h.get("symbol")]
+                prices = _fetch_cached_prices(db, syms)
+                current_nav, _ = _compute_paper_value(holdings, prices)
+                current_nav += shadow.paper_cash_balance or 0.0
+
+            if current_nav < 1.0:
+                current_nav = shadow.inception_value or 0.0
+
+            shadow.inception_date = today_str
+            shadow.inception_value = current_nav if current_nav > 0 else None
+            shadow.inception_return_pct = 0.0
+            shadow.current_value = current_nav if current_nav > 0 else None
+            db.commit()
+
+            if current_nav > 0:
+                value_shadow_portfolio(db, shadow.id)
+
+            result.update(
+                status="reset",
+                new_inception_date=today_str,
+                new_inception_value=round(current_nav, 2),
+            )
+            logger.info(
+                "[SHADOW] Reset ACTIVE_MODEL id=%s: new inception %s @ %.2f NAV",
+                shadow.id, today_str, current_nav,
+            )
+        except Exception as exc:
+            db.rollback()
+            logger.error("[SHADOW] reset failed for shadow_id=%s: %s", shadow.id, exc)
+            result.update(status="error", error=str(exc))
+        results.append(result)
     return results
