@@ -16,7 +16,13 @@ import OperationsTimeline from "./quant/OperationsTimeline";
 const MODE_STORAGE_KEY = "operations_mode";
 const STATUS_REFRESH_INTERVAL = 60_000; // 60 seconds
 
-export default function OperationsCenter({ portfolioId }: { portfolioId: number }) {
+export default function OperationsCenter({
+  portfolioId,
+  initialSymbols,
+}: {
+  portfolioId: number;
+  initialSymbols?: string[];
+}) {
   const [mode, setModeState] = useState<OperationsMode>("MUJI");
   const [status, setStatus] = useState<OperationsCenterStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -26,10 +32,15 @@ export default function OperationsCenter({ portfolioId }: { portfolioId: number 
   const fetchingRef = useRef(false);
 
   // Restore persisted mode (localStorage is browser-only — read after mount).
+  // If the user arrived via optimizer handoff, always open in QUANT mode.
   useEffect(() => {
+    if (initialSymbols && initialSymbols.length > 0) {
+      setModeState("QUANT");
+      return;
+    }
     const saved = localStorage.getItem(MODE_STORAGE_KEY);
     if (saved === "MUJI" || saved === "QUANT") setModeState(saved);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const setMode = useCallback((m: OperationsMode) => {
     setModeState(m);
@@ -141,6 +152,7 @@ export default function OperationsCenter({ portfolioId }: { portfolioId: number 
             status={status}
             optimizing={optimizing}
             onRunOptimizer={handleRunOptimizer}
+            initialSymbols={initialSymbols}
           />
         )
       )}

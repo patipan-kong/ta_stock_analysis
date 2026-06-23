@@ -946,6 +946,20 @@ export interface PortfolioDNA {
   dividend: number;
 }
 
+export interface ActionSummaryEntry {
+  symbol: string;
+  allocation_change_percent: number;
+  timing_score?: number | null;
+}
+
+export interface ActionSummary {
+  sell: ActionSummaryEntry[];
+  reduce: ActionSummaryEntry[];
+  accumulate: ActionSummaryEntry[];
+  new_position: ActionSummaryEntry[];
+  hold: ActionSummaryEntry[];
+}
+
 export interface OptimizerResult {
   portfolio_name: string;
   status?: OptimizerStatus;
@@ -1008,6 +1022,8 @@ export interface OptimizerResult {
   execution_context?: ExecutionContext | null;
   // Stabilization Sprint — post-processing churn reduction layer
   stabilization?: StabilizationMeta | null;
+  // UX.2C — Action Summary
+  action_summary?: ActionSummary | null;
 }
 
 export interface OptimizerHistoryItem {
@@ -1888,6 +1904,14 @@ export type ExecutionDecisionType =
   | "PARTIAL_EXECUTION"
   | "MANUAL_OVERRIDE";
 
+export type OverrideCategoryType =
+  | "REJECT_SWAP"
+  | "REPLACE_SYMBOL"
+  | "INCREASE_CONVICTION"
+  | "REDUCE_CONVICTION"
+  | "HOLD_POSITION"
+  | "CUSTOM";
+
 export type ShadowPortfolioType = "STATIC_FROZEN" | "ACTIVE_MODEL";
 
 export interface ExecutionDecision {
@@ -1897,6 +1921,10 @@ export interface ExecutionDecision {
   optimizer_history_id: number | null;
   decision: ExecutionDecisionType;
   override_notes: string | null;
+  override_type: OverrideCategoryType | null;
+  original_symbol: string | null;
+  replacement_symbol: string | null;
+  reason_category: string | null;
   executed_at: string;
   created_at: string | null;
 }
@@ -1923,6 +1951,10 @@ export interface RecordDecisionPayload {
   rejected_symbols?: string[];
   override_notes?: string;
   create_static_shadow?: boolean;
+  override_type?: OverrideCategoryType;
+  original_symbol?: string;
+  replacement_symbol?: string;
+  reason_category?: string;
 }
 
 export interface RecordDecisionResult {
@@ -2376,6 +2408,10 @@ export interface DecisionMemoryEntry {
   decision: ExecutionDecisionType;
   portfolio_id: number;
   override_notes: string | null;
+  override_type: OverrideCategoryType | null;
+  original_symbol: string | null;
+  replacement_symbol: string | null;
+  reason_category: string | null;
   executed_at: string;
   recommendation_snapshot: {
     id: number;
@@ -2500,6 +2536,47 @@ export const getAIvsHumanTimeline = (
 export const getCalibrationHistory = (portfolioId: number, limit = 20) =>
   apiFetch<CalibrationHistoryEntry[]>(
     `/analytics/calibration-history?portfolio_id=${portfolioId}&limit=${limit}`,
+  );
+
+// ─── Phase 4C.6E + UX.2D — Human vs AI Timing Attribution ───────────────────
+
+export interface HumanVsAITimingAttribution {
+  recommendation_snapshot_id: number;
+  symbol: string;
+  ai_action: string;
+  human_action: string;
+  override: boolean;
+  override_type: OverrideCategoryType | null;
+  human_return_pct: number | null;
+  ai_return_pct: number | null;
+  delta_return_pct: number | null;
+  human_drawdown_pct: number | null;
+  ai_drawdown_pct: number | null;
+  saved_drawdown_pct: number | null;
+  outcome: string;
+}
+
+export interface HumanVsAITimingSummary {
+  overrides: number;
+  good_overrides: number;
+  bad_overrides: number;
+  neutral_overrides: number;
+  override_win_rate: number;
+  total_added_return_pct: number;
+  total_saved_drawdown_pct: number;
+  override_type_counts: Record<string, number>;
+  override_type_win_rates: Record<string, number>;
+}
+
+export interface HumanVsAITimingResult {
+  portfolio_id: number;
+  summary: HumanVsAITimingSummary;
+  details: HumanVsAITimingAttribution[];
+}
+
+export const getHumanVsAITiming = (portfolioId: number) =>
+  apiFetch<HumanVsAITimingResult>(
+    `/analytics/human-vs-ai-timing?portfolio_id=${portfolioId}`,
   );
 
 /** Record a decision via the per-snapshot convenience endpoint */
@@ -2745,6 +2822,8 @@ export interface ScoreBreakdown {
 export interface PositionSuggestion {
   symbol: string;
   position_score: number;
+  adjusted_score: number;
+  timing_multiplier: number;
   suggested_pct: number;
   signal: string;
   confidence: number;
@@ -2760,8 +2839,128 @@ export interface PositionSizingResult {
   error?: string;
 }
 
-export const suggestPositionSizes = (portfolioId: number, symbols: string[]) =>
+export const suggestPositionSizes = (
+  portfolioId: number,
+  symbols: string[],
+  timingScores?: Record<string, number>,
+) =>
   apiFetch<PositionSizingResult>(`/portfolios/${portfolioId}/position-sizing`, {
+    method: "POST",
+    body: JSON.stringify({ symbols, timing_scores: timingScores }),
+  });
+
+// ── Phase UX.2E — Execution Plan Generator ────────────────────────────────────
+
+export interface FundingAction {
+  action: "SELL" | "REDUCE";
+  symbol: string;
+  current_shares: number;
+  current_value: number;
+  release_pct: number;
+  estimated_cash_release: number;
+}
+
+export interface BuyAction {
+  symbol: string;
+  signal: string;
+  allocation_pct: number;
+  estimated_amount: number;
+  timing_score: number | null;
+}
+
+export interface ExecutionCashSummary {
+  total_value: number;
+  cash_before: number;
+  cash_released: number;
+  total_deployable: number;
+  total_deployed: number;
+  cash_remaining: number;
+}
+
+// ── Phase UX.2L — Funding Source Awareness ────────────────────────────────────
+
+export interface FundingSourceItem {
+  action: "SELL" | "REDUCE";
+  symbol: string;
+  current_value: number;
+  release_pct: number;
+  estimated_release: number;
+}
+
+export interface FundingCashSource {
+  amount: number;
+  label: string;
+}
+
+export interface FundingBreakdown {
+  sell_sources: FundingSourceItem[];
+  reduce_sources: FundingSourceItem[];
+  cash_source: FundingCashSource;
+  total_released: number;
+  total_funding: number;
+  total_deployment: number;
+  surplus_cash: number;
+  status: "FUNDED" | "INSUFFICIENT" | "CASH_ONLY";
+}
+
+export interface ExecutionPlanResult {
+  funding_actions: FundingAction[];
+  buy_actions: BuyAction[];
+  cash_summary: ExecutionCashSummary;
+  status: "READY" | "INSUFFICIENT" | "NO_SELLS_NEEDED";
+  warnings: string[];
+  funding_breakdown?: FundingBreakdown;
+  error?: string;
+}
+
+export const buildExecutionPlan = (
+  portfolioId: number,
+  buySymbols: string[],
+  sizingSuggestions: PositionSuggestion[],
+  timingScores?: Record<string, number>,
+) =>
+  apiFetch<ExecutionPlanResult>(`/portfolios/${portfolioId}/execution-plan`, {
+    method: "POST",
+    body: JSON.stringify({
+      buy_symbols: buySymbols,
+      sizing_suggestions: sizingSuggestions,
+      timing_scores: timingScores,
+    }),
+  });
+
+// ── Phase 4C.6G — Timing Gate ─────────────────────────────────────────────────
+
+export interface TimingGateResult {
+  symbol: string;
+  timing_score: number;
+  execution_priority: string;
+  status: "ELIGIBLE" | "WATCHLIST" | "EXCLUDED";
+  reason: string;
+}
+
+// ── Phase 4C.6F — Timing Intelligence Layer ───────────────────────────────────
+
+export interface StockTimingResult {
+  symbol: string;
+  timing_score: number;
+  timing_category: "STRONG" | "GOOD" | "NEUTRAL" | "WEAK" | "POOR";
+  trend_score: number;
+  momentum_score: number;
+  relative_strength_score: number;
+  volume_score: number;
+  momentum:
+    | "STRONG_UPTREND"
+    | "UPTREND"
+    | "SIDEWAYS"
+    | "DOWNTREND"
+    | "STRONG_DOWNTREND";
+  execution_priority: "HIGH" | "MEDIUM" | "LOW" | "DEFER";
+  reasons: string[];
+  data_available: boolean;
+}
+
+export const scoreTimingIntelligence = (symbols: string[]) =>
+  apiFetch<StockTimingResult[]>("/timing-intelligence", {
     method: "POST",
     body: JSON.stringify({ symbols }),
   });

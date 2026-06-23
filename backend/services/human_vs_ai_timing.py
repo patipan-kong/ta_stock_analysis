@@ -40,6 +40,7 @@ class OverrideAttribution(BaseModel):
     ai_action: str
     human_action: str
     override: bool
+    override_type: Optional[str]          # structured category from UX.2D
     human_return_pct: Optional[float]
     ai_return_pct: Optional[float]
     delta_return_pct: Optional[float]
@@ -57,6 +58,8 @@ class HumanVsAISummary(BaseModel):
     override_win_rate: float
     total_added_return_pct: float
     total_saved_drawdown_pct: float
+    override_type_counts: dict[str, int] = {}
+    override_type_win_rates: dict[str, float] = {}
 
 
 _OVERRIDE_DECISIONS = {"REJECTED", "MANUAL_OVERRIDE", "PARTIAL_EXECUTION"}
@@ -169,6 +172,7 @@ def build_human_vs_ai_timing(
             rs_id=d.recommendation_snapshot_id,
             portfolio_snaps=port_window,
             shadow_snaps=shadow_window,
+            override_type=getattr(d, "override_type", None),
         ))
 
     return results, build_override_summary(results)
@@ -183,12 +187,14 @@ def evaluate_override(
     rs_id: int,
     portfolio_snaps: list,
     shadow_snaps: list,
+    override_type: str | None = None,
 ) -> OverrideAttribution:
     """Compute attribution for a single decision.
 
     Args:
         portfolio_snaps: PortfolioSnapshot ORM rows or plain dicts in period window
         shadow_snaps:    ShadowPortfolioSnapshot rows or plain dicts (may be empty)
+        override_type:   structured override category from UX.2D (optional)
     """
     is_override = decision_type.upper() in _OVERRIDE_DECISIONS
 
@@ -211,6 +217,7 @@ def evaluate_override(
         ai_action=ai_action,
         human_action=decision_type,
         override=is_override,
+        override_type=override_type,
         human_return_pct=human_return,
         ai_return_pct=ai_return,
         delta_return_pct=delta,
@@ -239,6 +246,20 @@ def build_override_summary(attributions: list[OverrideAttribution]) -> HumanVsAI
         a.saved_drawdown_pct for a in override_rows if a.saved_drawdown_pct is not None
     )
 
+    # Per override-type breakdown (UX.2D)
+    type_total: dict[str, int] = {}
+    type_good: dict[str, int] = {}
+    for a in override_rows:
+        ot = a.override_type or "CUSTOM"
+        type_total[ot] = type_total.get(ot, 0) + 1
+        if a.outcome == "GOOD_OVERRIDE":
+            type_good[ot] = type_good.get(ot, 0) + 1
+
+    override_type_win_rates = {
+        ot: round(type_good.get(ot, 0) / cnt * 100, 1)
+        for ot, cnt in type_total.items()
+    }
+
     return HumanVsAISummary(
         overrides=total,
         good_overrides=good,
@@ -247,6 +268,8 @@ def build_override_summary(attributions: list[OverrideAttribution]) -> HumanVsAI
         override_win_rate=win_rate,
         total_added_return_pct=round(added_return, 4),
         total_saved_drawdown_pct=round(saved_drawdown, 4),
+        override_type_counts=type_total,
+        override_type_win_rates=override_type_win_rates,
     )
 
 

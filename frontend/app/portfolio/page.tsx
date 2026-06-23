@@ -553,6 +553,13 @@ export default function PortfolioPage() {
             onReanalyze={handleReanalyze}
             onToggleSwap={handleToggleSwap}
             pricesLoading={pricesLoading}
+            onBuy={(item) =>
+              setModal({
+                mode: "buy",
+                symbol: item.symbol,
+                currentPrice: item.current_price,
+              })
+            }
             onSell={(item) =>
               setModal({
                 mode: "sell",

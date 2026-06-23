@@ -789,10 +789,15 @@ def compute_portfolio_factor_exposure(db, portfolio_id: int, workspace_id: int) 
         }
 
     # ── Get current prices to compute weights ─────────────────────────────────
+    # DR symbols (e.g. MICRON01.BK) must be priced in THB using the original
+    # .BK symbol.  normalize_dr_symbol() maps them to the US ticker (e.g. "MU")
+    # which yfinance prices in USD — mixing USD and THB in total_mv corrupts
+    # all weight calculations.  Reserve yf_sym for fundamental/momentum data only.
     market_values: dict[str, float] = {}
     for item in items:
         yf_sym = normalize_dr_symbol(item.symbol)
-        price_data = fetch_price_info(yf_sym)
+        price_sym = item.symbol if is_dr_symbol(item.symbol) else yf_sym
+        price_data = fetch_price_info(price_sym)
         price = price_data.get("current_price") or 0.0
         # NaN is truthy and fails <= comparisons — treat as missing price
         if not math.isfinite(price) or price <= 0:

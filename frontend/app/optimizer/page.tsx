@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type ReactNode } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import BackBreadcrumb from "@/components/BackBreadcrumb";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import {
@@ -17,13 +17,15 @@ import MarketRegimeCard from "@/components/MarketRegimeCard";
 import ActivePolicyEnvelopeCard from "@/components/ActivePolicyEnvelopeCard";
 import AttributionPanel from "@/components/AttributionPanel";
 import OperationsTimeline from "@/components/operations-center/quant/OperationsTimeline";
+import OptimizerActionSummary from "@/components/optimizer/OptimizerActionSummary";
+import PersonaMatchCard from "@/components/PersonaMatchCard";
 import type {
-  OptimizerResult, OptimizerHistoryItem, TargetAllocation, AllocationAction,
+  OptimizerResult, OptimizerHistoryItem, TargetAllocation, AllocationAction, ActionSummary,
   WatchlistRanking, Layer2Result, Layer3Result, OptimizerConsensus, RiskFlag, SectorWarning,
   BlockedOpportunity, NoActionReason, SwapSuggestion, ConsensusType,
-  StrategyPersona, StrategyProfile, PortfolioDNA, DriftSeverity, MarketRegime,
-  ActivePolicy, ExecutionDecision, ExecutionDecisionType, DecisionMemoryEntry,
-  ShadowPerformanceSummary, ExecutionRisk, OperationsCenterStatus,
+  StrategyPersona, StrategyProfile, PortfolioDNA, MarketRegime,
+  ActivePolicy, ExecutionDecision, ExecutionDecisionType, OverrideCategoryType,
+  DecisionMemoryEntry, ShadowPerformanceSummary, ExecutionRisk, OperationsCenterStatus,
   StabilizationMeta, OptimizerStatus,
 } from "@/lib/api";
 import { marketDataFreshnessTh, optimizerLastAnalysisBadgeTh } from "@/components/operations-center/freshness";
@@ -63,12 +65,6 @@ const PERSONA_CFG: Record<StrategyPersona, { icon: string; color: string; badge:
   PASSIVE:   { icon: "🌿", color: "text-teal-700",   badge: "bg-teal-50 border-teal-300 text-teal-800" },
 };
 
-const DRIFT_CFG: Record<DriftSeverity, { bar: string; text: string; bg: string }> = {
-  LOW:      { bar: "bg-green-500",  text: "text-green-700",  bg: "bg-green-50 border-green-200" },
-  MEDIUM:   { bar: "bg-blue-500",   text: "text-blue-700",   bg: "bg-blue-50 border-blue-200" },
-  HIGH:     { bar: "bg-amber-500",  text: "text-amber-700",  bg: "bg-amber-50 border-amber-200" },
-  CRITICAL: { bar: "bg-red-500",    text: "text-red-700",    bg: "bg-red-50 border-red-200" },
-};
 
 const FACTOR_COLORS: Record<string, string> = {
   growth:   "bg-green-500",
@@ -150,16 +146,22 @@ function PortfolioDNACard({
           const target = profile ? (profile.factor_weights[factor] ?? 0) * 100 : 20;
           const barColor = FACTOR_COLORS[factor] ?? "bg-gray-400";
           const delta = current - target;
-          const deltaText = delta >= 0.5 ? `+${delta.toFixed(0)}` : delta <= -0.5 ? `${delta.toFixed(0)}` : "~";
-          const deltaColor = delta > 10 ? "text-green-600" : delta < -10 ? "text-red-500" : "text-gray-400";
+          const deviationText =
+            delta >= 0.5  ? `+${delta.toFixed(0)} vs target`
+            : delta <= -0.5 ? `${delta.toFixed(0)} vs target`
+            : "on target";
+          const deviationColor =
+            delta > 10  ? "text-green-600"
+            : delta < -10 ? "text-red-500"
+            : "text-gray-400";
           return (
             <div key={factor} className="space-y-1">
               <div className="flex items-center justify-between text-xs">
                 <span className="capitalize font-medium text-gray-600 w-20">{factor}</span>
-                <div className="flex items-center gap-2 text-xs">
+                <div className="flex items-center gap-3 text-xs">
                   <span className="text-gray-400">target {target.toFixed(0)}</span>
-                  <span className={`font-semibold ${deltaColor}`}>{deltaText}</span>
-                  <span className="font-semibold text-gray-700 w-8 text-right">{current.toFixed(0)}</span>
+                  <span className={`font-semibold tabular-nums ${deviationColor}`}>{deviationText}</span>
+                  <span className="font-bold text-gray-800 w-8 text-right tabular-nums">{current.toFixed(0)}</span>
                 </div>
               </div>
               <div className="relative h-2 bg-gray-100 rounded-full overflow-visible">
@@ -178,110 +180,13 @@ function PortfolioDNACard({
           );
         })}
       </div>
-      <p className="text-xs text-gray-400">Gray marker = persona target. Bar = current portfolio.</p>
+      <p className="text-xs text-gray-400">
+        Gray marker = {profile?.label ?? "persona"} target · Bar = current portfolio · Same source as DNA Analysis page
+      </p>
     </section>
   );
 }
 
-// ─── Style Drift Card ─────────────────────────────────────────────────────────
-
-function StyleDriftCard({
-  result,
-  profiles,
-}: {
-  result: OptimizerResult;
-  profiles: StrategyProfile[];
-}) {
-  const severity = (result.style_drift_severity ?? "LOW") as DriftSeverity;
-  const driftScore = result.style_drift_score ?? 0;
-  const alignScore = result.factor_alignment_score ?? 100;
-  const urgency = result.rebalance_urgency ?? "LOW";
-  const persona = result.target_persona as StrategyPersona | undefined;
-  const profile = profiles.find((p) => p.id === persona);
-  const cfg = DRIFT_CFG[severity] ?? DRIFT_CFG.LOW;
-  const personaCfg = persona ? (PERSONA_CFG[persona] ?? PERSONA_CFG.BALANCED) : null;
-
-  const urgencyColor: Record<string, string> = {
-    LOW:      "text-green-600",
-    MODERATE: "text-blue-600",
-    HIGH:     "text-amber-600",
-    CRITICAL: "text-red-600",
-  };
-
-  const dominant = result.factor_drift
-    ? Object.entries(result.factor_drift).sort(([, a], [, b]) => Math.abs(b) - Math.abs(a)).slice(0, 2)
-    : [];
-
-  return (
-    <section className={`border rounded-xl p-5 shadow-sm space-y-4 ${cfg.bg}`}>
-      <div className="flex items-center gap-3 flex-wrap">
-        {personaCfg && <span className={`text-lg ${personaCfg.color}`}>{personaCfg.icon}</span>}
-        <div>
-          <h3 className="font-semibold text-gray-800">Style Alignment</h3>
-          <p className="text-xs text-gray-500 mt-0.5">
-            {profile?.label ?? persona ?? "Balanced"} target vs current portfolio DNA
-          </p>
-        </div>
-        <span className={`ml-auto text-xs font-bold px-2.5 py-1 rounded-full border ${cfg.bg} ${cfg.text}`}>
-          {severity} DRIFT
-        </span>
-      </div>
-
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
-        <div className="bg-white/70 rounded-lg p-3">
-          <p className="text-xs text-gray-400 mb-0.5">Drift Score</p>
-          <p className={`text-sm font-bold ${cfg.text}`}>{driftScore.toFixed(0)}<span className="text-xs font-normal text-gray-400"> / 100</span></p>
-        </div>
-        <div className="bg-white/70 rounded-lg p-3">
-          <p className="text-xs text-gray-400 mb-0.5">Alignment</p>
-          <p className="text-sm font-bold text-gray-700">{alignScore.toFixed(0)}<span className="text-xs font-normal text-gray-400"> / 100</span></p>
-        </div>
-        <div className="bg-white/70 rounded-lg p-3">
-          <p className="text-xs text-gray-400 mb-0.5">Urgency</p>
-          <p className={`text-sm font-bold ${urgencyColor[urgency] ?? ""}`}>{urgency}</p>
-        </div>
-        <div className="bg-white/70 rounded-lg p-3">
-          <p className="text-xs text-gray-400 mb-0.5">Severity</p>
-          <p className={`text-sm font-bold ${cfg.text}`}>{severity}</p>
-        </div>
-      </div>
-
-      {/* Drift gauge */}
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-gray-500">Alignment Score</span>
-          <span className={`font-semibold ${cfg.text}`}>{alignScore.toFixed(0)} / 100</span>
-        </div>
-        <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-          <div className={`h-full rounded-full ${cfg.bar}`} style={{ width: `${alignScore}%` }} />
-        </div>
-      </div>
-
-      {/* Top misaligned factors */}
-      {dominant.length > 0 && (
-        <div className="space-y-1">
-          <p className="text-xs font-medium text-gray-500">Factor gaps (current vs target)</p>
-          {dominant.map(([factor, delta]) => {
-            const isOver = delta > 0;
-            const barColor = FACTOR_COLORS[factor] ?? "bg-gray-400";
-            const absDelta = Math.abs(delta) * 100;
-            return (
-              <div key={factor} className="flex items-center gap-2 text-xs">
-                <span className="capitalize text-gray-600 w-20">{factor}</span>
-                <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                  <div className={`h-full ${barColor} opacity-60`} style={{ width: `${Math.min(100, absDelta * 3)}%` }} />
-                </div>
-                <span className={`font-semibold w-14 text-right ${isOver ? "text-green-600" : "text-red-500"}`}>
-                  {isOver ? "+" : ""}{(delta * 100).toFixed(1)}pp
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </section>
-  );
-}
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
@@ -418,12 +323,34 @@ function AllocationTable({
     return <p className="text-sm text-gray-500">No allocation changes proposed.</p>;
   }
 
-  const significant = allocations.filter(
+  const ACTION_PRIORITY: Record<string, number> = { BUY: 0, ACCUMULATE: 1, WATCH: 2, HOLD: 3, REDUCE: 4, SELL: 5 };
+
+  const significant = [...allocations.filter(
     (a) => a.action !== "HOLD" || Math.abs(a.allocation_change_percent) >= 2 || a.noise_suppressed
-  );
+  )].sort((a, b) => (ACTION_PRIORITY[a.action] ?? 3) - (ACTION_PRIORITY[b.action] ?? 3));
+
   const hold = allocations.filter(
     (a) => a.action === "HOLD" && Math.abs(a.allocation_change_percent) < 2 && !a.noise_suppressed
   );
+
+  // Build rows with optional "Opportunities" / "Risk Reduction" group headers
+  const hasOpportunities = significant.some((a) => a.action === "BUY" || a.action === "ACCUMULATE");
+  const hasReductions    = significant.some((a) => a.action === "REDUCE" || a.action === "SELL");
+  const showGroups = hasOpportunities && hasReductions;
+
+  type TableRow = { kind: "header"; label: string } | { kind: "row"; item: TargetAllocation };
+  const tableRows: TableRow[] = [];
+  let lastGroup: string | null = null;
+  for (const a of significant) {
+    const group = (a.action === "BUY" || a.action === "ACCUMULATE") ? "opportunity"
+      : (a.action === "REDUCE" || a.action === "SELL") ? "reduction"
+      : "other";
+    if (showGroups && group !== lastGroup && (group === "opportunity" || group === "reduction")) {
+      tableRows.push({ kind: "header", label: group === "opportunity" ? "Opportunities" : "Risk Reduction" });
+      lastGroup = group;
+    }
+    tableRows.push({ kind: "row", item: a });
+  }
 
   return (
     <div className="space-y-3">
@@ -442,7 +369,17 @@ function AllocationTable({
             </tr>
           </thead>
           <tbody>
-            {significant.map((a) => {
+            {tableRows.map((row, i) => {
+              if (row.kind === "header") {
+                return (
+                  <tr key={`grp-${i}`}>
+                    <td colSpan={totalValue && totalValue > 0 ? 7 : 6} className="pt-3 pb-0.5">
+                      <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{row.label}</span>
+                    </td>
+                  </tr>
+                );
+              }
+              const a = row.item;
               const chg = a.allocation_change_percent;
               const chgCls = chg > 0 ? "text-green-600 font-semibold" : chg < 0 ? "text-red-500 font-semibold" : "text-gray-400";
               const amt = a.estimated_amount || (totalValue ? Math.round(totalValue * Math.abs(chg) / 100) : 0);
@@ -772,10 +709,10 @@ const STABILIZATION_STATUS_CFG: Record<OptimizerStatus, {
   label: string; icon: string;
   section: string; badge: string; text: string;
 }> = {
-  REBALANCE:              { label: "Rebalance Required",    icon: "⚡", section: "bg-orange-50 border-orange-200",  badge: "bg-orange-100 border-orange-300 text-orange-800", text: "text-orange-800" },
-  REBALANCE_REQUIRED:     { label: "Rebalance Required",    icon: "⚡", section: "bg-orange-50 border-orange-200",  badge: "bg-orange-100 border-orange-300 text-orange-800", text: "text-orange-800" },
+  REBALANCE:              { label: "Portfolio Drift",        icon: "⚡", section: "bg-orange-50 border-orange-200",  badge: "bg-orange-100 border-orange-300 text-orange-800", text: "text-orange-800" },
+  REBALANCE_REQUIRED:     { label: "Portfolio Drift",        icon: "⚡", section: "bg-orange-50 border-orange-200",  badge: "bg-orange-100 border-orange-300 text-orange-800", text: "text-orange-800" },
   NO_ACTION:              { label: "No Action Needed",       icon: "✓",  section: "bg-green-50 border-green-200",    badge: "bg-green-100 border-green-300 text-green-800",   text: "text-green-800" },
-  NO_REBALANCE_REQUIRED:  { label: "No Rebalance Required", icon: "✓",  section: "bg-green-50 border-green-200",    badge: "bg-green-100 border-green-300 text-green-800",   text: "text-green-800" },
+  NO_REBALANCE_REQUIRED:  { label: "Portfolio Drift",        icon: "✓",  section: "bg-green-50 border-green-200",    badge: "bg-green-100 border-green-300 text-green-800",   text: "text-green-800" },
   OPTIMAL:                { label: "Portfolio Optimal",      icon: "✓",  section: "bg-teal-50 border-teal-200",      badge: "bg-teal-100 border-teal-300 text-teal-800",      text: "text-teal-800" },
   COOLDOWN_ACTIVE:        { label: "Cooldown Active",        icon: "⏸",  section: "bg-blue-50 border-blue-200",     badge: "bg-blue-100 border-blue-300 text-blue-800",      text: "text-blue-800" },
 };
@@ -829,6 +766,7 @@ function StabilizationCard({
             <h3 className={`font-bold text-base ${cfg.text}`}>{cfg.label}</h3>
             <StabilizationStatusBadge status={status} />
           </div>
+          <p className="text-xs text-gray-400 mt-0.5">Based on current optimizer targets</p>
           {meta.reason && (
             <p className={`text-sm mt-1 leading-relaxed ${cfg.text} opacity-80`}>{meta.reason}</p>
           )}
@@ -935,7 +873,7 @@ function StabilizationCard({
       {meta.drift_analysis.length > 0 && (
         <details className="bg-white/70 rounded-lg px-4 py-3">
           <summary className="text-xs font-semibold text-gray-500 cursor-pointer">
-            Drift Analysis — {meta.positions_within_tolerance} within tolerance, {meta.positions_needing_action} need action
+            Drift Analysis — {meta.positions_within_tolerance} positions within tolerance, {meta.positions_needing_action} positions exceed drift threshold
           </summary>
           <div className="mt-2 overflow-x-auto">
             <table className="min-w-full text-xs">
@@ -973,6 +911,7 @@ function StabilizationCard({
 
 function Layer1Section({
   layer,
+  totalValue,
 }: {
   layer: OptimizerResult["layer1_result"];
   totalValue?: number;
@@ -982,6 +921,7 @@ function Layer1Section({
   const topBuys: string[] = (layer as Record<string, unknown>).top_buys as string[] ?? [];
   const sectorFlags: string[] = (layer as Record<string, unknown>).sector_flags as string[] ?? [];
   const priority: string = (layer as Record<string, unknown>).priority as string ?? "";
+  const allocations: TargetAllocation[] = layer.target_allocations ?? [];
 
   return (
     <section className="bg-white border rounded-xl p-5 shadow-sm space-y-4">
@@ -989,7 +929,7 @@ function Layer1Section({
         <div>
           <h3 className="font-semibold text-gray-800">🟠 {layer.name ?? "Strategist"}</h3>
           <p className="text-xs text-orange-600 mt-0.5">
-            Swap Proposals{priority ? ` — priority: ${priority}` : ""}
+            Recommendations{priority ? ` — priority: ${priority}` : ""}
           </p>
         </div>
         <AIBadge provider={layer.provider} model={layer.model} label="" />
@@ -1005,7 +945,22 @@ function Layer1Section({
             </div>
           )}
 
-          <SwapTable swaps={swaps} />
+          {allocations.length > 0 ? (
+            <AllocationTable allocations={allocations} totalValue={totalValue} />
+          ) : (
+            <SwapTable swaps={swaps} />
+          )}
+
+          {allocations.length > 0 && swaps.length > 0 && (
+            <details>
+              <summary className="text-xs font-medium text-gray-400 cursor-pointer hover:text-gray-600 select-none">
+                Swap proposals ({swaps.length})
+              </summary>
+              <div className="mt-2">
+                <SwapTable swaps={swaps} />
+              </div>
+            </details>
+          )}
 
           {topBuys.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
@@ -1041,12 +996,6 @@ function Layer2Section({
 }) {
   if (!layer) return null;
   const agrees = layer.agrees_with_layer1;
-  const [activeTab, setActiveTab] = useState<"disagreements" | "alternatives">(
-    agrees ? "alternatives" : "disagreements"
-  );
-  useEffect(() => {
-    setActiveTab(agrees ? "alternatives" : "disagreements");
-  }, [agrees]);
   const disagreements = layer.disagreements ?? [];
   const allocations = layer.target_allocations ?? [];
 
@@ -1083,55 +1032,12 @@ function Layer2Section({
         <p className="text-xs text-red-500">{layer.error}</p>
       ) : (
         <>
-          <div className="flex items-center gap-2 border-b border-amber-200 pb-2">
-            <button
-              type="button"
-              onClick={() => setActiveTab("disagreements")}
-              className={`px-3 py-1 rounded-full text-xs font-semibold transition-colors ${
-                activeTab === "disagreements"
-                  ? "bg-amber-200 text-amber-900"
-                  : "bg-white/70 text-amber-700 hover:bg-amber-100"
-              }`}
-            >
-              Disagreements ({disagreements.length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab("alternatives")}
-              className={`px-3 py-1 rounded-full text-xs font-semibold transition-colors ${
-                activeTab === "alternatives"
-                  ? "bg-blue-200 text-blue-900"
-                  : "bg-white/70 text-blue-700 hover:bg-blue-100"
-              }`}
-            >
-              Allocation Plan ({allocations.length})
-            </button>
-          </div>
-
-          {activeTab === "disagreements" && (
-            <div>
-              {disagreements.length === 0 ? (
-                <div className="bg-white/70 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
-                  No disagreement notes from Challenger.
-                </div>
-              ) : (
-                <ul className="text-xs text-amber-700 space-y-1 list-disc list-inside">
-                  {disagreements.map((d, i) => <li key={i}>{d}</li>)}
-                </ul>
-              )}
+          {allocations.length === 0 ? (
+            <div className="bg-white/70 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+              {agrees ? "Challenger confirms the Strategist plan." : "No alternative allocations provided."}
             </div>
-          )}
-
-          {activeTab === "alternatives" && (
-            <div>
-              {allocations.length === 0 ? (
-                <div className="bg-white/70 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
-                  {agrees ? "Challenger confirms the Strategist plan." : "No alternative allocations provided."}
-                </div>
-              ) : (
-                <AllocationTable allocations={allocations} totalValue={totalValue} />
-              )}
-            </div>
+          ) : (
+            <AllocationTable allocations={allocations} totalValue={totalValue} />
           )}
 
           {agrees && layer.summary && (
@@ -1398,18 +1304,17 @@ function ConsensusSection({ consensus }: { consensus: OptimizerConsensus }) {
         </div>
       )}
 
-      {/* Disagreement reasons */}
+      {/* Committee Resolution — what the committee decided, not repeating the Challenger's reasons */}
       {consensus.disagreement_reasons && consensus.disagreement_reasons.length > 0 && (
-        <div className="space-y-1.5">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Challenger disagreements</p>
-          <ul className="space-y-1">
-            {consensus.disagreement_reasons.map((d, i) => (
-              <li key={i} className="flex items-start gap-1.5 text-xs text-gray-700">
-                <span className="mt-0.5 shrink-0 text-gray-400">•</span>
-                <span>{d}</span>
-              </li>
-            ))}
-          </ul>
+        <div className="space-y-1">
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Committee Resolution</p>
+          <p className="text-xs text-gray-600">
+            Resolved {consensus.disagreement_reasons.length} disagreement{consensus.disagreement_reasons.length !== 1 ? "s" : ""}
+            {consensus.recommended === "layer1" ? " — following Strategist"
+             : consensus.recommended === "layer2" ? " — following Challenger"
+             : consensus.recommended === "no_action" ? " — no action required"
+             : ""}
+          </p>
         </div>
       )}
 
@@ -1536,6 +1441,9 @@ function DecisionActionPanel({
   const [existing, setExisting] = useState<ExecutionDecision | null | undefined>(undefined);
   const [confirming, setConfirming] = useState<ExecutionDecisionType | null>(null);
   const [notes, setNotes] = useState("");
+  const [overrideType, setOverrideType] = useState<OverrideCategoryType | "">("");
+  const [originalSymbol, setOriginalSymbol] = useState("");
+  const [replacementSymbol, setReplacementSymbol] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [shadowPerf, setShadowPerf] = useState<ShadowPerformanceSummary | null>(null);
@@ -1571,6 +1479,9 @@ function DecisionActionPanel({
         decision: confirming,
         override_notes: notes.trim() || undefined,
         create_static_shadow: confirming !== "APPROVED",
+        override_type: (confirming === "MANUAL_OVERRIDE" && overrideType) ? overrideType : undefined,
+        original_symbol: (confirming === "MANUAL_OVERRIDE" && originalSymbol.trim()) ? originalSymbol.trim() : undefined,
+        replacement_symbol: (confirming === "MANUAL_OVERRIDE" && replacementSymbol.trim()) ? replacementSymbol.trim() : undefined,
       });
       const ds = await listExecutionDecisions(portfolioId, undefined, 50);
       const match = ds.find((d) => d.recommendation_snapshot_id === snapshotId);
@@ -1580,6 +1491,9 @@ function DecisionActionPanel({
       }));
       setConfirming(null);
       setNotes("");
+      setOverrideType("");
+      setOriginalSymbol("");
+      setReplacementSymbol("");
     } catch {
       setError("Failed to record decision. Please try again.");
     } finally {
@@ -1601,6 +1515,17 @@ function DecisionActionPanel({
           <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${badgeCls}`}>
             {cfg.icon} {cfg.label}
           </span>
+          {existing.override_type && (
+            <span className="text-xs px-2 py-0.5 rounded-full border border-gray-200 bg-gray-50 text-gray-600 font-medium">
+              {existing.override_type.replace(/_/g, " ")}
+            </span>
+          )}
+          {existing.original_symbol && (
+            <span className="text-xs text-gray-500 font-mono">
+              {existing.original_symbol}
+              {existing.replacement_symbol && ` → ${existing.replacement_symbol}`}
+            </span>
+          )}
           {existing.override_notes && (
             <span className="text-xs text-gray-500 italic">"{existing.override_notes}"</span>
           )}
@@ -1676,11 +1601,71 @@ function DecisionActionPanel({
             )}
           </p>
 
+          {confirming === "MANUAL_OVERRIDE" && (
+            <div className="space-y-3 border border-gray-200 rounded-lg p-3 bg-gray-50">
+              {/* Override Type */}
+              <div>
+                <p className="text-xs font-semibold text-gray-600 mb-1.5">Override Type</p>
+                <div className="flex flex-wrap gap-2">
+                  {([
+                    { value: "REJECT_SWAP",        label: "Reject Swap" },
+                    { value: "REPLACE_SYMBOL",     label: "Replace Symbol" },
+                    { value: "INCREASE_CONVICTION",label: "Increase Conviction" },
+                    { value: "REDUCE_CONVICTION",  label: "Reduce Conviction" },
+                    { value: "HOLD_POSITION",      label: "Hold Position" },
+                    { value: "CUSTOM",             label: "Custom" },
+                  ] as { value: OverrideCategoryType; label: string }[]).map(({ value, label }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setOverrideType(v => v === value ? "" : value)}
+                      className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                        overrideType === value
+                          ? "bg-gray-800 text-white border-gray-800"
+                          : "border-gray-300 text-gray-600 hover:bg-gray-100"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Symbol fields */}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide block mb-1">
+                    Symbol Affected
+                  </label>
+                  <input
+                    type="text"
+                    value={originalSymbol}
+                    onChange={(e) => setOriginalSymbol(e.target.value.toUpperCase())}
+                    placeholder="e.g. KBANK"
+                    className="w-full border border-gray-200 rounded-md px-2.5 py-1.5 text-xs font-mono bg-white focus:outline-none focus:ring-1 focus:ring-gray-400"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide block mb-1">
+                    Replacement Symbol
+                  </label>
+                  <input
+                    type="text"
+                    value={replacementSymbol}
+                    onChange={(e) => setReplacementSymbol(e.target.value.toUpperCase())}
+                    placeholder="e.g. TOA (optional)"
+                    className="w-full border border-gray-200 rounded-md px-2.5 py-1.5 text-xs font-mono bg-white focus:outline-none focus:ring-1 focus:ring-gray-400"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
           {(confirming === "MANUAL_OVERRIDE" || confirming === "APPROVED" || confirming === "PARTIAL_EXECUTION") && (
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Notes (optional) — e.g. partial fill, adjusted sizing…"
+              placeholder={confirming === "MANUAL_OVERRIDE" ? "Reason (required) — e.g. Higher conviction in TOA vs GUNKUL" : "Notes (optional) — e.g. partial fill, adjusted sizing…"}
               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-blue-400"
               rows={2}
             />
@@ -1703,7 +1688,7 @@ function DecisionActionPanel({
               {submitting ? "Saving…" : "Confirm"}
             </button>
             <button
-              onClick={() => { setConfirming(null); setNotes(""); setError(null); }}
+              onClick={() => { setConfirming(null); setNotes(""); setOverrideType(""); setOriginalSymbol(""); setReplacementSymbol(""); setError(null); }}
               className="px-4 py-2 text-sm border rounded-lg text-gray-600 hover:bg-gray-50 transition-colors"
             >
               Cancel
@@ -1754,7 +1739,7 @@ function DecisionMemoryTimeline({ portfolioId }: { portfolioId: number }) {
       <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide px-4 py-3 border-b">
         Decision History
       </p>
-      <ul className="divide-y divide-gray-50">
+      <ul className="divide-y divide-gray-50 h-80 overflow-y-auto">
         {entries.map((e) => {
           const badgeCls = DECISION_BADGE[e.decision] ?? DECISION_BADGE.MANUAL_OVERRIDE;
           const cfg = DECISION_CFG[e.decision] ?? DECISION_CFG.MANUAL_OVERRIDE;
@@ -1786,8 +1771,23 @@ function DecisionMemoryTimeline({ portfolioId }: { portfolioId: number }) {
                       </span>
                     )}
                   </div>
-                  {e.override_notes && (
-                    <p className="text-xs text-gray-500 italic mt-0.5">"{e.override_notes}"</p>
+                  {(e.override_type || e.original_symbol || e.override_notes) && (
+                    <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                      {e.override_type && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded border border-gray-200 bg-gray-50 text-gray-500 font-medium">
+                          {e.override_type.replace(/_/g, " ")}
+                        </span>
+                      )}
+                      {e.original_symbol && (
+                        <span className="text-[10px] text-gray-400 font-mono">
+                          {e.original_symbol}
+                          {e.replacement_symbol && ` → ${e.replacement_symbol}`}
+                        </span>
+                      )}
+                      {e.override_notes && (
+                        <span className="text-xs text-gray-500 italic">"{e.override_notes}"</span>
+                      )}
+                    </div>
                   )}
                 </div>
                 <span className="text-xs text-gray-400 whitespace-nowrap">
@@ -1825,15 +1825,248 @@ function DecisionMemoryTimeline({ portfolioId }: { portfolioId: number }) {
   );
 }
 
+// ─── Optimizer → Decision Workspace handoff ───────────────────────────────────
+
+const POSITIVE_ACTIONS: AllocationAction[] = ["BUY", "ACCUMULATE"];
+
+function extractAccumulationSymbols(result: OptimizerResult): string[] {
+  const allocations = result.target_allocations ?? [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const a of allocations) {
+    if (POSITIVE_ACTIONS.includes(a.action) && !seen.has(a.symbol)) {
+      seen.add(a.symbol);
+      out.push(a.symbol);
+    }
+  }
+  return out;
+}
+
+function SendToWorkspaceButton({
+  result,
+  onSend,
+}: {
+  result: OptimizerResult;
+  onSend: (symbols: string[]) => void;
+}) {
+  const symbols = extractAccumulationSymbols(result);
+  const hasSymbols = symbols.length > 0;
+
+  return (
+    <section className="bg-blue-50 border border-blue-200 rounded-xl p-4 shadow-sm space-y-3">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <p className="text-sm font-semibold text-blue-900">Analyze in Decision Workspace</p>
+          <p className="text-xs text-blue-600 mt-0.5">
+            {hasSymbols
+              ? `${symbols.length} accumulation candidate${symbols.length !== 1 ? "s" : ""} (BUY / ACCUMULATE) ready for committee review`
+              : "No accumulation candidates — only reductions suggested"}
+          </p>
+        </div>
+        <button
+          onClick={() => onSend(symbols)}
+          disabled={!hasSymbols}
+          className="shrink-0 flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold
+                     text-white transition hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Analyze Selected Ideas →
+        </button>
+      </div>
+      {hasSymbols && (
+        <div className="flex flex-wrap gap-1.5">
+          {symbols.map((sym) => (
+            <span
+              key={sym}
+              className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded bg-blue-100 border border-blue-200 text-blue-800"
+            >
+              {sym.replace(".BK", "")}
+              {sym.endsWith(".BK") && <span className="text-blue-400">.BK</span>}
+            </span>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ─── Collapsible Section (UX.3A.5) ───────────────────────────────────────────
+
+function CollapsibleSection({
+  title,
+  summary,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  summary?: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div>
+      <button
+        type="button"
+        className="w-full flex items-center justify-between bg-white border rounded-xl px-5 py-4 text-left shadow-sm hover:bg-gray-50 transition-colors"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <div className="min-w-0">
+          <h3 className="font-semibold text-gray-800 text-sm">{title}</h3>
+          {summary && <p className="text-xs text-gray-500 mt-0.5 truncate">{summary}</p>}
+        </div>
+        <span className="text-gray-400 text-xs ml-4 shrink-0">{open ? "▲ Hide" : "▼ Show Details"}</span>
+      </button>
+      {open && <div className="mt-2">{children}</div>}
+    </div>
+  );
+}
+
+// ─── Committee Decision Card (UX.3A.4) ────────────────────────────────────────
+
+function CommitteeDecisionCard({
+  consensus,
+  allocations,
+}: {
+  consensus: OptimizerConsensus;
+  allocations?: TargetAllocation[];
+}) {
+  const ct = consensus.consensus_type;
+  const cfg = ct ? (CONSENSUS_TYPE_CFG[ct] ?? CONSENSUS_TYPE_CFG.WEAK_CONSENSUS) : null;
+  const isDeadlock = ct === "STRATEGIC_CONFLICT" || ct === "RISK_CONFLICT";
+  const isNoAction =
+    consensus.consensus_decision === "NO_ACTION" ||
+    consensus.recommended === "no_action" ||
+    ct === "NO_ACTION_CONSENSUS" ||
+    ct === "NO_REBALANCE_CONSENSUS";
+
+  const followLabel =
+    consensus.recommended === "no_action" ? "No action needed"
+    : consensus.recommended === "layer1"  ? "Strategist"
+    : consensus.recommended === "layer2"  ? "Challenger"
+    : consensus.recommended === "fallback"? "Fallback plan"
+    : "Human review required";
+
+  const sectionCls = isDeadlock
+    ? "bg-red-50 border-red-300"
+    : isNoAction
+    ? "bg-teal-50 border-teal-300"
+    : cfg
+    ? cfg.section
+    : "bg-blue-50 border-blue-300";
+
+  const keyActions = (allocations ?? [])
+    .filter((a) => a.action !== "HOLD" && a.action !== "WATCH")
+    .sort((a, b) => {
+      const pri: Record<string, number> = { BUY: 0, ACCUMULATE: 1, REDUCE: 2, SELL: 3 };
+      return (pri[a.action] ?? 9) - (pri[b.action] ?? 9);
+    })
+    .slice(0, 6);
+
+  return (
+    <section className={`border-2 rounded-xl p-5 shadow-sm space-y-4 ${sectionCls}`}>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">
+            Committee Decision
+          </p>
+          {isDeadlock ? (
+            <>
+              <h3 className="font-bold text-lg text-red-800">Human Review Required</h3>
+              <p className="text-sm text-red-600 mt-0.5">No clear consensus between layers.</p>
+            </>
+          ) : (
+            <h3 className="font-bold text-lg text-gray-900">
+              Following: <span className={cfg?.badgeText ?? "text-gray-800"}>{followLabel}</span>
+            </h3>
+          )}
+        </div>
+        {cfg && (
+          <span className={`text-xs font-bold px-2.5 py-1 rounded-full border ${cfg.badge}`}>
+            {cfg.icon} {cfg.label}
+          </span>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-4">
+        <div>
+          <p className="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">Confidence</p>
+          <p className={`text-sm font-bold ${CONF_COLOR[consensus.confidence] ?? "text-gray-700"}`}>
+            {consensus.confidence.toUpperCase()}
+          </p>
+        </div>
+        {consensus.consensus_strength_score != null && (
+          <div>
+            <p className="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">Score</p>
+            <p className={`text-sm font-bold ${cfg?.badgeText ?? "text-gray-700"}`}>
+              {consensus.consensus_strength_score}<span className="text-xs font-normal text-gray-400">/100</span>
+            </p>
+          </div>
+        )}
+        <div>
+          <p className="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">Risk</p>
+          <p className={`text-sm font-bold ${RISK_COLOR[consensus.final_risk_level ?? "medium"] ?? "text-gray-700"}`}>
+            {(consensus.final_risk_level ?? "medium").toUpperCase()}
+          </p>
+        </div>
+        {(consensus.risk_flag_count ?? 0) > 0 && (
+          <div>
+            <p className="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">Flags</p>
+            <p className="text-sm font-bold text-amber-600">{consensus.risk_flag_count}</p>
+          </div>
+        )}
+      </div>
+
+      {keyActions.length > 0 && (
+        <div>
+          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide mb-2">Actions</p>
+          <div className="flex flex-wrap gap-2">
+            {keyActions.map((a) => (
+              <div key={a.symbol} className="flex items-center gap-1.5">
+                <ActionBadge action={a.action as AllocationAction} />
+                <Link
+                  href={`/stock/${encodeURIComponent(a.symbol)}`}
+                  className="text-sm font-medium text-gray-700 hover:text-blue-600 hover:underline"
+                >
+                  {a.symbol.replace(".BK", "")}
+                </Link>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {(consensus.refinement_summary || consensus.recommended_action) && (
+        <div className={`rounded-lg px-4 py-3 border ${cfg?.summary ?? "bg-white/60 border-white/80"}`}>
+          <p className={`text-sm leading-relaxed ${cfg?.summaryText ?? "text-gray-700"}`}>
+            {consensus.refinement_summary ?? consensus.recommended_action}
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ─── Sector summary helper ────────────────────────────────────────────────────
+
+function sectorImpactSummary(warnings: SectorWarning[]): string {
+  const changed = warnings.filter((w) => w.current_pct !== w.projected_pct);
+  if (changed.length === 0) return "No significant sector changes";
+  return changed.slice(0, 3).map((w) => {
+    const delta = w.projected_pct - w.current_pct;
+    return `${w.sector} ${delta >= 0 ? "+" : ""}${delta.toFixed(0)}%`;
+  }).join(" · ");
+}
+
 // ─── Result Panel ─────────────────────────────────────────────────────────────
 
-function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance, forceRunning }: {
+function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance, forceRunning, onSendToWorkspace }: {
   result: OptimizerResult | null;
   loading: boolean;
   onForceRebalance?: () => void;
   forceRunning?: boolean;
   profiles: StrategyProfile[];
   portfolioId: number | null;
+  onSendToWorkspace: (symbols: string[]) => void;
 }) {
   if (loading) {
     return (
@@ -1875,23 +2108,10 @@ function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance,
         )}
       </div>
 
-      {/* Portfolio metrics */}
+      {/* 1. Portfolio Details */}
       {(result.total_value !== undefined) && <PortfolioMetricsBar result={result} />}
 
-      {/* Market Regime Indicator */}
-      {result.market_regime && (
-        <MarketRegimeCard regime={result.market_regime as MarketRegime} />
-      )}
-
-      {/* Active Policy Envelope (3B.4 + 3B.5 constraint comparison) */}
-      {result.active_policy && (
-        <ActivePolicyEnvelopeCard
-          policy={result.active_policy as ActivePolicy}
-          effectiveEnvelope={result.effective_envelope}
-        />
-      )}
-
-      {/* Strategy Persona — DNA + Drift cards */}
+      {/* 2. Portfolio DNA + Persona Match */}
       {result.current_portfolio_dna && result.target_persona && profiles.length > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <PortfolioDNACard
@@ -1899,20 +2119,15 @@ function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance,
             targetPersona={result.target_persona}
             profiles={profiles}
           />
-          <StyleDriftCard result={result} profiles={profiles} />
+          <PersonaMatchCard result={result} profiles={profiles} />
         </div>
       )}
 
-      {/* Stabilization layer status — shown prominently for all non-REBALANCE outcomes */}
-      {result.stabilization && (
-        <StabilizationCard
-          meta={result.stabilization}
-          onForceRebalance={onForceRebalance ?? (() => {})}
-          forceRunning={forceRunning ?? false}
-        />
+      {/* 3. Action Summary */}
+      {result.action_summary && (
+        <OptimizerActionSummary summary={result.action_summary as ActionSummary} />
       )}
 
-      {/* Legacy NO_ACTION card — shown only for AI-originated NO_ACTION when no stabilization meta */}
       {!result.stabilization && result.status === "NO_ACTION" && <NoActionCard result={result} />}
 
       {/* Single-model header (shown when no layer data) */}
@@ -1932,46 +2147,44 @@ function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance,
         </section>
       )}
 
-      {/* 3-layer sections */}
+      {/* 5. Strategist */}
       {result.layer1_result && <Layer1Section layer={result.layer1_result} totalValue={totalValue} />}
+
+      {/* 6. Challenger */}
       {result.layer2_result && <Layer2Section layer={result.layer2_result} totalValue={totalValue} />}
+
+      {/* 7. Risk Auditor */}
       {result.layer3_result && <Layer3Section layer={result.layer3_result} />}
-      {result.consensus && <ConsensusSection consensus={result.consensus} />}
-      {result.sector_warnings && result.sector_warnings.length > 0 && (
-        <SectorImpactSection warnings={result.sector_warnings} />
+
+      {/* 8. Committee Decision (simplified) + full detail collapsible */}
+      {result.consensus && (
+        <div className="space-y-3">
+          <CommitteeDecisionCard
+            consensus={result.consensus}
+            allocations={result.target_allocations}
+          />
+          <CollapsibleSection
+            title="Full Consensus Detail"
+            summary="Alignment scores, strength matrix, and committee resolution"
+          >
+            <ConsensusSection consensus={result.consensus} />
+          </CollapsibleSection>
+        </div>
       )}
 
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold">Watchlist Ranking</h3>
-          {totalValue > 0 && <span className="text-xs text-gray-500">Total: ฿{totalValue.toLocaleString("th-TH")}</span>}
-        </div>
-        <div className="bg-white border rounded-xl overflow-x-auto overflow-y-auto max-h-[200px] shadow-sm">
-          <table className="min-w-full text-sm">
-            <thead className="sticky top-0 bg-white z-10">
-              <tr className="border-b text-left text-xs text-gray-500">
-                <th className="py-2 pl-4 pr-3">#</th>
-                <th className="py-2 pr-3">Symbol</th>
-                <th className="py-2 pr-3">Signal</th>
-                <th className="py-2 pr-3">Score</th>
-                <th className="py-2 pr-3 hidden sm:table-cell">Sector</th>
-                <th className="py-2 pr-3">Alloc%</th>
-                {totalValue > 0 && <th className="py-2 pr-3">THB</th>}
-                <th className="py-2 pr-3">Upside</th>
-                <th className="py-2 pr-3">Risk</th>
-                <th className="py-2 hidden lg:table-cell">Reasoning</th>
-              </tr>
-            </thead>
-            <tbody>
-              {result.watchlist_ranking.map((item) => (
-                <RankingRow key={item.symbol} item={item} totalValue={totalValue} riskMap={riskMap} />
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      {/* 9. Portfolio Drift — consequence of committee recommendation */}
+      {result.stabilization && (
+        <StabilizationCard
+          meta={result.stabilization}
+          onForceRebalance={onForceRebalance ?? (() => {})}
+          forceRunning={forceRunning ?? false}
+        />
+      )}
 
-      {/* Decision Action — record Approve / Reject / Override */}
+      {/* 10. Handoff to Decision Workspace */}
+      <SendToWorkspaceButton result={result} onSend={onSendToWorkspace} />
+
+      {/* 11. Execution Actions */}
       {result.recommendation_snapshot_id && portfolioId && (
         <DecisionActionPanel
           snapshotId={result.recommendation_snapshot_id}
@@ -1979,76 +2192,102 @@ function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance,
         />
       )}
 
-      {/* Attribution Analytics — Phase 3B.7B */}
-      {portfolioId && <AttributionPanel portfolioId={portfolioId} evaluationWindowDays={30} />}
+      {/* 12. Supporting Analytics — collapsed by default (UX.3A.5) */}
+      <div className="space-y-3">
+        <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest pt-2">
+          Supporting Analytics
+        </p>
 
-      {/* Decision Memory Timeline */}
-      {portfolioId && <DecisionMemoryTimeline portfolioId={portfolioId} />}
+        {/* Market Regime — collapsed by default (UX.3A.3) */}
+        {result.market_regime && (
+          <CollapsibleSection
+            title="Market Regime"
+            summary={((result.market_regime as MarketRegime).regime ?? "").replace(/_/g, " ")}
+          >
+            <MarketRegimeCard regime={result.market_regime as MarketRegime} />
+          </CollapsibleSection>
+        )}
+
+        {/* Active Policy Envelope */}
+        {result.active_policy && (
+          <CollapsibleSection
+            title="Active Policy Envelope"
+            summary="Sector limits and position constraints"
+          >
+            <ActivePolicyEnvelopeCard
+              policy={result.active_policy as ActivePolicy}
+              effectiveEnvelope={result.effective_envelope}
+            />
+          </CollapsibleSection>
+        )}
+
+        {/* Sector Impact */}
+        {result.sector_warnings && result.sector_warnings.length > 0 && (
+          <CollapsibleSection
+            title="Sector Impact"
+            summary={sectorImpactSummary(result.sector_warnings)}
+          >
+            <SectorImpactSection warnings={result.sector_warnings} />
+          </CollapsibleSection>
+        )}
+
+        {/* Watchlist Ranking */}
+        <CollapsibleSection
+          title="Watchlist Ranking"
+          summary={`${result.watchlist_ranking.length} candidates ranked`}
+        >
+          <div className="bg-white border rounded-xl overflow-x-auto overflow-y-auto max-h-[200px] shadow-sm">
+            <table className="min-w-full text-sm">
+              <thead className="sticky top-0 bg-white z-10">
+                <tr className="border-b text-left text-xs text-gray-500">
+                  <th className="py-2 pl-4 pr-3">#</th>
+                  <th className="py-2 pr-3">Symbol</th>
+                  <th className="py-2 pr-3">Signal</th>
+                  <th className="py-2 pr-3">Score</th>
+                  <th className="py-2 pr-3 hidden sm:table-cell">Sector</th>
+                  <th className="py-2 pr-3">Alloc%</th>
+                  {totalValue > 0 && <th className="py-2 pr-3">THB</th>}
+                  <th className="py-2 pr-3">Upside</th>
+                  <th className="py-2 pr-3">Risk</th>
+                  <th className="py-2 hidden lg:table-cell">Reasoning</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.watchlist_ranking.map((item) => (
+                  <RankingRow key={item.symbol} item={item} totalValue={totalValue} riskMap={riskMap} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CollapsibleSection>
+
+        {/* Attribution Analytics */}
+        {portfolioId && (
+          <CollapsibleSection
+            title="Attribution Analytics"
+            summary="Shadow benchmark, Human vs AI, Performance by regime"
+          >
+            <AttributionPanel portfolioId={portfolioId} evaluationWindowDays={30} />
+          </CollapsibleSection>
+        )}
+
+        {/* Decision History */}
+        {portfolioId && (
+          <CollapsibleSection
+            title="Decision History"
+            summary="Past execution decisions and shadow portfolio returns"
+          >
+            <DecisionMemoryTimeline portfolioId={portfolioId} />
+          </CollapsibleSection>
+        )}
+      </div>
     </div>
   );
 }
 
-// ─── History List ─────────────────────────────────────────────────────────────
+// ─── Analysis History (consolidated) ─────────────────────────────────────────
 
-function HistoryList({
-  items, selectedId, loading, onSelect,
-}: {
-  items: OptimizerHistoryItem[];
-  selectedId: number | null;
-  loading: boolean;
-  onSelect: (item: OptimizerHistoryItem) => void;
-}) {
-  return (
-    <div className="bg-white border rounded-xl p-3 shadow-sm h-fit">
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide px-1 mb-2">Run History</p>
-      {loading ? (
-        <p className="text-xs text-gray-400 px-1 py-2">Loading…</p>
-      ) : items.length === 0 ? (
-        <p className="text-xs text-gray-400 px-1 py-2">No history yet.</p>
-      ) : (
-        <ul className="space-y-1">
-          {items.map((item) => {
-            const isNoAction = item.optimizer_status === "NO_ACTION";
-            const score = getHistoryFinalConsensusScore(item, null);
-            const { fill } = score != null ? scoreZone(score) : { fill: "bg-gray-300" };
-            const activeCls = selectedId === item.id
-              ? isNoAction ? "bg-green-50 border border-green-200" : "bg-blue-50 border border-blue-200"
-              : "hover:bg-gray-50";
-            return (
-              <li key={item.id}>
-                <button onClick={() => onSelect(item)} className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors ${activeCls}`}>
-                  <div className="flex items-center gap-1.5">
-                    <p className={`text-xs font-medium truncate flex-1 ${selectedId === item.id ? (isNoAction ? "text-green-800" : "text-blue-700") : "text-gray-700"}`}>
-                      {formatDate(item.analyzed_at)}
-                    </p>
-                    <span className={`shrink-0 text-xs font-bold px-1.5 py-0.5 rounded-full ${isNoAction ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600"}`}>
-                      {isNoAction ? "✓" : "⚡"}
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-400 mt-0.5">
-                    {isNoAction
-                      ? (item.no_action_reason ? NO_ACTION_REASON_LABELS[item.no_action_reason] : "No action needed")
-                      : `${item.swap_count} action${item.swap_count !== 1 ? "s" : ""} suggested`}
-                  </p>
-                  {score != null && (
-                    <div className="mt-1.5 flex items-center gap-1.5">
-                      <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
-                        <div className={`h-1 rounded-full ${fill}`} style={{ width: `${score}%` }} />
-                      </div>
-                      <span className="text-xs text-gray-400 shrink-0 w-5 text-right">{score}</span>
-                    </div>
-                  )}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-function RecentAnalysisList({
+function AnalysisHistory({
   items,
   details,
   loading,
@@ -2061,55 +2300,98 @@ function RecentAnalysisList({
   selectedId: number | null;
   onSelect: (item: OptimizerHistoryItem) => void;
 }) {
-  const recent = items.slice(0, 5);
-
   return (
     <section className="bg-white border rounded-xl p-4 shadow-sm">
       <div className="flex items-center justify-between gap-2 mb-3">
-        <h2 className="text-sm font-semibold text-gray-800">Recent Analysis</h2>
-        <span className="text-xs text-gray-400">ล่าสุด 5 ครั้ง</span>
+        <h2 className="text-sm font-semibold text-gray-800">Analysis History</h2>
+        {items.length > 0 && (
+          <span className="text-xs text-gray-400">{items.length} run{items.length !== 1 ? "s" : ""}</span>
+        )}
       </div>
 
       {loading ? (
-        <p className="text-xs text-gray-400">กำลังโหลดประวัติการวิเคราะห์…</p>
-      ) : recent.length === 0 ? (
-        <p className="text-xs text-gray-400">ยังไม่มีประวัติการวิเคราะห์</p>
+        <p className="text-xs text-gray-400 py-2">Loading…</p>
+      ) : items.length === 0 ? (
+        <p className="text-xs text-gray-400 py-2">No analysis history yet. Run the optimizer to begin.</p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-xs">
-            <thead>
-              <tr className="border-b text-left text-gray-400">
-                <th className="py-2 pr-3">Date</th>
-                <th className="py-2 pr-3 text-right">Consensus Score</th>
-                <th className="py-2 pr-3">Decision</th>
-                <th className="py-2 pr-3">Regime</th>
-                <th className="py-2 text-right">Open</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recent.map((item) => {
-                const detail = details[item.id] ?? null;
-                const score = getHistoryFinalConsensusScore(item, detail);
-                const isActive = selectedId === item.id;
-                return (
-                  <tr key={item.id} className={isActive ? "bg-blue-50" : "border-b last:border-b-0"}>
-                    <td className="py-2 pr-3 text-gray-700">{formatDate(item.analyzed_at)}</td>
-                    <td className="py-2 pr-3 text-right font-semibold text-gray-700">{score != null ? score : "-"}</td>
-                    <td className="py-2 pr-3 text-gray-600">{formatDecisionLabel(item, detail)}</td>
-                    <td className="py-2 pr-3 text-gray-600">{formatRegimeLabel(detail)}</td>
-                    <td className="py-2 text-right">
-                      <button
-                        onClick={() => onSelect(item)}
-                        className="text-blue-600 hover:text-blue-700 font-medium"
-                      >
-                        เปิด
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        <div className="overflow-y-auto" style={{ maxHeight: "320px" }}>
+          <div className="flex flex-col gap-2 pr-1">
+            {items.map((item) => {
+              const detail = details[item.id] ?? null;
+              const isActive = selectedId === item.id;
+              const isNoAction = item.optimizer_status === "NO_ACTION";
+              const score = getHistoryFinalConsensusScore(item, detail);
+              const { fill } = score != null ? scoreZone(score) : { fill: "bg-gray-300" };
+
+              const persona = detail?.target_persona ?? null;
+              const personaLabel = detail?.persona_label ?? persona ?? null;
+              const personaCfg = persona ? PERSONA_CFG[persona] : null;
+
+              const regime = detail?.market_regime?.regime?.replace(/_/g, " ") ?? null;
+              const holdingsCount = detail?.portfolio_count ?? null;
+
+              const keySymbols = (detail?.target_allocations ?? [])
+                .filter((a) => a.action !== "HOLD")
+                .slice(0, 3)
+                .map((a) => a.symbol.replace(".BK", ""));
+
+              const activeCls = isActive
+                ? isNoAction
+                  ? "bg-green-50 border-green-200"
+                  : "bg-blue-50 border-blue-200"
+                : "border-transparent hover:border-gray-200 hover:bg-gray-50";
+
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => onSelect(item)}
+                  className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors ${activeCls}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`text-xs font-medium ${isActive ? (isNoAction ? "text-green-800" : "text-blue-700") : "text-gray-700"}`}>
+                      {formatDate(item.analyzed_at)}
+                    </span>
+                    <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${isNoAction ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-600"}`}>
+                      {isNoAction ? "✓" : "⚡"}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                    {personaCfg && personaLabel && (
+                      <span className={`text-xs ${personaCfg.color}`}>
+                        {personaCfg.icon} {personaLabel}
+                      </span>
+                    )}
+                    {regime && (
+                      <span className="text-xs text-gray-400 capitalize">{regime}</span>
+                    )}
+                    {holdingsCount != null && (
+                      <span className="text-xs text-gray-400">{holdingsCount} holdings</span>
+                    )}
+                  </div>
+
+                  {keySymbols.length > 0 && (
+                    <div className="flex gap-1 flex-wrap mt-1">
+                      {keySymbols.map((sym) => (
+                        <span key={sym} className="text-[10px] font-medium px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">
+                          {sym}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {score != null && (
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                      <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
+                        <div className={`h-1 rounded-full ${fill}`} style={{ width: `${score}%` }} />
+                      </div>
+                      <span className="text-[10px] text-gray-400 tabular-nums w-5 text-right">{score}</span>
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
     </section>
@@ -2120,6 +2402,7 @@ function RecentAnalysisList({
 
 export default function OptimizerPage() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const { portfolios, activeId } = usePortfolio();
   const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | null>(null);
   const [result, setResult] = useState<OptimizerResult | null>(null);
@@ -2273,6 +2556,12 @@ export default function OptimizerPage() {
     }
   }
 
+  function handleSendToWorkspace(symbols: string[]) {
+    if (symbols.length === 0) return;
+    const deduplicated = [...new Set(symbols)];
+    router.push(`/operations-center?symbols=${deduplicated.join(",")}`);
+  }
+
   async function handleSelectHistory(item: OptimizerHistoryItem) {
     if (selectedHistoryId === item.id) return;
     setSelectedHistoryId(item.id);
@@ -2375,43 +2664,53 @@ export default function OptimizerPage() {
         </div>
       </div>
 
-      <RecentAnalysisList
-        items={history}
-        details={historyDetails}
-        loading={loadingHistory}
-        selectedId={selectedHistoryId}
-        onSelect={handleSelectHistory}
-      />
+      {/* Mobile: Analysis History stacked (UX.3A.2) */}
+      <div className="lg:hidden">
+        <AnalysisHistory
+          items={history}
+          details={historyDetails}
+          loading={loadingHistory}
+          selectedId={selectedHistoryId}
+          onSelect={handleSelectHistory}
+        />
+      </div>
 
-      {running && portfolioId != null && (
-        <div className="max-w-xl mx-auto py-6 space-y-3">
-          <OperationsTimeline portfolioId={portfolioId} active={running} />
-          <p className="text-xs text-gray-400 text-center">This may take 60–180 seconds</p>
-        </div>
-      )}
+      {/* Desktop: main content + Analysis History sidebar (UX.3A.2) */}
+      <div className="flex gap-6 items-start">
+        <div className="flex-1 min-w-0">
+          {running && portfolioId != null && (
+            <div className="max-w-xl mx-auto py-6 space-y-3">
+              <OperationsTimeline portfolioId={portfolioId} active={running} />
+              <p className="text-xs text-gray-400 text-center">This may take 60–180 seconds</p>
+            </div>
+          )}
 
-      {!running && (
-        <div className="flex flex-col lg:flex-row gap-6 items-start">
-          <div className="w-full lg:w-52 shrink-0">
-            <HistoryList
-              items={history}
-              selectedId={selectedHistoryId}
-              loading={loadingHistory}
-              onSelect={handleSelectHistory}
-            />
-          </div>
-          <div className={`flex-1 min-w-0 rounded-xl transition-colors ${isViewingDeepLinkedHistory ? "ring-1 ring-blue-200 bg-blue-50/30" : ""}`}>
-            <ResultPanel
-              result={result}
-              loading={loadingDetail}
-              profiles={profiles}
-              portfolioId={portfolioId}
-              onForceRebalance={() => handleRun(true)}
-              forceRunning={forceRunning}
-            />
-          </div>
+          {!running && (
+            <div className={`rounded-xl transition-colors ${isViewingDeepLinkedHistory ? "ring-1 ring-blue-200 bg-blue-50/30" : ""}`}>
+              <ResultPanel
+                result={result}
+                loading={loadingDetail}
+                profiles={profiles}
+                portfolioId={portfolioId}
+                onForceRebalance={() => handleRun(true)}
+                forceRunning={forceRunning}
+                onSendToWorkspace={handleSendToWorkspace}
+              />
+            </div>
+          )}
         </div>
-      )}
+
+        {/* Desktop sidebar: Analysis History (320px, sticky) */}
+        <div className="w-80 shrink-0 hidden lg:block sticky top-4 self-start">
+          <AnalysisHistory
+            items={history}
+            details={historyDetails}
+            loading={loadingHistory}
+            selectedId={selectedHistoryId}
+            onSelect={handleSelectHistory}
+          />
+        </div>
+      </div>
     </div>
   );
 }

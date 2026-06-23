@@ -1,18 +1,23 @@
 """Phase 4D.1 — Constraint-Aware Position Sizing.
+Phase 4C.6G.2 — Timing-adjusted weighting.
 
 Sizes a basket of ideas proportionally by signal quality, confidence,
 strategic fit, and portfolio priority — then scales down if any sector
-cap would be breached.
+cap would be breached.  Timing scores multiply the base position score
+so high-timing symbols receive proportionally more capital and low-timing
+symbols receive less.
 
 No AI calls.  No new tables.  No mutations.
 
 Public API
 ----------
-suggest_position_sizes(portfolio_id, symbols, workspace_id, db)
+suggest_position_sizes(portfolio_id, symbols, workspace_id, db,
+                       timing_scores=None)
     -> PositionSizingResult
 
 compute_position_sizes(portfolio_id, symbols, symbol_data, symbol_sectors,
-                       cash_pct, sector_weights, sector_limits, cash_min_pct)
+                       cash_pct, sector_weights, sector_limits, cash_min_pct,
+                       timing_scores=None)
     -> PositionSizingResult       (pure, testable without DB)
 
 Scoring
@@ -21,9 +26,18 @@ Scoring
     confidence_points   = confidence_float × 5
     fit_points          = strategic_fit_score / 2
     priority_points     = HIGH 3 / MEDIUM 2 / LOW 1
-    position_score      = sum of above
+    base_score          = sum of above
 
-Capital allocation: proportional to position_score, capped by deployable cash
+Timing multipliers (applied to base_score)
+------------------------------------------
+    score >= 90  → 1.50   (strong conditions, overweight)
+    score 80-89  → 1.30
+    score 60-79  → 1.00   (neutral — no change)
+    score 40-59  → 0.50   (watchlist — underweight)
+    score < 40   → 0.00   (excluded — no allocation)
+    no data      → 1.00
+
+Capital allocation: proportional to adjusted_score, capped by deployable cash
 (cash_pct − cash_min_pct).  If any sector cap would be exceeded the whole
 basket is scaled proportionally downward to fit within the tightest headroom.
 """
@@ -72,6 +86,8 @@ class ScoreBreakdown(BaseModel):
 class PositionSuggestion(BaseModel):
     symbol: str
     position_score: float
+    adjusted_score: float       # base_score × timing_multiplier
+    timing_multiplier: float    # 0.00 – 1.50
     suggested_pct: float
     signal: str
     confidence: float
@@ -97,6 +113,7 @@ def compute_position_sizes(
     sector_weights: dict[str, float],
     sector_limits: dict[str, float],
     cash_min_pct: float,
+    timing_scores: dict[str, int] | None = None,
 ) -> PositionSizingResult:
     """Size a basket proportionally by score, then scale to satisfy sector caps.
 
@@ -110,9 +127,11 @@ def compute_position_sizes(
         sector_weights: Current sector allocations as % of total portfolio
         sector_limits:  Max allowed % per sector (from resolved constraints)
         cash_min_pct:   Minimum required cash by policy
+        timing_scores:  Optional {symbol: timing_score} — applied as multiplier
     """
     unique_symbols = list(dict.fromkeys(symbols))
     deployable = round(max(0.0, cash_pct - cash_min_pct), 4)
+    _timing = timing_scores or {}
 
     if not unique_symbols:
         return PositionSizingResult(
@@ -125,7 +144,7 @@ def compute_position_sizes(
 
     if deployable <= 0:
         suggestions = [
-            _make_suggestion(sym, symbol_data.get(sym, {}), 0.0)
+            _make_suggestion(sym, symbol_data.get(sym, {}), 0.0, _timing.get(sym))
             for sym in unique_symbols
         ]
         return PositionSizingResult(
@@ -138,20 +157,21 @@ def compute_position_sizes(
             ],
         )
 
-    # ── Score each symbol ─────────────────────────────────────────────────────
-    scored: dict[str, tuple[float, ScoreBreakdown]] = {
-        sym: _score_symbol(symbol_data.get(sym, {})) for sym in unique_symbols
+    # ── Score each symbol (base × timing multiplier) ──────────────────────────
+    scored: dict[str, tuple[float, float, ScoreBreakdown]] = {
+        sym: _score_symbol_timed(symbol_data.get(sym, {}), _timing.get(sym))
+        for sym in unique_symbols
     }
-    total_score = sum(s[0] for s in scored.values())
+    total_adj = sum(s[1] for s in scored.values())
 
-    if total_score <= 0:
-        # Fallback to equal weighting when all signals are REDUCE/SELL
+    if total_adj <= 0:
+        # Fallback to equal weighting when all signals are REDUCE/SELL or timing=0
         per_sym = round(deployable / len(unique_symbols), 4)
         raw_allocs: dict[str, float] = {sym: per_sym for sym in unique_symbols}
     else:
         raw_allocs = {
-            sym: round(score / total_score * deployable, 4)
-            for sym, (score, _) in scored.items()
+            sym: round(adj / total_adj * deployable, 4)
+            for sym, (_, adj, _) in scored.items()
         }
 
     # ── Sector cap check → compute scale factor ───────────────────────────────
@@ -187,16 +207,16 @@ def compute_position_sizes(
     else:
         status = "PASS"
 
-    # ── Build suggestions sorted by score desc ────────────────────────────────
+    # ── Build suggestions sorted by adjusted score desc ──────────────────────
     suggestions = sorted(
-        [_make_suggestion(sym, symbol_data.get(sym, {}), final_allocs[sym]) for sym in unique_symbols],
-        key=lambda s: s.position_score,
+        [_make_suggestion(sym, symbol_data.get(sym, {}), final_allocs[sym], _timing.get(sym)) for sym in unique_symbols],
+        key=lambda s: s.adjusted_score,
         reverse=True,
     )
 
     reasoning = _build_reasoning(
         suggestions, deployable, total_allocated, scale_factor,
-        sector_allocs, sector_limits, sector_weights,
+        sector_allocs, sector_limits, sector_weights, bool(_timing),
     )
 
     return PositionSizingResult(
@@ -215,6 +235,7 @@ def suggest_position_sizes(
     symbols: list[str],
     workspace_id: int,
     db: Session,
+    timing_scores: dict[str, int] | None = None,
 ) -> PositionSizingResult:
     """Load portfolio + analysis cache, resolve constraints, size positions."""
     from models.database import AnalysisCache, Portfolio, PortfolioItem, Watchlist
@@ -370,10 +391,26 @@ def suggest_position_sizes(
         sector_weights=sector_weights,
         sector_limits=sector_limits_resolved,
         cash_min_pct=cash_min_pct,
+        timing_scores=timing_scores,
     )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _timing_multiplier(score: int | None) -> float:
+    """Translate a timing score into an allocation weight multiplier."""
+    if score is None:
+        return 1.0
+    if score >= 90:
+        return 1.50
+    if score >= 80:
+        return 1.30
+    if score >= 60:
+        return 1.00
+    if score >= 40:
+        return 0.50
+    return 0.00
+
 
 def _score_symbol(data: dict) -> tuple[float, ScoreBreakdown]:
     signal = str(data.get("signal") or "HOLD").upper()
@@ -395,15 +432,29 @@ def _score_symbol(data: dict) -> tuple[float, ScoreBreakdown]:
     )
 
 
+def _score_symbol_timed(
+    data: dict, timing_score: int | None
+) -> tuple[float, float, ScoreBreakdown]:
+    """Return (base_score, adjusted_score, breakdown)."""
+    base, breakdown = _score_symbol(data)
+    mult = _timing_multiplier(timing_score)
+    adjusted = round(base * mult, 4)
+    return base, adjusted, breakdown
+
+
 def _make_suggestion(
     sym: str,
     data: dict,
     suggested_pct: float,
+    timing_score: int | None = None,
 ) -> PositionSuggestion:
     score, breakdown = _score_symbol(data)
+    mult = _timing_multiplier(timing_score)
     return PositionSuggestion(
         symbol=sym,
         position_score=round(score, 2),
+        adjusted_score=round(score * mult, 2),
+        timing_multiplier=mult,
         suggested_pct=suggested_pct,
         signal=str(data.get("signal") or "HOLD").upper(),
         confidence=round(float(data.get("confidence") or 0.5), 3),
@@ -419,6 +470,7 @@ def _build_reasoning(
     sector_allocs: dict[str, float],
     sector_limits: dict[str, float],
     sector_weights: dict[str, float],
+    timing_applied: bool = False,
 ) -> list[str]:
     if not suggestions:
         return ["No symbols provided."]
@@ -435,6 +487,16 @@ def _build_reasoning(
         return ["No deployment possible — insufficient cash or binding sector constraints."]
 
     lines: list[str] = []
+
+    if timing_applied:
+        boosted = [s.symbol for s in suggestions if s.timing_multiplier > 1.0]
+        reduced = [s.symbol for s in suggestions if 0 < s.timing_multiplier < 1.0]
+        if boosted:
+            lines.append(f"Timing boost applied to {', '.join(boosted)} (score ≥ 80).")
+        if reduced:
+            lines.append(
+                f"Timing weight reduced for {', '.join(reduced)} (score 40–59)."
+            )
 
     if len(suggestions) > 1:
         top = suggestions[0]

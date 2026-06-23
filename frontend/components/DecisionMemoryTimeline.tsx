@@ -111,7 +111,7 @@ export default function DecisionMemoryTimeline({
         <h2 className="text-sm font-semibold text-gray-800">Decision Timeline</h2>
         <p className="text-xs text-gray-400 mt-0.5">Execution lifecycle with optimizer confidence and realized outcomes</p>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto max-h-80 overflow-y-auto">
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50 text-xs text-gray-500">
             <tr>

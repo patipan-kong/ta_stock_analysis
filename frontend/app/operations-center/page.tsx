@@ -1,10 +1,17 @@
 "use client";
 
+import { useSearchParams } from "next/navigation";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import OperationsCenter from "@/components/operations-center/OperationsCenter";
 
 export default function OperationsCenterPage() {
   const { activeId, loading } = usePortfolio();
+  const searchParams = useSearchParams();
+
+  const symbolsParam = searchParams.get("symbols");
+  const initialSymbols = symbolsParam
+    ? symbolsParam.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean)
+    : undefined;
 
   if (loading) {
     return (
@@ -26,7 +33,7 @@ export default function OperationsCenterPage() {
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-6">
-      <OperationsCenter portfolioId={activeId} />
+      <OperationsCenter portfolioId={activeId} initialSymbols={initialSymbols} />
     </div>
   );
 }

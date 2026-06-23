@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import random
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
@@ -32,7 +33,7 @@ from agents.news import analyze_news
 from agents.summary import analyze_summary, determine_signal
 from agents.optimizer import run_optimizer, run_layered_optimizer, _DEFAULT_LAYERS
 from services.optimizer.strategy_profiles import (
-    STRATEGY_PROFILES, valid_persona, compute_portfolio_dna,
+    STRATEGY_PROFILES, valid_persona,
     compute_style_drift, build_persona_context,
 )
 from agents.chart_data import fetch_chart_data
@@ -396,6 +397,25 @@ THAI_SECTOR_MAP: dict[str, str] = {
     "LH.BK": "Real Estate", "AP.BK": "Real Estate", "SPALI.BK": "Real Estate",
     "CPN.BK": "Real Estate", "SIRI.BK": "Real Estate", "SC.BK": "Real Estate",
     "ORI.BK": "Real Estate", "QH.BK": "Real Estate", "LALIN.BK": "Real Estate",
+    "WHA.BK": "Real Estate", "AMATA.BK": "Real Estate",
+    # Consumer
+    "ICHI.BK": "Consumer", "COM7.BK": "Consumer", "CBG.BK": "Consumer",
+    "CPF.BK": "Consumer", "M.BK": "Consumer", "CPAXT.BK": "Consumer",
+    "TU.BK": "Consumer", "PLANB.BK": "Consumer",
+    # Energy
+    "OR.BK": "Energy",
+    # Financial
+    "KTC.BK": "Financial", "BAM.BK": "Financial", "BLA.BK": "Financial",
+    "KGI.BK": "Financial", "ASP.BK": "Financial", "TLI.BK": "Financial",
+    # Healthcare
+    "MEGA.BK": "Healthcare",
+    # Industrial
+    "TOA.BK": "Industrial", "STECON.BK": "Industrial", "PREB.BK": "Industrial",
+    "SYNTEC.BK": "Industrial", "SCC.BK": "Industrial", "BEM.BK": "Industrial",
+    # Technology
+    "PIS.BK": "Technology", "CCET.BK": "Technology",
+    # Utilities
+    "GUNKUL.BK": "Utilities",
 }
 
 # Canonical sector keys must match frontend/lib/sectors.ts SECTOR_COLORS
@@ -403,6 +423,53 @@ _CANONICAL_SECTORS = frozenset({
     "Technology", "Financial", "Energy", "Healthcare",
     "Consumer", "Industrial", "Real Estate", "Utilities", "Other",
 })
+
+# ── DR Sector Master Map ──────────────────────────────────────────────────────
+# Authoritative sector for every DR prefix — used instead of yfinance so
+# Chinese-listed DRs (SMIC, CATL, BABA) and renamed underlying tickers (MICRON)
+# are never left as "Other". Key = letters-only DR prefix (e.g. "NVDA", "MICRON").
+_DR_SECTOR_MAP: dict[str, str] = {
+    # ── Technology ─────────────────────────────────────────────────────────
+    "AAPL":    "Technology",   # Apple
+    "NVDA":    "Technology",   # Nvidia
+    "MSFT":    "Technology",   # Microsoft
+    "GOOGL":   "Technology",   # Alphabet / Google
+    "META":    "Technology",   # Meta Platforms
+    "AMD":     "Technology",   # Advanced Micro Devices
+    "INTEL":   "Technology",   # Intel (DR prefix is full name, not INTC)
+    "MICRON":  "Technology",   # Micron Technology (yfinance ticker MU)
+    "ASML":    "Technology",   # ASML Holding (semiconductor equipment)
+    "ORCL":    "Technology",   # Oracle
+    "NFLX":    "Consumer",                 # Netflix (streaming / consumer discretionary)
+    "VRT":     "Technology",   # Vertiv (data centre hardware)
+    "SMIC":    "Technology",   # Semiconductor Manufacturing Intl Corp
+    "BABA":    "Technology",   # Alibaba Group
+    "TSM":     "Technology",   # Taiwan Semiconductor (TSMC)
+    "QCOM":    "Technology",   # Qualcomm
+    # ── Consumer ───────────────────────────────────────────────────────────
+    "AMZN":    "Consumer",     # Amazon (Consumer Discretionary)
+    "TSLA":    "Consumer",     # Tesla (Consumer Discretionary)
+    "ABNB":    "Consumer",     # Airbnb
+    # ── Financial ──────────────────────────────────────────────────────────
+    "AIA":     "Financial",    # AIA Group (insurance)
+    # ── Industrial ─────────────────────────────────────────────────────────
+    "CATL":    "Industrial",   # Contemporary Amperex Technology (batteries)
+}
+
+_DR_PREFIX_RE = re.compile(r"^([A-Z]+)(\d{2,})$")
+
+
+def _dr_prefix(symbol: str) -> str | None:
+    """Extract the letter prefix from a DR symbol.
+
+    NVDA01.BK → 'NVDA', MICRON01 → 'MICRON', NFLX80.BK → 'NFLX'
+    Requires at least 2 trailing digits so Thai single-digit tickers
+    (PR9.BK, COM7.BK) are never mistaken for DRs.
+    Returns None for non-DR symbols.
+    """
+    base = symbol.upper().replace(".BK", "")
+    m = _DR_PREFIX_RE.match(base)
+    return m.group(1) if m else None
 
 
 def normalize_sector(raw: str | None) -> str:
@@ -421,10 +488,10 @@ def normalize_sector(raw: str | None) -> str:
 
 
 def _get_sector(symbol: str, fa_cache: dict | None) -> str:
-    """Resolve sector with three-way branching:
-    1. DR stocks (e.g. AAPL01.BK) — FA cache has base-company data fetched via normalize_dr_symbol
-    2. Regular Thai stocks (.BK)   — THAI_SECTOR_MAP first, FA cache as fallback
-    3. US stocks                   — FA cache (yfinance sector field)
+    """Resolve sector with priority order:
+    1. DR stocks  — _DR_SECTOR_MAP (authoritative, no network), then FA cache fallback
+    2. Thai .BK   — THAI_SECTOR_MAP first, FA cache as fallback
+    3. US stocks  — FA cache (yfinance sector field)
     """
     def _from_cache() -> str | None:
         if fa_cache:
@@ -435,6 +502,12 @@ def _get_sector(symbol: str, fa_cache: dict | None) -> str:
 
     base = normalize_dr_symbol(symbol)
     if base != symbol:
+        # DR symbol — check master map first (reliable for Chinese DRs etc.)
+        prefix = _dr_prefix(symbol)
+        if prefix:
+            mapped = _DR_SECTOR_MAP.get(prefix)
+            if mapped:
+                return mapped
         return _from_cache() or "Other"
 
     if symbol.endswith(".BK"):
@@ -2027,6 +2100,27 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     scores_list = await asyncio.gather(*[_get_scores(sym) for sym in all_symbols])
     scores_map = {s["symbol"]: s for s in scores_list}
 
+    # ── Phase 4C.6H.2 — Timing enrichment ────────────────────────────────────
+    timing_ctx_map: dict = {}
+    try:
+        from services.optimizer_timing import enrich_scores_with_timing
+        timing_ctx_map = await asyncio.to_thread(enrich_scores_with_timing, all_symbols)
+        for sym, t in timing_ctx_map.items():
+            if sym in scores_map:
+                scores_map[sym].update({
+                    "timing_score":       t.timing_score,
+                    "timing_category":    t.timing_category,
+                    "execution_priority": t.execution_priority,
+                    "momentum":           t.momentum,
+                    "timing_reason":      t.timing_reason,
+                })
+        _log.info(
+            "analyze_optimizer: timing enriched %d/%d symbols",
+            len(timing_ctx_map), len(all_symbols),
+        )
+    except Exception as _tc_err:
+        _log.warning("analyze_optimizer: timing enrichment failed — continuing without: %s", _tc_err)
+
     # ── Phase 3B.10 — Execution quality context ───────────────────────────────
     execution_ctx: dict | None = None
     try:
@@ -2074,11 +2168,19 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     mark_stage(body.portfolio_id, "ANALYZING_CONTEXT")
 
     # ── Portfolio DNA + Strategy Persona context ──────────────────────────────
-    # compute_portfolio_dna needs market_value; _compute_portfolio_weights adds it
-    from agents.optimizer import _compute_portfolio_weights
-    pd_with_weights = _compute_portfolio_weights(portfolio_data)
+    # Use factor_engine as single source of truth (same engine as DNA page).
+    # It's cached for 15 min so this is free when the DNA page was visited first.
+    from services.analytics.factor_engine import compute_portfolio_factor_exposure
     persona = valid_persona(portfolio.strategy_persona or "BALANCED")
-    portfolio_dna = compute_portfolio_dna(pd_with_weights)
+    fe_result = await asyncio.to_thread(
+        compute_portfolio_factor_exposure, db, body.portfolio_id, ws
+    )
+    portfolio_dna = {
+        factor: (
+            fe_result.get("factor_exposures", {}).get(factor, {}).get("score") or 50.0
+        )
+        for factor in ("growth", "value", "momentum", "quality", "dividend")
+    }
     drift_data = compute_style_drift(portfolio_dna, persona)
     persona_ctx = build_persona_context(persona, portfolio_dna, drift_data)
 
@@ -2158,6 +2260,23 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     result.setdefault("max_reached", max_reached)
     if execution_ctx:
         result["execution_context"] = execution_ctx
+
+    # ── Phase 4C.6H.5 — Enrich target_allocations with timing data ───────────
+    if timing_ctx_map:
+        from services.optimizer_timing import apply_timing_confidence_adjustment, build_timing_note
+        for alloc in result.get("target_allocations", []):
+            sym = alloc.get("symbol", "")
+            tc = timing_ctx_map.get(sym)
+            if tc:
+                alloc["timing_score"] = tc.timing_score
+                alloc["execution_priority"] = tc.execution_priority
+                alloc["timing_note"] = build_timing_note(
+                    alloc.get("action", "HOLD"), tc.timing_score, tc.execution_priority
+                )
+                if alloc.get("confidence") is not None:
+                    alloc["confidence"] = apply_timing_confidence_adjustment(
+                        float(alloc["confidence"]), tc.timing_score
+                    )
 
     upside_map = {sym: d.get("upside_pct") for sym, d in scores_map.items()}
     for item in result.get("watchlist_ranking", []):
@@ -2392,6 +2511,13 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         apply_noise_filter(result)
     except Exception as _nf_exc:
         _log.warning("analyze_optimizer: noise filter failed — continuing: %s", _nf_exc)
+
+    # ── UX.2C — Action Summary (deterministic, no AI, no DB) ──────────────────
+    try:
+        from services.optimizer_action_summary import build_action_summary
+        result["action_summary"] = build_action_summary(result.get("target_allocations", []))
+    except Exception as _as_exc:
+        _log.warning("analyze_optimizer: action_summary failed — continuing: %s", _as_exc)
 
     finish_run(body.portfolio_id, ok=True)
     return result
@@ -2699,6 +2825,79 @@ async def backfill_sectors(db: Session = Depends(get_db)) -> dict:
         "watchlist_updated": wl_updated,
         "portfolio_updated": pi_updated,
         "failed": failed,
+    }
+
+
+@app.post("/admin/fix-dr-sectors")
+async def fix_dr_sectors(db: Session = Depends(get_db)) -> dict:
+    """Apply _DR_SECTOR_MAP to every DR holding in portfolio and watchlist.
+
+    Corrects:
+      - sector='Other'  (yfinance returned nothing / Chinese DR)
+      - non-canonical values ('Automobile', 'Communication Services', …)
+      - inconsistencies (same DR stored with different sectors in different portfolios)
+
+    Also applies THAI_SECTOR_MAP corrections for Thai stocks with non-canonical sectors.
+    Safe to run multiple times — idempotent.
+    """
+    ws = _ws_id(db)
+
+    all_pi = db.query(PortfolioItem).filter(PortfolioItem.workspace_id == ws).all()
+    all_wl = db.query(Watchlist).filter(Watchlist.workspace_id == ws).all()
+
+    changes: list[dict] = []
+    unmapped: list[dict] = []
+
+    def _correct_sector(symbol: str, current: str | None) -> str | None:
+        """Return the correct canonical sector, or None if no correction needed."""
+        prefix = _dr_prefix(symbol)
+        if prefix is not None:
+            # DR symbol — always use master map
+            correct = _DR_SECTOR_MAP.get(prefix)
+            if correct is None:
+                unmapped.append({"symbol": symbol, "prefix": prefix, "current": current})
+                return None
+            return correct if correct != current else None
+
+        # Thai SET stock — fix if THAI_SECTOR_MAP has an entry that differs
+        if symbol.endswith(".BK"):
+            correct = THAI_SECTOR_MAP.get(symbol)
+            if correct and correct != current:
+                return correct
+            # Normalise non-canonical values that slipped through
+            if current and current not in _CANONICAL_SECTORS:
+                normalized = normalize_sector(current)
+                if normalized != current:
+                    return normalized
+        return None
+
+    for item in all_pi:
+        table = "portfolio"
+        correction = _correct_sector(item.symbol, item.sector)
+        if correction is not None:
+            changes.append({
+                "table": table, "symbol": item.symbol,
+                "from": item.sector, "to": correction,
+            })
+            item.sector = correction
+
+    for item in all_wl:
+        table = "watchlist"
+        correction = _correct_sector(item.symbol, item.sector)
+        if correction is not None:
+            changes.append({
+                "table": table, "symbol": item.symbol,
+                "from": item.sector, "to": correction,
+            })
+            item.sector = correction
+
+    if changes:
+        db.commit()
+
+    return {
+        "total_changed": len(changes),
+        "changes":  changes,
+        "unmapped": unmapped,
     }
 
 
@@ -4545,6 +4744,11 @@ class ExecutionDecisionRequest(BaseModel):
     rejected_symbols: list[str] | None = None
     override_notes: str | None = None
     create_static_shadow: bool = False     # auto-create a STATIC_FROZEN shadow
+    # UX.2D structured override fields (all optional)
+    override_type: str | None = None       # REJECT_SWAP | REPLACE_SYMBOL | …
+    original_symbol: str | None = None    # symbol the AI recommended
+    replacement_symbol: str | None = None # symbol human chose instead
+    reason_category: str | None = None    # short category tag
 
 
 @app.post("/optimizer/decisions")
@@ -4575,6 +4779,12 @@ async def record_execution_decision(
         workspace_id=ws,
     ).first()
 
+    from services.override_classifier import build_override_record
+    override_rec = build_override_record(
+        body.override_type, body.original_symbol,
+        body.replacement_symbol, body.reason_category, body.override_notes,
+    )
+
     now = datetime.utcnow()
     decision = UserExecutionDecision(
         workspace_id=ws,
@@ -4584,7 +4794,11 @@ async def record_execution_decision(
         decision=body.decision.upper(),
         approved_allocations_json=_json.dumps(body.approved_allocations) if body.approved_allocations else None,
         rejected_symbols_json=_json.dumps(body.rejected_symbols) if body.rejected_symbols else None,
-        override_notes=body.override_notes,
+        override_notes=override_rec["override_notes"],
+        override_type=override_rec["override_type"],
+        original_symbol=override_rec["original_symbol"],
+        replacement_symbol=override_rec["replacement_symbol"],
+        reason_category=override_rec["reason_category"],
         executed_at=now,
         created_at=now,
     )
@@ -4684,6 +4898,10 @@ async def list_execution_decisions(
             "optimizer_history_id": r.optimizer_history_id,
             "decision": r.decision,
             "override_notes": r.override_notes,
+            "override_type": r.override_type,
+            "original_symbol": r.original_symbol,
+            "replacement_symbol": r.replacement_symbol,
+            "reason_category": r.reason_category,
             "executed_at": r.executed_at.isoformat() + "Z" if r.executed_at else None,
             "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
         }
@@ -4708,6 +4926,10 @@ async def get_execution_decision(decision_id: int, db: Session = Depends(get_db)
         "portfolio_id": row.portfolio_id,
         "decision": row.decision,
         "override_notes": row.override_notes,
+        "override_type": row.override_type,
+        "original_symbol": row.original_symbol,
+        "replacement_symbol": row.replacement_symbol,
+        "reason_category": row.reason_category,
         "approved_allocations": _json.loads(row.approved_allocations_json) if row.approved_allocations_json else None,
         "rejected_symbols": _json.loads(row.rejected_symbols_json) if row.rejected_symbols_json else None,
         "executed_at": row.executed_at.isoformat() + "Z" if row.executed_at else None,
@@ -5253,6 +5475,10 @@ async def get_decision_memory_timeline(
             "decision": d.decision,
             "portfolio_id": d.portfolio_id,
             "override_notes": d.override_notes,
+            "override_type": d.override_type,
+            "original_symbol": d.original_symbol,
+            "replacement_symbol": d.replacement_symbol,
+            "reason_category": d.reason_category,
             "executed_at": d.executed_at.isoformat() + "Z" if d.executed_at else None,
             "recommendation_snapshot": {
                 "id": snap.id,
@@ -5571,6 +5797,7 @@ async def portfolio_construction(
 
 class PositionSizingRequest(BaseModel):
     symbols: list[str]
+    timing_scores: dict[str, int] | None = None
 
 
 @app.post("/portfolios/{portfolio_id}/position-sizing")
@@ -5597,11 +5824,79 @@ async def position_sizing(
     from services.position_sizing import suggest_position_sizes
     try:
         result = await asyncio.to_thread(
-            suggest_position_sizes, portfolio_id, body.symbols, ws, db
+            suggest_position_sizes, portfolio_id, body.symbols, ws, db, body.timing_scores
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return result.model_dump()
+
+
+# ─── Phase UX.2E — Execution Plan Generator ──────────────────────────────────
+
+class ExecutionPlanRequest(BaseModel):
+    buy_symbols: list[str]
+    sizing_suggestions: list[dict] = []
+    timing_scores: dict[str, int] | None = None
+
+
+@app.post("/portfolios/{portfolio_id}/execution-plan")
+async def execution_plan(
+    portfolio_id: int,
+    body: ExecutionPlanRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Build a ready-to-execute trade plan from existing analysis results.
+
+    Identifies funding sources (SELL/REDUCE existing holdings) and sizes buy
+    targets using the position sizing output.  No AI calls.  No mutations.
+    """
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
+    ).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    from services.execution_plan import build_execution_plan
+    try:
+        result = await asyncio.to_thread(
+            build_execution_plan,
+            portfolio_id, ws,
+            body.buy_symbols, body.sizing_suggestions,
+            body.timing_scores, db,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return result.model_dump()
+
+
+# ─── Phase 4C.6F — Timing Intelligence Layer ─────────────────────────────────
+
+class TimingIntelligenceRequest(BaseModel):
+    symbols: list[str]
+
+
+@app.post("/timing-intelligence")
+async def timing_intelligence(body: TimingIntelligenceRequest) -> list[dict]:
+    """Score entry timing for a basket of symbols using deterministic market signals.
+
+    Computes a 0-100 timing score from four components:
+        trend (40%)            — price vs SMA20/SMA50
+        momentum (30%)         — RSI(14)
+        relative_strength (20%) — 20-day excess return vs SPY
+        volume (10%)           — current vs 20-day average volume
+
+    No AI calls.  No database writes.  Read-only and reusable across the platform.
+    """
+    if not body.symbols:
+        return []
+    symbols = [s.strip().upper() for s in body.symbols if s.strip()]
+    if not symbols:
+        return []
+
+    from services.timing_intelligence import score_timing_batch
+    results = await asyncio.to_thread(score_timing_batch, symbols)
+    return [r.model_dump() for r in results]
 
 
 @app.get("/analytics/calibration-history")
@@ -5909,6 +6204,8 @@ async def get_human_vs_ai_timing(
             "override_win_rate": summary.override_win_rate,
             "total_added_return_pct": summary.total_added_return_pct,
             "total_saved_drawdown_pct": summary.total_saved_drawdown_pct,
+            "override_type_counts": summary.override_type_counts,
+            "override_type_win_rates": summary.override_type_win_rates,
         },
         "details": [
             {
@@ -5917,6 +6214,7 @@ async def get_human_vs_ai_timing(
                 "ai_action": a.ai_action,
                 "human_action": a.human_action,
                 "override": a.override,
+                "override_type": a.override_type,
                 "human_return_pct": a.human_return_pct,
                 "ai_return_pct": a.ai_return_pct,
                 "delta_return_pct": a.delta_return_pct,

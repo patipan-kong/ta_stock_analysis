@@ -169,6 +169,7 @@ export default function PortfolioTable({
   onRemove,
   onReanalyze,
   onToggleSwap,
+  onBuy,
   onSell,
   pricesLoading = false,
 }: {
@@ -176,6 +177,7 @@ export default function PortfolioTable({
   onRemove: (symbol: string) => Promise<void>;
   onReanalyze: (symbol: string) => Promise<void>;
   onToggleSwap: (symbol: string, allow_swap: boolean) => Promise<void>;
+  onBuy?: (item: PortfolioItem) => void;
   onSell?: (item: PortfolioItem) => void;
   pricesLoading?: boolean;
 }) {
@@ -343,6 +345,16 @@ export default function PortfolioTable({
               >
                 {state === "toggle" ? "…" : row.original.allow_swap ? "🔓" : "🔒"}
               </button>
+              {onBuy && (
+                <button
+                  onClick={() => onBuy(row.original)}
+                  disabled={!!state}
+                  className="text-xs font-semibold px-2 py-0.5 rounded border disabled:opacity-40 transition-colors"
+                  style={{ color: "#27500A", borderColor: "#27500A60", backgroundColor: "#27500A10" }}
+                >
+                  Buy
+                </button>
+              )}
               {onSell && (
                 <button
                   onClick={() => onSell(row.original)}
@@ -366,7 +378,7 @@ export default function PortfolioTable({
         },
       }),
     ],
-    [busy, onSell, pricesLoading]
+    [busy, onBuy, onSell, pricesLoading]
   );
 
   const table = useReactTable({
@@ -485,6 +497,16 @@ export default function PortfolioTable({
                 >
                   {state === "toggle" ? "…" : item.allow_swap ? "🔓" : "🔒"}
                 </button>
+                {onBuy && (
+                  <button
+                    onClick={() => onBuy(item)}
+                    disabled={!!state}
+                    className="text-sm font-semibold px-2 py-0.5 rounded border disabled:opacity-40"
+                    style={{ color: "#27500A", borderColor: "#27500A60", backgroundColor: "#27500A10" }}
+                  >
+                    Buy
+                  </button>
+                )}
                 {onSell && (
                   <button
                     onClick={() => onSell(item)}

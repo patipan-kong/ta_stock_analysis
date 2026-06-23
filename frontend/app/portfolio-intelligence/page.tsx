@@ -366,7 +366,6 @@ export default function PortfolioIntelligencePage() {
         </p>
       </div>
 
-      <DecisionMemoryTimeline portfolioId={activeId} limit={20} />
       <ShadowPortfolioPanel portfolioId={activeId} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -378,6 +377,8 @@ export default function PortfolioIntelligencePage() {
         <ConfidenceCalibrationCard calibration={calibration} history={calibrationHistory} />
         <RegimePerformanceCard regime={regime} />
       </div>
+
+      <DecisionMemoryTimeline portfolioId={activeId} limit={20} />
     </div>
   );
 }

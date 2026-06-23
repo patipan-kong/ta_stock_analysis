@@ -115,6 +115,10 @@ def _compact_p(items: list[dict]) -> list[dict]:
             "weight_pct": i.get("weight_pct", 0.0),
             "market_value": i.get("market_value", 0.0),
             "current_price": i.get("current_price"),
+            # Phase 4C.6H.3 — timing fields
+            "timing_score": i.get("timing_score"),
+            "execution_priority": i.get("execution_priority"),
+            "momentum": i.get("momentum"),
         }
         for i in items
     ]
@@ -132,6 +136,10 @@ def _compact_w(items: list[dict]) -> list[dict]:
             "trend": i.get("trend", "sideways"),
             "pe_ratio": i.get("pe_ratio"),
             "roe": round(i["roe"] * 100, 1) if i.get("roe") else None,
+            # Phase 4C.6H.3 — timing fields
+            "timing_score": i.get("timing_score"),
+            "execution_priority": i.get("execution_priority"),
+            "momentum": i.get("momentum"),
         }
         for i in items
     ]
@@ -152,6 +160,8 @@ def _compress_for_layer1(pc: list[dict], wc: list[dict]) -> tuple[list[dict], li
             "ta": i.get("ta_score", 0),
             "sig": i.get("signal", "HOLD"),
             "swap": i.get("allow_swap", True),
+            "ts": i.get("timing_score"),        # Phase 4C.6H.3 — timing score
+            "pr": i.get("execution_priority"),  # Phase 4C.6H.3 — execution priority
         }
         for i in pc
     ]
@@ -164,6 +174,8 @@ def _compress_for_layer1(pc: list[dict], wc: list[dict]) -> tuple[list[dict], li
             "fa": w.get("fa_score", 0),
             "ta": w.get("ta_score", 0),
             "sig": w.get("signal", "WATCH"),
+            "ts": w.get("timing_score"),        # Phase 4C.6H.3 — timing score
+            "pr": w.get("execution_priority"),  # Phase 4C.6H.3 — execution priority
         }
         for w in actionable[:10]
     ]
@@ -776,7 +788,18 @@ Stocks proposed for REDUCE/SELL must be misaligned with {p_label} or overweight.
         from services.optimizer.execution_penalty import build_execution_prompt_block
         execution_block = build_execution_prompt_block(execution_context)
 
-    return f"""{policy_block}{regime_block}{strategy_block}{t1_breach_note}{execution_block}You are a STRATEGIST. Output swap targets in JSON only.
+    timing_block = """[TIMING INTELLIGENCE — Phase 4C.6H]
+Each symbol carries ts= (timing score 0-100) and pr= (execution priority: HIGH/MEDIUM/LOW/DEFER).
+Timing Score = entry quality: trend + momentum + relative strength + volume.
+  ts≥80 / HIGH  : strong entry → increase conviction for BUY/ACCUMULATE ranking
+  ts 60-79 / MED: acceptable  → proceed normally
+  ts 40-59 / LOW : weak entry → reduce urgency; rank watchlist candidates lower
+  ts<40 / DEFER  : poor entry → note in sector_flags; still eligible as lower-ranked top_buy
+Timing informs urgency — it does not block. A DEFER symbol with strong fundamentals is still top_buys material at lower rank.
+
+"""
+
+    return f"""{policy_block}{regime_block}{strategy_block}{t1_breach_note}{execution_block}{timing_block}You are a STRATEGIST. Output swap targets in JSON only.
 No explanation. No prose. Only valid JSON output.
 {violation_note}
 Portfolio: {json.dumps(c_pc)}
@@ -880,8 +903,16 @@ Factor weighting, position sizing, and stock selection must all reflect this per
         from services.optimizer.execution_penalty import build_execution_prompt_block
         execution_block = build_execution_prompt_block(execution_context)
 
+    timing_challenge_block = """[TIMING AWARENESS — CHALLENGER]
+Each symbol carries timing_score and execution_priority.
+Challenge BUY/ACCUMULATE recommendations where execution_priority=DEFER or timing_score<40.
+Add to disagreements[]: "TIMING_CONCERN: [SYM] poor entry timing (ts=[N], priority=DEFER) — waiting 2-4 weeks may improve entry."
+Timing does not invalidate a fundamentally attractive stock — document the concern, do not block.
+
+"""
+
     return f"""You are an independent portfolio reviewer.
-{policy_block}{regime_block}{strategy_block}{t1_breach_note}{execution_block}{role_line}The Strategist (Layer 1) proposed:
+{policy_block}{regime_block}{strategy_block}{t1_breach_note}{execution_block}{timing_challenge_block}{role_line}The Strategist (Layer 1) proposed:
 - Priority: {l1_priority}
 - Swaps: {json.dumps(l1_swaps, indent=2)}
 - Top watchlist picks: {l1_top_buys}
@@ -1000,8 +1031,15 @@ def _layer3_prompt(
 
     high_pos_threshold = round(resolved_max_pos * 0.85, 1)  # HIGH = 85–100% of cap
 
+    timing_risk_block = """[TIMING RISK ASSESSMENT — Phase 4C.6H]
+Flag MEDIUM severity when a new BUY or ACCUMULATE position has execution_priority=DEFER or timing_score<40.
+Use: {"symbol":"X","issue":"Poor entry timing (ts=[N], priority=DEFER) for new position","severity":"MEDIUM"}
+Do NOT escalate to HIGH or CRITICAL for timing alone — timing cautions, it does not block.
+
+"""
+
     return f"""{t1_breach_note}You are a portfolio risk auditor.
-{policy_note}{persona_note}{role_line}Evaluate both allocation proposals for concentration risk and soundness.
+{timing_risk_block}{policy_note}{persona_note}{role_line}Evaluate both allocation proposals for concentration risk and soundness.
 
 Layer 1 (Strategist):
 Priority: {l1_priority}
@@ -1769,6 +1807,33 @@ def run_layered_optimizer(
                     a["execution_warnings"] = per_sym_exec[sym].get("execution_warnings", [])
                     a["asset_type"]         = per_sym_exec[sym].get("asset_type", "EQUITY")
                     a["slippage_est_pct"]   = per_sym_exec[sym].get("slippage_cost_est_pct")
+
+        # ── Post-enforcement action label reconciliation ──────────────────────
+        # Constraint passes (policy cap, cash floor, sector cap, DR exec cap) all
+        # update target_weight + allocation_change_percent but never touch action.
+        # A BUY/ACCUMULATE whose delta went negative is now a net REDUCE; fix it.
+        for a in final_allocations:
+            delta  = a.get("allocation_change_percent", 0)
+            action = (a.get("action") or "HOLD").upper()
+            if action in ("BUY", "ACCUMULATE") and delta < -1.0:
+                a["action"] = "REDUCE"
+                logger.info(
+                    "[ACTION_RECONCILE] %s %s→REDUCE (delta=%.1f%% after constraint enforcement)",
+                    a.get("symbol"), action, delta,
+                )
+            elif action in ("BUY", "ACCUMULATE") and delta <= 0:
+                a["action"] = "HOLD"
+                logger.info(
+                    "[ACTION_RECONCILE] %s %s→HOLD (delta=%.1f%% suppressed to zero by constraints)",
+                    a.get("symbol"), action, delta,
+                )
+            elif action == "REDUCE" and delta > 1.0:
+                # Mirror case: REDUCE that became a net increase (rare but possible)
+                a["action"] = "ACCUMULATE"
+                logger.info(
+                    "[ACTION_RECONCILE] %s REDUCE→ACCUMULATE (delta=%.1f%% after constraint enforcement)",
+                    a.get("symbol"), delta,
+                )
 
         # Build sector_map for governance scoring (symbol → sector)
         _sector_map_for_scoring: dict[str, str] = {

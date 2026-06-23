@@ -34,11 +34,13 @@ from models.database import (
     AnalysisCache, Portfolio, PortfolioItem,
     RecommendationSnapshot, Settings, Watchlist,
 )
-from services.data_fetcher import fetch_info, fetch_price_info, normalize_dr_symbol
+from services.data_fetcher import fetch_info, fetch_price_info
+from services.symbol_normalization import get_yfinance_symbol
 from services.optimizer.strategy_profiles import (
-    STRATEGY_PROFILES, valid_persona, compute_portfolio_dna,
+    STRATEGY_PROFILES, valid_persona,
     compute_style_drift, build_persona_context,
 )
+from services.analytics.factor_engine import compute_portfolio_factor_exposure
 from services.optimizer.constraint_resolver import resolve_constraints, effective_sector_cap
 
 log = logging.getLogger(__name__)
@@ -429,19 +431,16 @@ def review_ideas(
             holdings_by_sym.setdefault(h.symbol[:-3], h)
 
     # ── Portfolio DNA + Persona context ───────────────────────────────────────
-    portfolio_data_for_dna = []
-    for item in portfolio_items:
-        cache = cache_map.get(item.symbol)
-        portfolio_data_for_dna.append({
-            "symbol":       item.symbol,
-            "market_value": item_mvs.get(item.symbol, 0.0),
-            "ta_score":     int(cache.ta_score) if cache and cache.ta_score is not None else None,
-            "fa_score":     int(cache.fa_score) if cache and cache.fa_score is not None else None,
-        })
-
+    # Use factor_engine as single source of truth (same engine as DNA page).
     persona = valid_persona(portfolio.strategy_persona or "BALANCED")
     try:
-        portfolio_dna = compute_portfolio_dna(portfolio_data_for_dna)
+        fe_result = compute_portfolio_factor_exposure(db, portfolio_id, workspace_id)
+        portfolio_dna = {
+            factor: (
+                fe_result.get("factor_exposures", {}).get(factor, {}).get("score") or 50.0
+            )
+            for factor in ("growth", "value", "momentum", "quality", "dividend")
+        }
         drift_data = compute_style_drift(portfolio_dna, persona)
         persona_ctx = build_persona_context(persona, portfolio_dna, drift_data)
     except Exception as exc:
@@ -522,12 +521,7 @@ def review_ideas(
         if sym in known_symbols and sym in symbols_with_db_sector:
             continue
         try:
-            # For DR-format symbols (e.g. NVDA01), use normalized underlying (NVDA) for
-            # sector lookup so we get accurate industry classification from yfinance.
-            if _DR_DIGIT_PATTERN.match(sym) and not sym.endswith(".BK"):
-                fetch_target = normalize_dr_symbol(sym + ".BK")
-            else:
-                fetch_target = normalize_dr_symbol(sym)
+            fetch_target = get_yfinance_symbol(sym)
             yf_info_cache[sym] = fetch_info(fetch_target)
         except Exception:
             yf_info_cache[sym] = {}

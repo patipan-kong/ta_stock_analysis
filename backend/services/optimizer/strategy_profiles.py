@@ -110,66 +110,6 @@ def valid_persona(persona: str) -> str:
     return p if p in _VALID_PERSONAS else "BALANCED"
 
 
-# ─── Portfolio DNA ─────────────────────────────────────────────────────────────
-
-def compute_portfolio_dna(portfolio_data: list[dict]) -> dict[str, float]:
-    """Compute portfolio factor exposures (0-100 each) from optimizer score data.
-
-    Uses ta_score, fa_score, pe_ratio, roe, revenue_growth — all already
-    available in scores_map at optimizer run-time with no additional fetches.
-
-    Returns: {growth: float, value: float, momentum: float, quality: float, dividend: float}
-    """
-    total_mv = sum(d.get("market_value") or 0 for d in portfolio_data)
-    if total_mv <= 0:
-        return {f: 50.0 for f in _FACTORS}
-
-    acc: dict[str, float] = {f: 0.0 for f in _FACTORS}
-
-    for d in portfolio_data:
-        mv = d.get("market_value") or 0
-        if mv <= 0:
-            continue
-        w = mv / total_mv
-        ta = float(d.get("ta_score") or 50)
-        fa = float(d.get("fa_score") or 50)
-
-        # Momentum ← ta_score (0–100, 50=neutral)
-        acc["momentum"] += w * ta
-
-        # Quality ← fa_score (fundamental soundness, 0–100)
-        acc["quality"] += w * fa
-
-        # Growth ← revenue_growth when present, else ta/fa composite
-        rg = d.get("revenue_growth")
-        if rg is not None:
-            # -10% → 35, 0% → 50, +20% → 80, +40%+ → 100
-            growth_sc = max(0.0, min(100.0, 50.0 + float(rg) * 150.0))
-        else:
-            growth_sc = ta * 0.4 + fa * 0.6
-        acc["growth"] += w * growth_sc
-
-        # Value ← inverse P/E (low P/E = high value score)
-        pe = d.get("pe_ratio")
-        if pe and isinstance(pe, (int, float)) and 0 < float(pe) < 100:
-            # P/E 5 → 90, P/E 15 → 74, P/E 25 → 58, P/E 40 → 34
-            value_sc = max(10.0, min(95.0, 90.0 - (float(pe) - 5.0) * 1.6))
-        else:
-            value_sc = fa * 0.5 + 25.0  # moderate default from FA quality
-        acc["value"] += w * value_sc
-
-        # Dividend ← proxy: boost for low P/E and strong ROE
-        div_sc = 45.0
-        if pe and isinstance(pe, (int, float)) and 0 < float(pe) < 15:
-            div_sc += 20.0
-        roe = d.get("roe")
-        if roe and isinstance(roe, (int, float)) and float(roe) > 0.12:
-            div_sc += 10.0
-        acc["dividend"] += w * div_sc
-
-    return {k: round(v, 1) for k, v in acc.items()}
-
-
 # ─── Style Drift ──────────────────────────────────────────────────────────────
 
 def compute_style_drift(portfolio_dna: dict[str, float], persona: str) -> dict[str, Any]:

@@ -402,6 +402,10 @@ class UserExecutionDecision(Base):
     approved_allocations_json = Column(Text, nullable=True)        # what the user actually executed
     rejected_symbols_json = Column(Text, nullable=True)            # symbols user explicitly declined
     override_notes = Column(Text, nullable=True)                   # free-text note for MANUAL_OVERRIDE
+    override_type = Column(String, nullable=True)                  # REJECT_SWAP | REPLACE_SYMBOL | …
+    original_symbol = Column(String, nullable=True)               # symbol AI recommended
+    replacement_symbol = Column(String, nullable=True)            # symbol human chose instead
+    reason_category = Column(String, nullable=True)               # short category tag
     executed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -818,6 +822,10 @@ def migrate_legacy_data() -> None:
                             approved_allocations_json TEXT,
                             rejected_symbols_json TEXT,
                             override_notes TEXT,
+                            override_type TEXT,
+                            original_symbol TEXT,
+                            replacement_symbol TEXT,
+                            reason_category TEXT,
                             executed_at DATETIME NOT NULL,
                             created_at DATETIME
                         )
@@ -826,6 +834,20 @@ def migrate_legacy_data() -> None:
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ued_snapshot ON user_execution_decisions (recommendation_snapshot_id)"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ued_decision ON user_execution_decisions (decision)"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ued_portfolio ON user_execution_decisions (portfolio_id)"))
+            else:
+                # UX.2D: add structured override columns to existing table
+                with engine.begin() as conn:
+                    ued_cols = {c["name"] for c in inspector.get_columns("user_execution_decisions")}
+                    for col, typedef in [
+                        ("override_type", "TEXT"),
+                        ("original_symbol", "TEXT"),
+                        ("replacement_symbol", "TEXT"),
+                        ("reason_category", "TEXT"),
+                    ]:
+                        if col not in ued_cols:
+                            conn.execute(text(
+                                f"ALTER TABLE user_execution_decisions ADD COLUMN {col} {typedef}"
+                            ))
 
             if "shadow_portfolios" not in tables:
                 with engine.begin() as conn:

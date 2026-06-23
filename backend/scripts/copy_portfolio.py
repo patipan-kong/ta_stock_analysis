@@ -173,6 +173,10 @@ def main():
                     approved_allocations_json=ud.approved_allocations_json,
                     rejected_symbols_json=ud.rejected_symbols_json,
                     override_notes=ud.override_notes,
+                    override_type=ud.override_type,
+                    original_symbol=ud.original_symbol,
+                    replacement_symbol=ud.replacement_symbol,
+                    reason_category=ud.reason_category,
                     executed_at=ud.executed_at, created_at=ud.created_at,
                 ))
             db.commit()

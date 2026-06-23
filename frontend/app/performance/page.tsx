@@ -453,7 +453,7 @@ export default function PerformancePage() {
       {snapshots.length > 0 && (
         <div className="bg-white border rounded-xl p-4">
           <h2 className="text-sm font-semibold text-gray-700 mb-3">Snapshot History</h2>
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto h-80 overflow-y-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs text-gray-500 border-b">
