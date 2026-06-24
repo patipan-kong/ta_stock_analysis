@@ -77,9 +77,9 @@ def write_recommendation_snapshot(
             regime_snapshot_json=_j(r.get("market_regime")),
             constraint_envelope_json=_j(r.get("effective_envelope")),
             active_policy_json=_j(r.get("active_policy")),
-            layer1_output_json=_j(r.get("layer1")),
-            layer2_output_json=_j(r.get("layer2")),
-            layer3_output_json=_j(r.get("layer3")),
+            layer1_output_json=_j(r.get("layer1_result")),
+            layer2_output_json=_j(r.get("layer2_result")),
+            layer3_output_json=_j(r.get("layer3_result")),
             consensus_json=_j(r.get("consensus")),
             portfolio_dna_json=_j(r.get("current_portfolio_dna")),
             style_drift_json=_j({
@@ -90,9 +90,7 @@ def write_recommendation_snapshot(
                 "rebalance_urgency": r.get("rebalance_urgency"),
             }),
             scores_map_json=_j(scores_map),
-            projected_allocations_json=_j(
-                (r.get("layer2") or {}).get("allocations")
-            ),
+            projected_allocations_json=_j(r.get("target_allocations")),
             created_at=datetime.utcnow(),
         )
         db.add(snap)

@@ -110,7 +110,7 @@ export default function AllocationAnalyticsPanel({ metrics }: AllocationAnalytic
                     <span className={`text-sm font-semibold tabular-nums ${pnlColorClass(c.unrealized_pnl_pct)}`}>
                       {fmtPct(c.unrealized_pnl_pct)}
                     </span>
-                    <p className="text-xs text-gray-400">{fmtNum(c.unrealized_pnl, 0)} THB/USD</p>
+                    <p className="text-xs text-gray-400">{fmtNum(c.unrealized_pnl, 0)} THB</p>
                   </div>
                 </div>
               ))}
@@ -133,7 +133,7 @@ export default function AllocationAnalyticsPanel({ metrics }: AllocationAnalytic
                     <span className={`text-sm font-semibold tabular-nums ${pnlColorClass(c.unrealized_pnl_pct)}`}>
                       {fmtPct(c.unrealized_pnl_pct)}
                     </span>
-                    <p className="text-xs text-gray-400">{fmtNum(c.market_value, 0)} THB/USD</p>
+                    <p className="text-xs text-gray-400">{fmtNum(c.market_value, 0)} THB</p>
                   </div>
                 </div>
               ))}

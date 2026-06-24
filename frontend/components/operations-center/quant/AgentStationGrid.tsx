@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import type { AgentHealth, OperationsStation, StationStatus } from "@/lib/api";
 
 const STATIONS: { key: keyof AgentHealth; title: string; icon: string }[] = [
@@ -49,16 +50,41 @@ function StationTile({ title, icon, station }: { title: string; icon: string; st
 }
 
 export default function AgentStationGrid({ agentHealth }: { agentHealth: AgentHealth }) {
+  const [open, setOpen] = useState(false);
+
+  const stations = STATIONS.map(({ key }) => agentHealth[key]);
+  const green  = stations.filter((s) => s.status === "GREEN").length;
+  const yellow = stations.filter((s) => s.status === "YELLOW").length;
+  const red    = stations.filter((s) => s.status === "RED").length;
+  const overall: StationStatus = red > 0 ? "RED" : yellow > 0 ? "YELLOW" : "GREEN";
+
   return (
-    <div>
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">
-        สถานีระบบ AI
-      </p>
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-        {STATIONS.map(({ key, title, icon }) => (
-          <StationTile key={key} title={title} icon={icon} station={agentHealth[key]} />
-        ))}
-      </div>
+    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      <button
+        className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-gray-50 transition-colors"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className={`inline-block h-2.5 w-2.5 rounded-full shrink-0 ${LAMP[overall]}`} />
+          <span className="text-sm font-medium text-gray-800">System Health</span>
+          <div className="flex items-center gap-3 text-xs text-gray-500">
+            {green  > 0 && <span>🟢 {green} Healthy</span>}
+            {yellow > 0 && <span>🟡 {yellow} Warning</span>}
+            {red    > 0 && <span>🔴 {red} Alert</span>}
+          </div>
+        </div>
+        <span className="text-xs text-gray-400 shrink-0">{open ? "Hide" : "Show Details"}</span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            {STATIONS.map(({ key, title, icon }) => (
+              <StationTile key={key} title={title} icon={icon} station={agentHealth[key]} />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -50,18 +50,6 @@ function MetricRow({ label, value, sub }: { label: string; value: string; sub?: 
   );
 }
 
-function ConfidenceBadge({ n }: { n: number }) {
-  const cls =
-    n >= 30  ? "bg-green-100 text-green-700" :
-    n >= 10  ? "bg-amber-100 text-amber-700" :
-               "bg-gray-100 text-gray-500";
-  const label = n >= 30 ? "High confidence" : n >= 10 ? "Moderate" : "Low sample";
-  return (
-    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cls}`}>
-      {label} (n={n})
-    </span>
-  );
-}
 
 interface SignalAnalyticsPanelProps {
   metrics: SignalAnalyticsMetrics | null;
@@ -76,7 +64,7 @@ export default function SignalAnalyticsPanel({ metrics }: SignalAnalyticsPanelPr
     );
   }
 
-  const { buy_win_rate, sell_accuracy, average_holding_return, signal_decay, signals_by_action } = metrics;
+  const { average_holding_return, signal_decay, signals_by_action } = metrics;
 
   const decayData = transformSignalDecay(signal_decay?.buckets ?? []);
 
@@ -93,52 +81,9 @@ export default function SignalAnalyticsPanel({ metrics }: SignalAnalyticsPanelPr
 
   return (
     <div className="space-y-5">
-      {/* Win rate section */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-gray-700">Buy Signal Win Rate</h3>
-          <ConfidenceBadge n={buy_win_rate?.total ?? 0} />
-        </div>
-        <div className="flex items-end gap-3 mb-2">
-          <span className="text-2xl font-bold text-green-700">
-            {buy_win_rate?.win_rate != null ? `${buy_win_rate.win_rate.toFixed(1)}%` : "—"}
-          </span>
-          <span className="text-xs text-gray-400 mb-1">
-            {buy_win_rate ? `${buy_win_rate.wins}W / ${buy_win_rate.losses}L · last ${buy_win_rate.n_days}d` : ""}
-          </span>
-        </div>
-        <ProgressBar
-          value={buy_win_rate?.win_rate ?? 0}
-          color={
-            (buy_win_rate?.win_rate ?? 0) >= 60 ? "#16a34a" :
-            (buy_win_rate?.win_rate ?? 0) >= 50 ? "#d97706" : "#dc2626"
-          }
-          label={`${(buy_win_rate?.win_rate ?? 0).toFixed(0)}%`}
-        />
-      </div>
-
-      {/* Sell accuracy */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-gray-700">Sell Signal Accuracy</h3>
-          <ConfidenceBadge n={sell_accuracy?.total ?? 0} />
-        </div>
-        <div className="flex items-end gap-3 mb-2">
-          <span className="text-2xl font-bold text-amber-700">
-            {sell_accuracy?.accuracy != null ? `${sell_accuracy.accuracy.toFixed(1)}%` : "—"}
-          </span>
-          <span className="text-xs text-gray-400 mb-1">
-            {sell_accuracy ? `${sell_accuracy.accurate} accurate · last ${sell_accuracy.n_days}d` : ""}
-          </span>
-        </div>
-        <ProgressBar
-          value={sell_accuracy?.accuracy ?? 0}
-          color={
-            (sell_accuracy?.accuracy ?? 0) >= 60 ? "#16a34a" :
-            (sell_accuracy?.accuracy ?? 0) >= 50 ? "#d97706" : "#dc2626"
-          }
-          label={`${(sell_accuracy?.accuracy ?? 0).toFixed(0)}%`}
-        />
+      {/* Accuracy metrics pending re-implementation */}
+      <div className="rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-xs text-amber-700">
+        Signal accuracy metrics are temporarily unavailable while evaluation logic is being upgraded.
       </div>
 
       {/* Avg holding return */}

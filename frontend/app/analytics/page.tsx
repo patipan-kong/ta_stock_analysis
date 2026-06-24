@@ -271,7 +271,7 @@ export default function AnalyticsPage() {
       {(loading || hasData) && (
         <Section
           title="Signal Analytics"
-          subtitle="BUY win rate, SELL accuracy, and holding-period returns from optimizer signals"
+          subtitle="Holding-period returns, signal decay, and distribution from optimizer signals"
         >
           {loading ? (
             <div className="h-48 animate-pulse bg-gray-100 rounded-xl" />

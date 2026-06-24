@@ -2,369 +2,181 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import StockCard from "@/components/StockCard";
-import SignalBadge from "@/components/SignalBadge";
 import { usePortfolio } from "@/lib/PortfolioContext";
-import { getHoldings, getWatchlist, analyzeHoldings, analyzeWatchlist, analyzeSymbol } from "@/lib/api";
-import type { Portfolio, PortfolioItem, WatchlistItem, FullAnalysis } from "@/lib/api";
+import { getHoldings, getPortfolioPrices } from "@/lib/api";
+import type { Portfolio, PortfolioItem, PriceRefreshItem } from "@/lib/api";
 
-const TZ = "Asia/Bangkok";
+function heatTileColor(cp: number | null, pricesLoaded: boolean): string {
+  if (!pricesLoaded) return "#374151"; // dark gray — still loading
+  if (cp == null) return "#1F2937";   // near-black — confirmed no data
+  if (Math.abs(cp) < 0.3) return "#4B5563"; // neutral
+  const intensity = Math.min(Math.abs(cp) / 5, 1);
+  if (cp > 0) {
+    return `hsl(142, ${Math.round(50 + intensity * 30)}%, ${Math.round(38 - intensity * 10)}%)`;
+  }
+  return `hsl(0, ${Math.round(60 + intensity * 20)}%, ${Math.round(50 - intensity * 12)}%)`;
+}
 
-function formatDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
+function DashboardHeatmap({
+  holdingsMap,
+  priceMap,
+  pricesLoaded,
+  portfolios,
+}: {
+  holdingsMap: Record<number, PortfolioItem[]>;
+  priceMap: Record<number, PriceRefreshItem[]>;
+  pricesLoaded: boolean;
+  portfolios: Portfolio[];
+}) {
+  const aggregated = new Map<string, {
+    symbol: string;
+    mv: number;
+    cp: number | null;
+    priceConfirmed: boolean;
+  }>();
+
+  portfolios.forEach((p) => {
+    const liveBySymbol = new Map((priceMap[p.id] ?? []).map((pr) => [pr.symbol, pr]));
+
+    (holdingsMap[p.id] ?? []).forEach((item) => {
+      const live = liveBySymbol.get(item.symbol);
+      const price = live?.current_price ?? item.current_price ?? item.avg_cost;
+      const mv = item.shares * price;
+      const cp = live?.change_percent ?? null;
+      const priceConfirmed = pricesLoaded && !!live;
+
+      const existing = aggregated.get(item.symbol);
+      if (existing) {
+        existing.mv += mv;
+        if (cp != null) existing.cp = cp;
+        if (priceConfirmed) existing.priceConfirmed = true;
+      } else {
+        aggregated.set(item.symbol, { symbol: item.symbol, mv, cp, priceConfirmed });
+      }
+    });
+  });
+
+  const tiles = Array.from(aggregated.values()).sort((a, b) => b.mv - a.mv);
+  if (tiles.length === 0) return null;
+
+  const totalValue = tiles.reduce((s, t) => s + t.mv, 0);
+
   return (
-    d.toLocaleDateString("th-TH", { day: "2-digit", month: "short", year: "2-digit", timeZone: TZ }) +
-    " " +
-    d.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit", timeZone: TZ })
+    <section>
+      <div className="flex items-center gap-3 mb-2">
+        <h2 className="text-base font-semibold text-gray-500 uppercase tracking-wide">Portfolio Heatmap</h2>
+        {!pricesLoaded && (
+          <span className="text-xs text-gray-400 flex items-center gap-1">
+            <span className="inline-block w-2.5 h-2.5 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+            Loading prices…
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {tiles.map((tile) => {
+          const weightPct = totalValue > 0 ? (tile.mv / totalValue) * 100 : 100 / tiles.length;
+          const display = tile.symbol.replace(".BK", "");
+
+          let changeText: string;
+          let changeColor: string;
+          if (!pricesLoaded) {
+            changeText = "…";
+            changeColor = "text-gray-400";
+          } else if (tile.cp == null) {
+            changeText = "No price data";
+            changeColor = "text-gray-500";
+          } else {
+            changeText = `${tile.cp > 0 ? "+" : ""}${tile.cp.toFixed(2)}%`;
+            changeColor = tile.cp > 0.3 ? "text-green-200" : tile.cp < -0.3 ? "text-red-200" : "text-gray-300";
+          }
+
+          return (
+            <Link
+              key={tile.symbol}
+              href={`/stock/${encodeURIComponent(tile.symbol)}`}
+              style={{
+                flexBasis: `${Math.max(6, weightPct - 0.5)}%`,
+                flexGrow: 0,
+                flexShrink: 1,
+                background: heatTileColor(tile.cp, pricesLoaded || tile.priceConfirmed),
+                minWidth: 72,
+                minHeight: 72,
+              }}
+              className="rounded-lg p-2 flex flex-col justify-between hover:brightness-110 transition-all cursor-pointer"
+            >
+              <span className="text-white text-xs font-bold truncate leading-tight">{display}</span>
+              <div>
+                <div className={`text-xs font-semibold leading-tight ${changeColor}`}>{changeText}</div>
+                <div className="text-xs text-white/50">{weightPct.toFixed(1)}%</div>
+              </div>
+            </Link>
+          );
+        })}
+      </div>
+    </section>
   );
 }
-
-function latestDate(items: { analyzed_at: string | null }[]): string | null {
-  const dates = items.map((i) => i.analyzed_at).filter((d): d is string => d != null);
-  return dates.length > 0 ? dates.sort().at(-1)! : null;
-}
-
-function Spinner() {
-  return (
-    <span className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-  );
-}
-
-// ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
   const { portfolios, loading: ctxLoading } = usePortfolio();
-
   const [holdingsMap, setHoldingsMap] = useState<Record<number, PortfolioItem[]>>({});
-  const [analysisMap, setAnalysisMap] = useState<Record<number, FullAnalysis[]>>({});
-  const [analyzingId, setAnalyzingId] = useState<number | null>(null);
-  const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
-  const [analyzingWatchlist, setAnalyzingWatchlist] = useState(false);
-  const [analyzingSymbols, setAnalyzingSymbols] = useState<Set<string>>(new Set());
-  const [loadingData, setLoadingData] = useState(false);
+  const [priceMap, setPriceMap] = useState<Record<number, PriceRefreshItem[]>>({});
+  const [loadingHoldings, setLoadingHoldings] = useState(false);
+  const [pricesLoaded, setPricesLoaded] = useState(false);
   const [error, setError] = useState("");
 
+  // Phase 1: load holdings from DB (fast, no yfinance)
   useEffect(() => {
     if (ctxLoading || portfolios.length === 0) return;
-    setLoadingData(true);
-    setAnalysisMap({});
-
-    Promise.all([
-      ...portfolios.map((p) =>
-        getHoldings(p.id).then((items) => ({ portfolioId: p.id, items }))
-      ),
-      getWatchlist().then((w) => ({ portfolioId: -1, items: w as unknown as PortfolioItem[] })),
-    ])
+    setLoadingHoldings(true);
+    setPricesLoaded(false);
+    Promise.all(
+      portfolios.map((p) => getHoldings(p.id).then((items) => ({ id: p.id, items })))
+    )
       .then((results) => {
         const map: Record<number, PortfolioItem[]> = {};
-        results.forEach(({ portfolioId, items }) => {
-          if (portfolioId === -1) setWatchlist(items as unknown as WatchlistItem[]);
-          else map[portfolioId] = items;
-        });
+        results.forEach(({ id, items }) => { map[id] = items; });
         setHoldingsMap(map);
       })
       .catch(() => setError("Cannot connect to backend"))
-      .finally(() => setLoadingData(false));
+      .finally(() => setLoadingHoldings(false));
   }, [portfolios, ctxLoading]);
 
-  async function handleAnalyzePortfolio(portfolioId: number) {
-    setAnalyzingId(portfolioId);
-    setError("");
-    try {
-      const results = await analyzeHoldings(portfolioId);
-      setAnalysisMap((prev) => ({ ...prev, [portfolioId]: results }));
-      // Also refresh holdings cached data
-      const fresh = await getHoldings(portfolioId);
-      setHoldingsMap((prev) => ({ ...prev, [portfolioId]: fresh }));
-    } catch {
-      setError("Analysis failed");
-    } finally {
-      setAnalyzingId(null);
-    }
-  }
+  // Phase 2: fetch live prices once holdings are known (hits yfinance cache)
+  useEffect(() => {
+    if (portfolios.length === 0 || Object.keys(holdingsMap).length === 0) return;
+    Promise.all(
+      portfolios.map((p) => getPortfolioPrices(p.id).then((prices) => ({ id: p.id, prices })))
+    )
+      .then((results) => {
+        const map: Record<number, PriceRefreshItem[]> = {};
+        results.forEach(({ id, prices }) => { map[id] = prices; });
+        setPriceMap(map);
+      })
+      .catch(() => {
+        // prices failing is non-fatal — heatmap shows "No price data"
+      })
+      .finally(() => setPricesLoaded(true));
+  }, [holdingsMap, portfolios]);
 
-  function _applyAnalysisToWatchlist(result: FullAnalysis): Partial<WatchlistItem> {
-    const s = result.summary;
-    const tech = result.technical as unknown as Record<string, unknown>;
-    const fund = result.fundamental as unknown as Record<string, unknown>;
-    return {
-      latest_signal:    (s?.signal ?? null) as WatchlistItem["latest_signal"],
-      signal_confidence:(s?.confidence ?? null) as WatchlistItem["signal_confidence"],
-      analyzed_at:      s?.analyzed_at ?? null,
-      reasoning:        s?.reasoning ?? null,
-      risks:            s?.risks ?? null,
-      ta_score:         typeof tech?.ta_score === "number" ? tech.ta_score : null,
-      fa_score:         typeof fund?.fa_score === "number" ? fund.fa_score : null,
-    };
-  }
-
-  async function handleAnalyzeWatchlist() {
-    setAnalyzingWatchlist(true);
-    setError("");
-    try {
-      const results = await analyzeWatchlist();
-      setWatchlist((prev) =>
-        prev.map((item) => {
-          const match = results.find((r) => r.symbol === item.symbol);
-          return match ? { ...item, ..._applyAnalysisToWatchlist(match) } : item;
-        })
-      );
-    } catch {
-      setError("Watchlist analysis failed");
-    } finally {
-      setAnalyzingWatchlist(false);
-    }
-  }
-
-  async function handleAnalyzeSymbol(symbol: string) {
-    setAnalyzingSymbols((prev) => new Set([...prev, symbol]));
-    setError("");
-    try {
-      const result = await analyzeSymbol(symbol);
-      setWatchlist((prev) =>
-        prev.map((item) =>
-          item.symbol === symbol
-            ? { ...item, ..._applyAnalysisToWatchlist(result) }
-            : item
-        )
-      );
-    } catch {
-      setError(`Analysis failed for ${symbol}`);
-    } finally {
-      setAnalyzingSymbols((prev) => {
-        const next = new Set(prev);
-        next.delete(symbol);
-        return next;
-      });
-    }
-  }
-
-  const isLoading = ctxLoading || loadingData;
+  const isLoading = ctxLoading || loadingHoldings;
 
   return (
     <div className="space-y-10">
       <section>
         <h1 className="text-2xl font-bold mb-1">Dashboard</h1>
-        <p className="text-sm text-gray-500">BUY / HOLD / SELL signals for all portfolios</p>
         {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
       </section>
 
       {isLoading ? (
         <p className="text-sm text-gray-400">Loading…</p>
       ) : (
-        <>
-          {portfolios.map((portfolio) => (
-            <PortfolioSection
-              key={portfolio.id}
-              portfolio={portfolio}
-              holdings={holdingsMap[portfolio.id] ?? []}
-              analysis={analysisMap[portfolio.id] ?? []}
-              analyzing={analyzingId === portfolio.id}
-              onAnalyze={() => handleAnalyzePortfolio(portfolio.id)}
-            />
-          ))}
-
-          {/* ── Watchlist ── */}
-          <section>
-            <div className="flex flex-wrap items-center gap-3 mb-4">
-              <h2 className="text-xl font-semibold">Watchlist</h2>
-              {watchlist.length > 0 && (() => {
-                const last = latestDate(watchlist);
-                return last ? (
-                  <span className="text-xs text-gray-400">Last analyzed: {formatDate(last)}</span>
-                ) : null;
-              })()}
-              {watchlist.length > 0 && (
-                <button
-                  onClick={handleAnalyzeWatchlist}
-                  disabled={analyzingWatchlist}
-                  className="ml-auto text-sm bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
-                >
-                  {analyzingWatchlist && <Spinner />}
-                  {analyzingWatchlist ? "Analyzing…" : "Analyze All"}
-                </button>
-              )}
-            </div>
-
-            {watchlist.length === 0 ? (
-              <p className="text-gray-500 text-sm">
-                Watchlist is empty.{" "}
-                <Link href="/watchlist" className="text-blue-500 underline">Add stocks</Link>.
-              </p>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {watchlist.map((item) => (
-                  <WatchlistCard
-                    key={item.symbol}
-                    item={item}
-                    analyzing={analyzingSymbols.has(item.symbol)}
-                    onAnalyze={() => handleAnalyzeSymbol(item.symbol)}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-        </>
-      )}
-    </div>
-  );
-}
-
-// ─── Portfolio Section ────────────────────────────────────────────────────────
-
-function PortfolioSection({
-  portfolio, holdings, analysis, analyzing, onAnalyze,
-}: {
-  portfolio: Portfolio;
-  holdings: PortfolioItem[];
-  analysis: FullAnalysis[];
-  analyzing: boolean;
-  onAnalyze: () => void;
-}) {
-  const lastAnalyzed = latestDate(holdings);
-
-  return (
-    <section>
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <h2 className="text-xl font-semibold">{portfolio.name}</h2>
-        {lastAnalyzed && (
-          <span className="text-xs text-gray-400">Last analyzed: {formatDate(lastAnalyzed)}</span>
-        )}
-        {holdings.length > 0 && (
-          <button
-            onClick={onAnalyze}
-            disabled={analyzing}
-            className="ml-auto text-sm bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
-          >
-            {analyzing && <Spinner />}
-            {analyzing ? "Analyzing…" : "Analyze All"}
-          </button>
-        )}
-      </div>
-
-      {holdings.length === 0 ? (
-        <p className="text-gray-500 text-sm">
-          No stocks in this portfolio.{" "}
-          <Link href="/portfolio" className="text-blue-500 underline">Add stocks</Link>.
-        </p>
-      ) : analysis.length > 0 ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {analysis.map((a) => <StockCard key={a.symbol} analysis={a} />)}
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {holdings.map((item) => <HoldingCard key={item.symbol} item={item} />)}
-        </div>
-      )}
-    </section>
-  );
-}
-
-// ─── Holding Card (portfolio) ─────────────────────────────────────────────────
-
-function HoldingCard({ item }: { item: PortfolioItem }) {
-  const display = item.symbol.replace(".BK", "");
-  const cp = item.change_percent;
-  const changeClass = cp == null ? "text-gray-400" : cp > 0 ? "text-green-600 font-medium" : "text-red-600 font-medium";
-  const changeText = cp == null ? "—" : `${cp > 0 ? "+" : ""}${cp.toFixed(2)}%`;
-
-  return (
-    <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow flex flex-col">
-      <div className="flex items-center justify-between mb-2">
-        <Link href={`/stock/${encodeURIComponent(item.symbol)}`}
-          className="text-lg font-bold text-blue-600 hover:underline">
-          {display}
-          {item.symbol.endsWith(".BK") && <span className="ml-1 text-xs text-gray-400">.BK</span>}
-        </Link>
-        {item.latest_signal
-          ? <SignalBadge signal={item.latest_signal} />
-          : <span className="text-xs text-gray-300">—</span>}
-      </div>
-
-      <div className="flex items-center gap-3 text-sm mb-2">
-        <span className="font-semibold text-gray-800">
-          {item.current_price != null ? item.current_price.toFixed(2) : "—"}
-        </span>
-        <span className={changeClass}>{changeText}</span>
-        <span className="text-xs text-gray-400 ml-auto">{item.shares} shares</span>
-      </div>
-
-      {(item.ta_score != null || item.fa_score != null) && (
-        <div className="grid grid-cols-2 gap-2 text-sm text-gray-600 mb-2">
-          {item.ta_score != null && <div><span className="font-medium">TA Score:</span> {item.ta_score}</div>}
-          {item.fa_score != null && <div><span className="font-medium">FA Score:</span> {item.fa_score}</div>}
-        </div>
-      )}
-
-      {item.reasoning && (
-        <p className="text-xs text-gray-500 line-clamp-2 mb-2">{item.reasoning}</p>
-      )}
-
-      {item.analyzed_at && (
-        <div className="mt-auto pt-2 border-t border-gray-100 text-xs text-gray-400">
-          Analyzed: {formatDate(item.analyzed_at)}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Watchlist Card ───────────────────────────────────────────────────────────
-
-function WatchlistCard({
-  item, analyzing, onAnalyze,
-}: {
-  item: WatchlistItem;
-  analyzing: boolean;
-  onAnalyze: () => void;
-}) {
-  const display = item.symbol.replace(".BK", "");
-  const hasAnalysis = item.latest_signal != null;
-
-  return (
-    <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow flex flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-2">
-        <Link href={`/stock/${encodeURIComponent(item.symbol)}`}
-          className="text-lg font-bold text-blue-600 hover:underline">
-          {display}
-          {item.symbol.endsWith(".BK") && <span className="ml-1 text-xs text-gray-400">.BK</span>}
-        </Link>
-        {hasAnalysis && <SignalBadge signal={item.latest_signal!} />}
-      </div>
-
-      {hasAnalysis ? (
-        <>
-          {(item.ta_score != null || item.fa_score != null) && (
-            <div className="grid grid-cols-2 gap-2 text-sm text-gray-600 mb-2">
-              {item.ta_score != null && <div><span className="font-medium">TA Score:</span> {item.ta_score}</div>}
-              {item.fa_score != null && <div><span className="font-medium">FA Score:</span> {item.fa_score}</div>}
-            </div>
-          )}
-          {item.reasoning && (
-            <p className="text-xs text-gray-500 line-clamp-2 mb-2">{item.reasoning}</p>
-          )}
-          <div className="mt-auto pt-2 border-t border-gray-100 flex items-center justify-between">
-            <span className="text-xs text-gray-400">{formatDate(item.analyzed_at)}</span>
-            <button
-              onClick={onAnalyze}
-              disabled={analyzing}
-              className="text-xs text-blue-500 hover:underline disabled:opacity-50 flex items-center gap-1"
-            >
-              {analyzing && <Spinner />}
-              {analyzing ? "Analyzing…" : "Re-analyze"}
-            </button>
-          </div>
-        </>
-      ) : (
-        <button
-          onClick={onAnalyze}
-          disabled={analyzing}
-          className="mt-2 w-full py-2 text-sm border border-blue-200 text-blue-600 rounded-lg hover:bg-blue-50 disabled:opacity-50 flex items-center justify-center gap-2"
-        >
-          {analyzing ? <><Spinner />Analyzing…</> : "Analyze"}
-        </button>
+        <DashboardHeatmap
+          holdingsMap={holdingsMap}
+          priceMap={priceMap}
+          pricesLoaded={pricesLoaded}
+          portfolios={portfolios}
+        />
       )}
     </div>
   );

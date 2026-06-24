@@ -156,8 +156,9 @@ def compute_regime_attribution(
         # Only include snapshots with valid NAV
         if not snap.total_value or snap.total_value <= 0:
             continue
-        # Prefer investment_return_pct (cash-flow-adjusted); fall back to daily_return_pct
-        ret = getattr(snap, "investment_return_pct", None) or snap.daily_return_pct
+        # Prefer investment_return_pct (cash-flow-adjusted); fall back to daily_return_pct.
+        # Use explicit None check — `or` treats 0.0 as falsy and would skip genuine flat days.
+        ret = snap.investment_return_pct if snap.investment_return_pct is not None else snap.daily_return_pct
         if ret is None:
             continue
         regime = _find_regime_near_date(snap.snapshot_date, regime_map, tolerance_days=2)
@@ -171,7 +172,7 @@ def compute_regime_attribution(
     total_days = len([
         s for s in portfolio_snaps
         if s.total_value and s.total_value > 0
-        and ((getattr(s, "investment_return_pct", None) or s.daily_return_pct) is not None)
+        and (s.investment_return_pct if s.investment_return_pct is not None else s.daily_return_pct) is not None
     ])
     coverage_pct = round(matched / total_days * 100, 1) if total_days > 0 else 0.0
 

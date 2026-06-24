@@ -529,11 +529,18 @@ function CalibrationCard({ portfolioId }: { portfolioId: number }) {
             </div>
           )}
 
-          {data.calibration_score != null && (
-            <div className="text-xs text-gray-400 mt-2">
-              Overall calibration score: {data.calibration_score.toFixed(1)}
-            </div>
-          )}
+          <div className="text-xs text-gray-400 mt-2">
+            Overall calibration score:{" "}
+            {!hasSignalData ? (
+              <span title="Signal accuracy not yet available; score reflects regime stability only">
+                N/A
+              </span>
+            ) : data.calibration_score != null ? (
+              data.calibration_score.toFixed(1)
+            ) : (
+              "—"
+            )}
+          </div>
         </>
       )}
     </div>

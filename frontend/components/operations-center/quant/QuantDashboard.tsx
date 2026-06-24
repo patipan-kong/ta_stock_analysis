@@ -93,8 +93,6 @@ export default function QuantDashboard({
         )}
       </div>
 
-      <AgentStationGrid agentHealth={status.agent_health} />
-
       <LatestCommitteeDecisionCard portfolioId={portfolioId} />
 
       <DecisionWorkspace portfolioId={portfolioId} initialSymbols={initialSymbols} />
@@ -114,6 +112,8 @@ export default function QuantDashboard({
       </CollapsiblePanel>
 
       <PolicyEnvelopeCard policy={status.policy} />
+
+      <AgentStationGrid agentHealth={status.agent_health} />
     </div>
   );
 }

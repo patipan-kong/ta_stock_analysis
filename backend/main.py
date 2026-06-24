@@ -4067,6 +4067,73 @@ async def admin_repair_shadow_portfolios(db: Session = Depends(get_db)) -> dict:
     }
 
 
+@app.post("/admin/backfill-snapshot-allocations")
+async def admin_backfill_snapshot_allocations(db: Session = Depends(get_db)) -> dict:
+    """Backfill projected_allocations_json on existing RecommendationSnapshot rows.
+
+    snapshot_writer.py previously read r.get("layer2").get("allocations") but the
+    optimizer stores allocations at r["target_allocations"] — so every snapshot was
+    written with projected_allocations_json=NULL, breaking ACTIVE_MODEL shadow creation.
+
+    This endpoint reads optimizer_history.result_json for each snapshot that is missing
+    allocations and writes the correct target_allocations list.  After running this,
+    trigger a new optimizer run (or call /admin/reset-active-model-inception) so the
+    ACTIVE_MODEL shadows rebalance with real holdings.
+    """
+    from models.database import RecommendationSnapshot, OptimizerHistory
+
+    ws = _ws_id(db)
+    snaps = (
+        db.query(RecommendationSnapshot)
+        .filter(
+            RecommendationSnapshot.workspace_id == ws,
+            RecommendationSnapshot.projected_allocations_json.is_(None),
+            RecommendationSnapshot.optimizer_history_id.isnot(None),
+        )
+        .all()
+    )
+
+    updated = 0
+    skipped_no_history = 0
+    skipped_no_allocs = 0
+
+    for snap in snaps:
+        oh = db.query(OptimizerHistory).filter_by(id=snap.optimizer_history_id).first()
+        if not oh or not oh.result_json:
+            skipped_no_history += 1
+            continue
+        try:
+            result = _json.loads(oh.result_json)
+        except Exception:
+            skipped_no_history += 1
+            continue
+
+        target_allocs = result.get("target_allocations")
+        if not target_allocs:
+            skipped_no_allocs += 1
+            continue
+
+        snap.projected_allocations_json = _json.dumps(target_allocs)
+        # Also backfill layer1/2/3 while we have the result
+        if not snap.layer1_output_json:
+            snap.layer1_output_json = _json.dumps(result["layer1_result"]) if result.get("layer1_result") else None
+        if not snap.layer2_output_json:
+            snap.layer2_output_json = _json.dumps(result["layer2_result"]) if result.get("layer2_result") else None
+        if not snap.layer3_output_json:
+            snap.layer3_output_json = _json.dumps(result["layer3_result"]) if result.get("layer3_result") else None
+        updated += 1
+
+    db.commit()
+    _log.info("backfill_snapshot_allocations: updated=%d skipped_no_history=%d skipped_no_allocs=%d",
+              updated, skipped_no_history, skipped_no_allocs)
+    return {
+        "snapshots_examined": len(snaps),
+        "updated": updated,
+        "skipped_no_history": skipped_no_history,
+        "skipped_no_allocs": skipped_no_allocs,
+    }
+
+
 @app.post("/admin/reset-active-model-inception")
 async def admin_reset_active_model_inception(db: Session = Depends(get_db)) -> dict:
     """Reset ACTIVE_MODEL shadow inception to today's date and current NAV.
@@ -5593,6 +5660,7 @@ async def get_shadow_performance_summary(
     rows = (
         db.query(ShadowPortfolio)
         .filter_by(workspace_id=ws, portfolio_id=portfolio_id, is_active=True)
+        .order_by(ShadowPortfolio.created_at.desc())
         .all()
     )
     if not rows:

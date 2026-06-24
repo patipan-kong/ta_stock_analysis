@@ -179,8 +179,11 @@ function ConfidenceCalibrationCard({
   history: CalibrationHistoryEntry[];
 }) {
   const buckets = calibration?.signal_accuracy?.buckets ?? {};
+  // Only include history points where signal accuracy contributed (consensus_strength_calibration != null).
+  // Points with only regime stability produce calibration_score=100 unconditionally and are misleading as a trend.
   const trend = [...history]
     .reverse()
+    .filter((h) => h.consensus_strength_calibration != null)
     .map((h) => h.calibration_score)
     .filter((v): v is number => v != null)
     .slice(-20);
@@ -218,7 +221,9 @@ function ConfidenceCalibrationCard({
           <div className="mt-4 border-t pt-3">
             <p className="text-xs text-gray-500 mb-1.5">Rolling Calibration Trend</p>
             {trend.length === 0 ? (
-              <p className="text-xs text-gray-400">No trend points yet.</p>
+              <p className="text-xs text-gray-400">
+                Trend will appear once signal accuracy data accumulates (requires signals ≥14 days old with known entry prices).
+              </p>
             ) : (
               <div className="flex items-end gap-1 h-14">
                 {trend.map((v, idx) => (
