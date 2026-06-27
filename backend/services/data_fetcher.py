@@ -22,7 +22,6 @@ from __future__ import annotations
 import io
 import json as _json
 import logging
-import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -33,21 +32,12 @@ import pandas as pd
 from models.database import MarketDataCache, SessionLocal
 from services.core.runtime_env import allow_market_fetching
 from services.market_data.yahoo import YahooProvider, _is_rate_limit
+from services.symbol_resolver import resolve_yfinance_symbol as _resolve_yf, is_dr as _is_dr
 
 _log = logging.getLogger(__name__)
 
-# ── DR symbol regex ────────────────────────────────────────────────────────────
-_DR_RE = re.compile(r"^([A-Z]+)\d{2}\.BK$")
-
-# Some Thai DRs are listed under the COMPANY NAME, not the US ticker, so the
-# regex-stripped prefix is not a valid yfinance symbol. Map those prefixes to
-# the real underlying ticker here.
-#   MICRON01.BK → prefix "MICRON" → actual US ticker "MU"
-_DR_UNDERLYING_ALIASES: dict[str, str] = {
-    "MICRON": "MU",      # Micron Technology
-    "INTEL": "INTC",      # Intel
-    "QUALCOMM": "QCOM",   # Qualcomm
-}
+# DR symbol resolution is centralised in services.symbol_resolver.
+# These thin wrappers exist for backward compatibility with existing callers.
 
 # ── Provider singleton ─────────────────────────────────────────────────────────
 _provider: YahooProvider = YahooProvider()
@@ -231,29 +221,23 @@ def _payload_to_df(payload: dict) -> Optional[pd.DataFrame]:
 # ── DR / symbol helpers (public, consumed by agents and main.py) ───────────────
 
 def normalize_dr_symbol(symbol: str) -> str:
-    """Strip DR digit-suffix so yfinance can find the underlying US company.
+    """Resolve a DR certificate to its yfinance ticker.
 
-    AAPL01.BK   → 'AAPL'   (DR → base ticker)
-    MICRON01.BK → 'MU'     (DR prefix is a company name → aliased to real ticker)
-    PTT.BK      → 'PTT.BK' (unchanged – regular Thai stock)
-    AAPL        → 'AAPL'   (unchanged – US ticker)
+    Delegates to services.symbol_resolver.resolve_yfinance_symbol — kept here
+    for backward compatibility with existing callers.
+
+    AAPL01.BK   → 'AAPL'       (generic suffix stripping)
+    CATL01.BK   → '300750.SZ'  (explicit map — Shenzhen)
+    MICRON01.BK → 'MU'         (explicit map — company-name alias)
+    PTT.BK      → 'PTT.BK'     (unchanged — regular Thai stock)
+    AAPL        → 'AAPL'       (unchanged — US ticker)
     """
-    m = _DR_RE.match(symbol)
-    if not m:
-        return symbol
-    base = m.group(1)
-    return _DR_UNDERLYING_ALIASES.get(base, base)
+    return _resolve_yf(symbol)
 
 
 def is_dr_symbol(symbol: str) -> bool:
-    return bool(_DR_RE.match(symbol))
-
-
-def resolve_symbol(symbol: str) -> str:
-    symbol = symbol.upper()
-    if symbol.endswith(".BK"):
-        return symbol
-    return symbol
+    """Return True if *symbol* is a SET DR certificate (delegates to symbol_resolver)."""
+    return _is_dr(symbol)
 
 
 # ── Internal fetch helpers ─────────────────────────────────────────────────────

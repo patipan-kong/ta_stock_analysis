@@ -2964,3 +2964,53 @@ export const scoreTimingIntelligence = (symbols: string[]) =>
     method: "POST",
     body: JSON.stringify({ symbols }),
   });
+
+// ── Phase 4D.2 — Risk Budget Allocation ──────────────────────────────────────
+
+export interface AllocationItem {
+  symbol: string;
+  weight: number;           // 0.0–1.0 fractional
+  weight_pct: number;       // 0.0–100.0
+  expected_return: number;
+  allocation_score: number;
+  technical_score: number;
+  fundamental_score: number;
+  risk_score: number;
+  confidence_score: number;
+  sector: string;
+  capped: boolean;
+  cap_reason: string | null;
+  reasons: string[];
+}
+
+export interface ExcludedAllocationItem {
+  symbol: string;
+  reason: string;
+}
+
+export interface AllocationConstraints {
+  max_position_pct: number;
+  sector_caps: Record<string, number>;
+  confidence_threshold: number;
+  high_risk_threshold: number;
+  high_risk_cap_pct: number;
+}
+
+export interface RiskBudgetResult {
+  allocations: AllocationItem[];
+  excluded: ExcludedAllocationItem[];
+  total_weight_pct: number;
+  constraints: AllocationConstraints;
+  reasoning: string[];
+  status: "PASS" | "WARNING" | "FAIL";
+  error?: string;
+}
+
+export const calculateRiskBudget = (portfolioId: number, symbols: string[]) =>
+  apiFetch<RiskBudgetResult>(
+    `/portfolios/${portfolioId}/risk-budget-allocation`,
+    {
+      method: "POST",
+      body: JSON.stringify({ symbols }),
+    },
+  );

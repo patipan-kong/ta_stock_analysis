@@ -113,12 +113,48 @@ _MANUAL_ADJUSTMENT_TYPES = {"QUANTITY_CORRECTION"}
 # Warn when single-period |return| exceeds this threshold (likely a data error)
 _NAV_JUMP_WARN_PCT = 25.0
 
+# Minimum fraction of holdings that must have live prices for a snapshot to be saved.
+# Below this threshold the snapshot is aborted to prevent NAV corruption.
+_COVERAGE_THRESHOLD = 0.90
+
+
+class SnapshotCoverageError(Exception):
+    """Raised when market price coverage is too low to produce a valid snapshot.
+
+    Attributes:
+        portfolio_id: The portfolio that was being snapshotted.
+        date: The snapshot date string ("YYYY-MM-DD").
+        total: Total number of holdings.
+        successful: Number of holdings with a live price.
+        missing: Symbols for which no live price was found.
+    """
+
+    def __init__(
+        self,
+        portfolio_id: int,
+        date: str,
+        total: int,
+        successful: int,
+        missing: list[str],
+    ) -> None:
+        self.portfolio_id = portfolio_id
+        self.date = date
+        self.total = total
+        self.successful = successful
+        self.missing = missing
+        super().__init__(
+            f"Snapshot skipped — portfolio={portfolio_id} date={date} "
+            f"coverage={successful}/{total} "
+            f"missing={missing}"
+        )
+
 
 async def generate_daily_snapshot(
     db: Session,
     portfolio_id: int,
     workspace_id: int,
     snapshot_date: str | None = None,
+    price_override: dict[str, float] | None = None,
 ) -> dict:
     """Generate (or overwrite) a daily snapshot for the given portfolio.
 
@@ -127,12 +163,17 @@ async def generate_daily_snapshot(
         portfolio_id: Target portfolio.
         workspace_id: Owning workspace.
         snapshot_date: Override date string "YYYY-MM-DD". Defaults to today (UTC).
+        price_override: When provided, use these prices instead of calling
+            fetch_price_info. Intended for historical repair where live prices
+            are not meaningful (key = symbol, value = closing price for that date).
+            Symbols absent from the map are treated as missing (no price available).
 
     Returns:
         Dict with all computed snapshot fields.
 
     Raises:
         ValueError: Portfolio not found.
+        SnapshotCoverageError: Coverage below 90% threshold.
     """
     today = snapshot_date or datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -147,18 +188,66 @@ async def generate_daily_snapshot(
     ).all()
     cash = portfolio.cash_balance or 0.0
 
-    # ── Fetch latest prices in parallel ───────────────────────────────────────
+    # ── Fetch (or inject) market prices ───────────────────────────────────────
     if items:
-        prices_list = await asyncio.gather(*[
-            asyncio.to_thread(fetch_price_info, item.symbol)
-            for item in items
-        ])
-        price_map: dict[str, float] = {
-            item.symbol: (p.get("current_price") or item.avg_cost)
-            for item, p in zip(items, prices_list)
-        }
+        if price_override is not None:
+            # Repair / backfill mode: caller already fetched historical prices.
+            price_map: dict[str, float] = {}
+            failed_symbols: list[str] = []
+            for item in items:
+                raw_price = price_override.get(item.symbol)
+                if raw_price:
+                    price_map[item.symbol] = float(raw_price)
+                else:
+                    failed_symbols.append(item.symbol)
+        else:
+            prices_list = await asyncio.gather(*[
+                asyncio.to_thread(fetch_price_info, item.symbol)
+                for item in items
+            ])
+            price_map = {}
+            failed_symbols = []
+            for item, p in zip(items, prices_list):
+                raw_price = p.get("current_price") if p else None
+                if raw_price:
+                    price_map[item.symbol] = float(raw_price)
+                else:
+                    failed_symbols.append(item.symbol)
     else:
         price_map = {}
+        failed_symbols = []
+
+    # ── Coverage validation ────────────────────────────────────────────────────
+    total_holdings = len(items)
+    successful_lookups = total_holdings - len(failed_symbols)
+    coverage = successful_lookups / total_holdings if total_holdings > 0 else 1.0
+
+    if total_holdings > 0 and coverage < _COVERAGE_THRESHOLD:
+        _log.warning(
+            "[SNAPSHOT SKIPPED]\nPortfolio: %d\nCoverage: %d / %d\nMissing:\n%s\nReason:\nMarket cache incomplete",
+            portfolio_id,
+            successful_lookups,
+            total_holdings,
+            "\n".join(failed_symbols),
+        )
+        raise SnapshotCoverageError(
+            portfolio_id=portfolio_id,
+            date=today,
+            total=total_holdings,
+            successful=successful_lookups,
+            missing=failed_symbols,
+        )
+
+    if failed_symbols:
+        _log.warning(
+            "[SNAPSHOT PARTIAL COVERAGE] portfolio=%d date=%s coverage=%d/%d "
+            "missing=%s — proceeding; missing positions excluded from equity",
+            portfolio_id,
+            today,
+            successful_lookups,
+            total_holdings,
+            ", ".join(failed_symbols),
+        )
 
     # ── Compute holdings breakdown + aggregates ───────────────────────────────
     holdings: list[dict] = []
@@ -167,25 +256,27 @@ async def generate_daily_snapshot(
     sector_agg: dict[str, float] = {}
 
     for item in items:
-        price = price_map.get(item.symbol, item.avg_cost)
-        mv = item.shares * price
+        price: float | None = price_map.get(item.symbol)
+        mv: float | None = item.shares * price if price is not None else None
         cost = item.shares * item.avg_cost
-        upnl = mv - cost
+        upnl: float | None = (mv - cost) if mv is not None else None
         sector = item.sector or "Other"
 
-        equity_value += mv
+        if mv is not None:
+            equity_value += mv
+            sector_agg[sector] = sector_agg.get(sector, 0.0) + mv
         total_cost += cost
-        sector_agg[sector] = sector_agg.get(sector, 0.0) + mv
 
         holdings.append({
             "symbol": item.symbol,
             "shares": round(item.shares, 6),
             "avg_cost": round(item.avg_cost, 4),
-            "current_price": round(price, 4),
-            "market_value": round(mv, 4),
-            "unrealized_pnl": round(upnl, 4),
-            "unrealized_pnl_pct": round(upnl / cost * 100, 2) if cost > 0 else 0.0,
+            "current_price": round(price, 4) if price is not None else None,
+            "market_value": round(mv, 4) if mv is not None else None,
+            "unrealized_pnl": round(upnl, 4) if upnl is not None else None,
+            "unrealized_pnl_pct": round(upnl / cost * 100, 2) if (upnl is not None and cost > 0) else None,
             "sector": sector,
+            "price_missing": price is None,
         })
 
     total_value = equity_value + cash

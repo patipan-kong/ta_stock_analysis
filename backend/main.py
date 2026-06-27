@@ -51,7 +51,7 @@ from services.portfolio_transactions import (
     execute_quantity_correction,
     execute_dividend,
 )
-from services.portfolio_snapshots import generate_daily_snapshot
+from services.portfolio_snapshots import generate_daily_snapshot, SnapshotCoverageError
 from services.snapshot_scheduler import setup_scheduler, shutdown_scheduler
 from services.core.runtime_env import get_system_status, is_vps_env, allow_market_fetching
 from services.analytics.quant_engine import (
@@ -3744,6 +3744,21 @@ async def snapshot_generate(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except SnapshotCoverageError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "snapshot_coverage_insufficient",
+                "message": (
+                    f"Snapshot aborted: market price coverage {exc.successful}/{exc.total} "
+                    f"({exc.successful / exc.total * 100:.0f}%) is below the 90% threshold."
+                ),
+                "portfolio_id": exc.portfolio_id,
+                "date": exc.date,
+                "coverage": {"total": exc.total, "successful": exc.successful},
+                "missing_symbols": exc.missing,
+            },
+        )
     _analytics_invalidate(body.portfolio_id)
     return result
 
@@ -4366,12 +4381,17 @@ async def admin_validate_portfolio(
         asyncio.to_thread(fetch_price_info, item.symbol)
         for item in items
     ]) if items else []
-    price_map = {
-        item.symbol: (p.get("current_price") or item.avg_cost)
+    price_map: dict = {
+        item.symbol: p.get("current_price")
         for item, p in zip(items, prices_list)
+        if p.get("current_price")
     }
 
-    live_equity = sum(item.shares * price_map.get(item.symbol, item.avg_cost) for item in items)
+    live_equity = sum(
+        item.shares * price_map[item.symbol]
+        for item in items
+        if item.symbol in price_map
+    )
     live_cash   = portfolio.cash_balance or 0.0
     live_nav    = live_equity + live_cash
 
@@ -5893,6 +5913,43 @@ async def position_sizing(
     try:
         result = await asyncio.to_thread(
             suggest_position_sizes, portfolio_id, body.symbols, ws, db, body.timing_scores
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return result.model_dump()
+
+
+# ─── Phase 4D.2 — Risk Budget Allocation ─────────────────────────────────────
+
+class RiskBudgetRequest(BaseModel):
+    symbols: list[str]
+
+
+@app.post("/portfolios/{portfolio_id}/risk-budget-allocation")
+async def risk_budget_allocation(
+    portfolio_id: int,
+    body: RiskBudgetRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Compute target portfolio weights using risk-adjusted allocation scoring.
+
+    Scores each symbol by expected return (TA × 0.4 + FA × 0.4 + confidence × 0.2)
+    divided by risk score, then normalises to 100 %.  Applies confidence filter,
+    high-risk cap (5 %), max position cap (20 %), and sector concentration caps.
+
+    No AI calls.  No trades executed.  Read-only deterministic analysis.
+    """
+    ws = _ws_id(db)
+    p = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
+    ).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    from services.allocation_engine import suggest_risk_budget
+    try:
+        result = await asyncio.to_thread(
+            suggest_risk_budget, portfolio_id, body.symbols, ws, db
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

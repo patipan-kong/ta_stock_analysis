@@ -7,6 +7,7 @@ import {
   suggestPositionSizes,
   scoreTimingIntelligence,
   buildExecutionPlan,
+  calculateRiskBudget,
   type IdeaReview,
   type IdeaReviewPortfolioContext,
   type PortfolioConstructionResult,
@@ -18,6 +19,8 @@ import {
   type BuyAction,
   type FundingSourceItem,
   type FundingBreakdown,
+  type RiskBudgetResult,
+  type AllocationItem,
 } from "@/lib/api";
 import IdeaIntakeCard from "../idea-intake/IdeaIntakeCard";
 import BasketSimulationCard from "../basket-simulation/BasketSimulationCard";
@@ -32,6 +35,7 @@ type WorkspaceStep =
   | "timing"
   | "constructing"
   | "sizing"
+  | "allocating"
   | "planning"
   | "done";
 
@@ -133,11 +137,12 @@ const STAGES = [
   { key: "reviewing",    label: "Committee" },
   { key: "timing",       label: "Timing" },
   { key: "constructing", label: "Impact" },
-  { key: "sizing",       label: "Allocation" },
+  { key: "sizing",       label: "Sizing" },
+  { key: "allocating",   label: "Budget" },
   { key: "planning",     label: "Plan" },
 ];
 const STAGE_ORDER: WorkspaceStep[] = [
-  "reviewing", "timing", "constructing", "sizing", "planning", "done",
+  "reviewing", "timing", "constructing", "sizing", "allocating", "planning", "done",
 ];
 
 function ProgressStrip({ step }: { step: WorkspaceStep }) {
@@ -910,7 +915,7 @@ function ExecutionPlanSection({ plan }: { plan: ExecutionPlanResult }) {
   return (
     <div className="space-y-4">
       <h4 className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">
-        6 · Execution Plan
+        7 · Execution Plan
       </h4>
 
       {/* Status banner */}
@@ -990,7 +995,7 @@ function FinalDecision({
   return (
     <div className="space-y-3">
       <h4 className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">
-        7 · Final Decision
+        8 · Final Decision
       </h4>
 
       <div className={`rounded-xl border-2 p-5 space-y-5 ${STATUS_BORDER[overall]}`}>
@@ -1069,6 +1074,125 @@ function FinalDecision({
   );
 }
 
+// ─── Section 6: Risk Budget Allocation ───────────────────────────────────────
+
+const RISK_BAND_STYLE = (risk: number): string => {
+  if (risk <= 30)  return "text-emerald-600";
+  if (risk <= 60)  return "text-gray-600";
+  if (risk <= 80)  return "text-amber-700";
+  return "text-red-600";
+};
+
+function RiskBudgetSection({ result }: { result: RiskBudgetResult }) {
+  const { allocations, excluded, status } = result;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">
+          6 · Risk Budget
+        </h4>
+        <span
+          className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${
+            STATUS_BORDER[status] ?? "border-gray-200 bg-gray-100 text-gray-500"
+          }`}
+        >
+          {status}
+        </span>
+      </div>
+
+      {/* Allocation bars */}
+      {allocations.length > 0 && (() => {
+        const maxPct = Math.max(...allocations.map((a) => a.weight_pct), 0.01);
+        return (
+          <div className="space-y-2.5">
+            {allocations.map((a) => (
+              <div key={a.symbol} className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-semibold text-gray-800 text-xs">
+                      {a.symbol}
+                    </span>
+                    <span className="text-[10px] text-gray-400">{a.sector}</span>
+                    {a.capped && (
+                      <span className="text-[9px] font-semibold text-amber-600">
+                        capped
+                      </span>
+                    )}
+                  </div>
+                  <span className="font-mono font-bold text-gray-800 text-sm">
+                    {a.weight_pct.toFixed(1)}%
+                  </span>
+                </div>
+                <div className="h-2 rounded-full bg-gray-100">
+                  <div
+                    className={`h-2 rounded-full ${
+                      a.capped ? "bg-amber-400" : "bg-indigo-500"
+                    }`}
+                    style={{ width: `${(a.weight_pct / maxPct) * 100}%` }}
+                  />
+                </div>
+                {/* Driver metrics */}
+                <div className="flex items-center gap-3 text-[10px] font-mono text-gray-500">
+                  <span>Return <span className="font-semibold text-gray-700">{a.expected_return.toFixed(0)}</span></span>
+                  <span className="text-gray-300">·</span>
+                  <span className={RISK_BAND_STYLE(a.risk_score)}>Risk <span className="font-semibold">{a.risk_score.toFixed(0)}</span></span>
+                  <span className="text-gray-300">·</span>
+                  <span>Conf <span className="font-semibold text-gray-700">{a.confidence_score.toFixed(0)}</span></span>
+                </div>
+                {/* Reasoning badges */}
+                {a.reasons.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {a.reasons.map((r, ri) => (
+                      <span key={ri} className="text-[9px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
+                        ✓ {r}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+
+            <div className="border-t border-gray-200 pt-2 flex items-center justify-between text-xs font-semibold text-gray-700">
+              <span>Target Total</span>
+              <span className="font-mono">
+                {result.total_weight_pct.toFixed(1)}%
+              </span>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Excluded by confidence */}
+      {excluded.length > 0 && (
+        <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 space-y-1">
+          <p className="text-[10px] font-semibold text-amber-700 uppercase tracking-wide">
+            Excluded by confidence filter
+          </p>
+          {excluded.map((e) => (
+            <p key={e.symbol} className="text-[11px] text-amber-700 flex items-center gap-2">
+              <span className="font-mono font-semibold">{e.symbol}</span>
+              <span className="opacity-60">— {e.reason}</span>
+            </p>
+          ))}
+        </div>
+      )}
+
+      {/* Reasoning */}
+      {result.reasoning.length > 0 && (
+        <div className="space-y-1">
+          {result.reasoning.map((line, i) => (
+            <p key={i} className="text-[11px] text-gray-500 flex items-start gap-1.5">
+              <span className="shrink-0">·</span>
+              <span>{line}</span>
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Advanced Tools accordion ─────────────────────────────────────────────────
 
 function AdvancedTools({ portfolioId }: { portfolioId: number }) {
@@ -1134,6 +1258,7 @@ export default function DecisionWorkspace({
   const [portfolioCtx, setPortfolioCtx] = useState<IdeaReviewPortfolioContext | null>(null);
   const [construction, setConstruction] = useState<PortfolioConstructionResult | null>(null);
   const [sizing, setSizing] = useState<PositionSizingResult | null>(null);
+  const [riskBudget, setRiskBudget] = useState<RiskBudgetResult | null>(null);
   const [timingResults, setTimingResults] = useState<StockTimingResult[] | null>(null);
   const [executionPlan, setExecutionPlan] = useState<ExecutionPlanResult | null>(null);
 
@@ -1150,6 +1275,7 @@ export default function DecisionWorkspace({
     setPortfolioCtx(null);
     setConstruction(null);
     setSizing(null);
+    setRiskBudget(null);
     setTimingResults(null);
     setExecutionPlan(null);
 
@@ -1193,7 +1319,12 @@ export default function DecisionWorkspace({
       if (sizingRes.error) throw new Error(sizingRes.error);
       setSizing(sizingRes);
 
-      // Step 5 — Execution plan (funding sources + buy actions)
+      // Step 5 — Risk budget allocation (target portfolio weights)
+      setStep("allocating");
+      const budgetRes = await calculateRiskBudget(portfolioId, eligibleSymbols);
+      if (!budgetRes.error) setRiskBudget(budgetRes);
+
+      // Step 6 — Execution plan (funding sources + buy actions)
       setStep("planning");
       const planRes = await buildExecutionPlan(
         portfolioId,
@@ -1227,6 +1358,7 @@ export default function DecisionWorkspace({
     setPortfolioCtx(null);
     setConstruction(null);
     setSizing(null);
+    setRiskBudget(null);
     setTimingResults(null);
     setExecutionPlan(null);
     setError(null);
@@ -1338,6 +1470,12 @@ export default function DecisionWorkspace({
                 <PortfolioImpact sim={construction.simulation} />
                 <div className="border-t border-gray-100" />
                 <SuggestedAllocation sizing={sizing} />
+                {riskBudget && (
+                  <>
+                    <div className="border-t border-gray-100" />
+                    <RiskBudgetSection result={riskBudget} />
+                  </>
+                )}
                 {executionPlan && (
                   <>
                     <div className="border-t border-gray-100" />
