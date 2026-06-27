@@ -1,7 +1,9 @@
 """Tests for services/ledger_validator.py.
 
 All tests are read-only and run without a live database.
-Mock transaction/snapshot/portfolio objects use SimpleNamespace.
+Mock transaction/snapshot/portfolio objects use SimpleNamespace, which are
+converted to CanonicalTransaction via canonicalize_transactions() before
+being passed to check functions.
 
 Coverage
 --------
@@ -40,6 +42,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from services.transaction_canonicalizer import canonicalize_transactions
 from services.ledger_validator import (
     FindingSeverity,
     LedgerFinding,
@@ -88,10 +91,18 @@ def _tx(
         shares           = shares,
         price_per_share  = price,
         total_amount     = amount,
+        fees             = 0.0,
+        taxes            = 0.0,
+        sector           = None,
         transaction_date = tx_date,
         created_at       = created_at,
         notes            = notes,
     )
+
+
+def _canonical(txs):
+    """Convert a list of _tx() SimpleNamespaces into CanonicalTransactions."""
+    return list(canonicalize_transactions(txs))
 
 
 def _portfolio(
@@ -153,10 +164,10 @@ def _only_findings(findings: list[LedgerFinding], check_id: str) -> list[LedgerF
 
 class TestDuplicateInitialPosition:
     def test_two_records_same_symbol_same_date_is_critical(self):
-        txs = [
+        txs = _canonical([
             _tx(21, "INITIAL_POSITION", "GULF.BK", shares=1500, price=124.59, date_str="2024-01-15"),
             _tx(24, "INITIAL_POSITION", "GULF.BK", shares=1500, price=56.25, date_str="2024-01-15"),
-        ]
+        ])
         findings = _check_duplicate_initial_positions(4, txs)
         assert len(findings) == 1
         f = findings[0]
@@ -168,45 +179,45 @@ class TestDuplicateInitialPosition:
         assert f.details["count"] == 2
 
     def test_two_records_different_dates_is_pass(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "INITIAL_POSITION", "AOT.BK", shares=100, price=60.0, date_str="2024-01-01"),
             _tx(2, "INITIAL_POSITION", "AOT.BK", shares=50,  price=65.0, date_str="2024-06-01"),
-        ]
+        ])
         findings = _check_duplicate_initial_positions(1, txs)
         assert findings == []
 
     def test_single_initial_position_is_pass(self):
-        txs = [_tx(1, "INITIAL_POSITION", "PTT.BK", shares=200, price=35.0, date_str="2024-01-01")]
+        txs = _canonical([_tx(1, "INITIAL_POSITION", "PTT.BK", shares=200, price=35.0, date_str="2024-01-01")])
         assert _check_duplicate_initial_positions(1, txs) == []
 
     def test_symbol_alias_detected_as_duplicate(self):
         # KBANK stored with and without .BK on same date → same canonical KBANK.BK
-        txs = [
+        txs = _canonical([
             _tx(10, "INITIAL_POSITION", "KBANK",    shares=500, price=140.0, date_str="2024-03-01"),
             _tx(11, "INITIAL_POSITION", "KBANK.BK", shares=500, price=140.0, date_str="2024-03-01"),
-        ]
+        ])
         findings = _check_duplicate_initial_positions(1, txs)
         assert len(findings) == 1
         assert findings[0].check_id == "DUP_INITIAL_POSITION"
         assert "KBANK.BK" in findings[0].normalized_symbol
 
     def test_three_duplicates_all_captured(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "INITIAL_POSITION", "BH.BK", shares=100, price=200.0, date_str="2024-01-01"),
             _tx(2, "INITIAL_POSITION", "BH.BK", shares=100, price=210.0, date_str="2024-01-01"),
             _tx(3, "INITIAL_POSITION", "BH.BK", shares=100, price=220.0, date_str="2024-01-01"),
-        ]
+        ])
         findings = _check_duplicate_initial_positions(1, txs)
         assert len(findings) == 1
         assert findings[0].details["count"] == 3
         assert set(findings[0].transaction_ids) == {1, 2, 3}
 
     def test_non_initial_position_types_ignored(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "BUY",  "AOT.BK", shares=100, price=60.0, date_str="2024-01-01"),
             _tx(2, "BUY",  "AOT.BK", shares=100, price=60.0, date_str="2024-01-01"),
             _tx(3, "SELL", "AOT.BK", shares=50,  price=65.0, date_str="2024-06-01"),
-        ]
+        ])
         assert _check_duplicate_initial_positions(1, txs) == []
 
 
@@ -216,10 +227,10 @@ class TestDuplicateInitialPosition:
 
 class TestSymbolAliases:
     def test_kbank_with_and_without_bk_is_warning(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "INITIAL_POSITION", "KBANK",    shares=100, date_str="2024-01-01"),
             _tx(2, "BUY",              "KBANK.BK", shares=50,  date_str="2024-06-01"),
-        ]
+        ])
         findings = _check_symbol_aliases(1, txs)
         assert len(findings) == 1
         f = findings[0]
@@ -230,35 +241,35 @@ class TestSymbolAliases:
 
     def test_dr_with_and_without_bk_is_warning(self):
         # NVDA01 and NVDA01.BK both resolve to NVDA
-        txs = [
+        txs = _canonical([
             _tx(1, "INITIAL_POSITION", "NVDA01",    shares=10, date_str="2024-01-01"),
             _tx(2, "BUY",              "NVDA01.BK", shares=5,  date_str="2024-06-01"),
-        ]
+        ])
         findings = _check_symbol_aliases(1, txs)
         assert len(findings) == 1
         assert findings[0].normalized_symbol == "NVDA"
 
     def test_clean_ledger_no_alias_findings(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "BUY",  "AOT.BK",  shares=100, date_str="2024-01-01"),
             _tx(2, "BUY",  "PTT.BK",  shares=200, date_str="2024-01-01"),
             _tx(3, "SELL", "AOT.BK",  shares=50,  date_str="2024-06-01"),
-        ]
+        ])
         assert _check_symbol_aliases(1, txs) == []
 
     def test_same_raw_symbol_used_multiple_times_no_alias(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "BUY",  "GULF.BK", shares=100, date_str="2024-01-01"),
             _tx(2, "BUY",  "GULF.BK", shares=50,  date_str="2024-03-01"),
             _tx(3, "SELL", "GULF.BK", shares=80,  date_str="2024-06-01"),
-        ]
+        ])
         assert _check_symbol_aliases(1, txs) == []
 
     def test_cash_transactions_without_symbol_ignored(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "DEPOSIT",  amount=50000, date_str="2024-01-01"),
             _tx(2, "WITHDRAW", amount=10000, date_str="2024-06-01"),
-        ]
+        ])
         assert _check_symbol_aliases(1, txs) == []
 
 
@@ -268,32 +279,32 @@ class TestSymbolAliases:
 
 class TestNullSymbols:
     def test_buy_with_null_symbol_is_error(self):
-        txs = [_tx(1, "BUY", symbol=None, shares=100, price=50.0, amount=5000)]
+        txs = _canonical([_tx(1, "BUY", symbol=None, shares=100, price=50.0, amount=5000)])
         findings = _check_null_symbols(1, txs)
         assert len(findings) == 1
         assert findings[0].check_id == "NULL_SYMBOL"
         assert findings[0].severity == FindingSeverity.ERROR
 
     def test_sell_with_empty_symbol_is_error(self):
-        txs = [_tx(1, "SELL", symbol="  ", shares=50, price=60.0, amount=3000)]
+        txs = _canonical([_tx(1, "SELL", symbol="  ", shares=50, price=60.0, amount=3000)])
         findings = _check_null_symbols(1, txs)
         assert len(findings) == 1
         assert findings[0].check_id == "NULL_SYMBOL"
 
     def test_initial_position_null_symbol_is_error(self):
-        txs = [_tx(1, "INITIAL_POSITION", symbol=None, shares=100, price=40.0)]
+        txs = _canonical([_tx(1, "INITIAL_POSITION", symbol=None, shares=100, price=40.0)])
         assert len(_check_null_symbols(1, txs)) == 1
 
     def test_cash_transactions_without_symbol_are_pass(self):
-        txs = [
-            _tx(1, "DEPOSIT",     symbol=None, amount=50000),
-            _tx(2, "WITHDRAW",    symbol=None, amount=10000),
+        txs = _canonical([
+            _tx(1, "DEPOSIT",      symbol=None, amount=50000),
+            _tx(2, "WITHDRAW",     symbol=None, amount=10000),
             _tx(3, "INITIAL_CASH", symbol=None, amount=20000),
-        ]
+        ])
         assert _check_null_symbols(1, txs) == []
 
     def test_valid_symbol_is_pass(self):
-        txs = [_tx(1, "BUY", "AOT.BK", shares=100, price=60.0, amount=6000)]
+        txs = _canonical([_tx(1, "BUY", "AOT.BK", shares=100, price=60.0, amount=6000)])
         assert _check_null_symbols(1, txs) == []
 
 
@@ -303,26 +314,26 @@ class TestNullSymbols:
 
 class TestZeroShares:
     def test_buy_with_zero_shares_is_error(self):
-        txs = [_tx(1, "BUY", "AOT.BK", shares=0, price=60.0, amount=0)]
+        txs = _canonical([_tx(1, "BUY", "AOT.BK", shares=0, price=60.0, amount=0)])
         findings = _check_zero_shares(1, txs)
         assert len(findings) == 1
         assert findings[0].check_id == "ZERO_SHARES"
         assert findings[0].severity == FindingSeverity.ERROR
 
     def test_buy_with_null_shares_is_error(self):
-        txs = [_tx(1, "BUY", "AOT.BK", shares=None, price=60.0, amount=6000)]
+        txs = _canonical([_tx(1, "BUY", "AOT.BK", shares=None, price=60.0, amount=6000)])
         assert len(_check_zero_shares(1, txs)) == 1
 
     def test_sell_with_zero_shares_is_error(self):
-        txs = [_tx(1, "SELL", "AOT.BK", shares=0, price=65.0, amount=0)]
+        txs = _canonical([_tx(1, "SELL", "AOT.BK", shares=0, price=65.0, amount=0)])
         assert len(_check_zero_shares(1, txs)) == 1
 
     def test_positive_shares_is_pass(self):
-        txs = [_tx(1, "BUY", "AOT.BK", shares=100, price=60.0, amount=6000)]
+        txs = _canonical([_tx(1, "BUY", "AOT.BK", shares=100, price=60.0, amount=6000)])
         assert _check_zero_shares(1, txs) == []
 
     def test_deposit_without_shares_is_pass(self):
-        txs = [_tx(1, "DEPOSIT", shares=None, amount=50000)]
+        txs = _canonical([_tx(1, "DEPOSIT", shares=None, amount=50000)])
         assert _check_zero_shares(1, txs) == []
 
 
@@ -332,27 +343,27 @@ class TestZeroShares:
 
 class TestZeroPrices:
     def test_buy_with_zero_price_is_warning(self):
-        txs = [_tx(1, "BUY", "AOT.BK", shares=100, price=0.0, amount=0)]
+        txs = _canonical([_tx(1, "BUY", "AOT.BK", shares=100, price=0.0, amount=0)])
         findings = _check_zero_prices(1, txs)
         assert len(findings) == 1
         assert findings[0].check_id == "ZERO_PRICE"
         assert findings[0].severity == FindingSeverity.WARNING
 
     def test_buy_with_null_price_is_warning(self):
-        txs = [_tx(1, "BUY", "AOT.BK", shares=100, price=None, amount=6000)]
+        txs = _canonical([_tx(1, "BUY", "AOT.BK", shares=100, price=None, amount=6000)])
         assert len(_check_zero_prices(1, txs)) == 1
 
     def test_initial_position_with_zero_price_is_warning(self):
-        txs = [_tx(1, "INITIAL_POSITION", "AOT.BK", shares=100, price=0.0)]
+        txs = _canonical([_tx(1, "INITIAL_POSITION", "AOT.BK", shares=100, price=0.0)])
         assert len(_check_zero_prices(1, txs)) == 1
 
     def test_sell_with_zero_price_is_pass(self):
         # SELL price is not used for avg_cost — not flagged
-        txs = [_tx(1, "SELL", "AOT.BK", shares=50, price=0.0, amount=0)]
+        txs = _canonical([_tx(1, "SELL", "AOT.BK", shares=50, price=0.0, amount=0)])
         assert _check_zero_prices(1, txs) == []
 
     def test_positive_price_is_pass(self):
-        txs = [_tx(1, "BUY", "AOT.BK", shares=100, price=60.5, amount=6050)]
+        txs = _canonical([_tx(1, "BUY", "AOT.BK", shares=100, price=60.5, amount=6050)])
         assert _check_zero_prices(1, txs) == []
 
 
@@ -362,32 +373,32 @@ class TestZeroPrices:
 
 class TestPrePortfolioTransactions:
     def test_transaction_before_portfolio_created_is_error(self):
-        txs = [_tx(1, "INITIAL_POSITION", "PTT.BK", shares=100, price=30.0, date_str="2020-01-01")]
+        txs = _canonical([_tx(1, "INITIAL_POSITION", "PTT.BK", shares=100, price=30.0, date_str="2020-01-01")])
         findings = _check_pre_portfolio_transactions(1, datetime(2024, 1, 1), txs)
         assert len(findings) == 1
         assert findings[0].check_id == "PRE_PORTFOLIO_TX"
         assert findings[0].severity == FindingSeverity.ERROR
 
     def test_transaction_on_same_day_as_portfolio_creation_is_pass(self):
-        txs = [_tx(1, "INITIAL_CASH", amount=50000, date_str="2024-01-01")]
+        txs = _canonical([_tx(1, "INITIAL_CASH", amount=50000, date_str="2024-01-01")])
         findings = _check_pre_portfolio_transactions(1, datetime(2024, 1, 1), txs)
         assert findings == []
 
     def test_transaction_after_portfolio_creation_is_pass(self):
-        txs = [_tx(1, "BUY", "AOT.BK", shares=100, price=60.0, amount=6000, date_str="2024-06-01")]
+        txs = _canonical([_tx(1, "BUY", "AOT.BK", shares=100, price=60.0, amount=6000, date_str="2024-06-01")])
         findings = _check_pre_portfolio_transactions(1, datetime(2024, 1, 1), txs)
         assert findings == []
 
     def test_no_portfolio_created_at_is_pass(self):
-        txs = [_tx(1, "BUY", "AOT.BK", shares=100, price=60.0, amount=6000, date_str="2024-06-01")]
+        txs = _canonical([_tx(1, "BUY", "AOT.BK", shares=100, price=60.0, amount=6000, date_str="2024-06-01")])
         findings = _check_pre_portfolio_transactions(1, None, txs)
         assert findings == []
 
     def test_multiple_pre_portfolio_transactions(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "INITIAL_POSITION", "PTT.BK", shares=100, price=30.0, date_str="2020-01-01"),
             _tx(2, "INITIAL_CASH", amount=50000, date_str="2021-06-01"),
-        ]
+        ])
         findings = _check_pre_portfolio_transactions(1, datetime(2024, 1, 1), txs)
         assert len(findings) == 2
 
@@ -398,14 +409,14 @@ class TestPrePortfolioTransactions:
 
 class TestDateSkew:
     def test_small_skew_is_pass(self):
-        txs = [_tx(1, "BUY", "AOT.BK", shares=100, price=60.0,
-                   date_str="2026-01-01", created_str="2026-01-02")]
+        txs = _canonical([_tx(1, "BUY", "AOT.BK", shares=100, price=60.0,
+                   date_str="2026-01-01", created_str="2026-01-02")])
         assert _check_date_skew(1, txs, warning_days=90, error_days=365) == []
 
     def test_skew_above_warning_threshold_is_warning(self):
         # 120 days skew — above 90-day warning, below 365-day error
-        txs = [_tx(1, "BUY", "AOT.BK", shares=100, price=60.0,
-                   date_str="2025-09-01", created_str="2025-12-30")]
+        txs = _canonical([_tx(1, "BUY", "AOT.BK", shares=100, price=60.0,
+                   date_str="2025-09-01", created_str="2025-12-30")])
         findings = _check_date_skew(1, txs, warning_days=90, error_days=365)
         assert len(findings) == 1
         assert findings[0].check_id == "LARGE_DATE_SKEW"
@@ -414,22 +425,25 @@ class TestDateSkew:
 
     def test_skew_above_error_threshold_is_error(self):
         # 400 days skew — above 365-day error threshold
-        txs = [_tx(1, "INITIAL_POSITION", "GULF.BK", shares=1500, price=56.0,
-                   date_str="2023-01-01", created_str="2024-02-05")]
+        txs = _canonical([_tx(1, "INITIAL_POSITION", "GULF.BK", shares=1500, price=56.0,
+                   date_str="2023-01-01", created_str="2024-02-05")])
         findings = _check_date_skew(1, txs, warning_days=90, error_days=365)
         assert len(findings) == 1
         assert findings[0].severity == FindingSeverity.ERROR
         assert findings[0].details["skew_days"] >= 365
 
     def test_missing_created_at_is_pass(self):
+        # Build a SimpleNamespace with created_at=None and pass through canonicalizer
         tx = SimpleNamespace(
             id=1, transaction_type="BUY", symbol="AOT.BK",
             shares=100, price_per_share=60.0, total_amount=6000,
+            fees=0.0, taxes=0.0, sector=None,
             transaction_date=datetime(2026, 1, 1),
-            created_at=None,  # missing
+            created_at=None,
             notes=None,
         )
-        assert _check_date_skew(1, [tx]) == []
+        txs = list(canonicalize_transactions([tx]))
+        assert _check_date_skew(1, txs) == []
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -438,10 +452,10 @@ class TestDateSkew:
 
 class TestDuplicateFingerprints:
     def test_identical_transactions_is_error(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "BUY", "GULF.BK", shares=500, price=56.0, amount=28000, date_str="2024-01-15"),
             _tx(2, "BUY", "GULF.BK", shares=500, price=56.0, amount=28000, date_str="2024-01-15"),
-        ]
+        ])
         findings = _check_duplicate_fingerprints(1, txs)
         assert len(findings) == 1
         f = findings[0]
@@ -450,31 +464,31 @@ class TestDuplicateFingerprints:
         assert set(f.transaction_ids) == {1, 2}
 
     def test_same_symbol_different_price_is_pass(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "BUY", "GULF.BK", shares=500, price=56.0, amount=28000, date_str="2024-01-15"),
             _tx(2, "BUY", "GULF.BK", shares=500, price=57.0, amount=28500, date_str="2024-01-15"),
-        ]
+        ])
         assert _check_duplicate_fingerprints(1, txs) == []
 
     def test_same_symbol_different_date_is_pass(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "BUY", "GULF.BK", shares=500, price=56.0, amount=28000, date_str="2024-01-15"),
             _tx(2, "BUY", "GULF.BK", shares=500, price=56.0, amount=28000, date_str="2024-01-16"),
-        ]
+        ])
         assert _check_duplicate_fingerprints(1, txs) == []
 
     def test_same_symbol_different_shares_is_pass(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "BUY", "GULF.BK", shares=500, price=56.0, amount=28000, date_str="2024-01-15"),
             _tx(2, "BUY", "GULF.BK", shares=600, price=56.0, amount=33600, date_str="2024-01-15"),
-        ]
+        ])
         assert _check_duplicate_fingerprints(1, txs) == []
 
     def test_three_identical_transactions(self):
-        txs = [
+        txs = _canonical([
             _tx(i, "INITIAL_POSITION", "PTT.BK", shares=100, price=30.0, amount=3000, date_str="2024-01-01")
             for i in range(1, 4)
-        ]
+        ])
         findings = _check_duplicate_fingerprints(1, txs)
         assert len(findings) == 1
         assert findings[0].details["count"] == 3
@@ -486,12 +500,12 @@ class TestDuplicateFingerprints:
 
 class TestReplayChecks:
     def _clean_buy_sell_sequence(self):
-        return [
+        return _canonical([
             _tx(1, "INITIAL_CASH",     amount=200_000, date_str="2026-01-01"),
             _tx(2, "BUY",  "AOT.BK",  shares=100, price=60.0, amount=6000,  date_str="2026-01-02"),
             _tx(3, "BUY",  "PTT.BK",  shares=200, price=35.0, amount=7000,  date_str="2026-01-03"),
             _tx(4, "SELL", "AOT.BK",  shares=50,  price=70.0, amount=3500,  date_str="2026-06-01"),
-        ]
+        ])
 
     def test_clean_sequence_no_findings(self):
         state, findings, _ = _replay_and_check(1, self._clean_buy_sell_sequence())
@@ -500,10 +514,10 @@ class TestReplayChecks:
         assert float(state.holdings["PTT.BK"]) == pytest.approx(200.0)
 
     def test_sell_without_holding_is_critical(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "INITIAL_CASH", amount=100_000, date_str="2026-01-01"),
             _tx(2, "SELL", "AOT.BK", shares=100, price=70.0, amount=7000, date_str="2026-06-01"),
-        ]
+        ])
         _, findings, _ = _replay_and_check(1, txs)
         sell_findings = _only_findings(findings, "SELL_WITHOUT_HOLDING")
         assert len(sell_findings) == 1
@@ -511,11 +525,11 @@ class TestReplayChecks:
         assert sell_findings[0].transaction_ids == [2]
 
     def test_negative_share_balance_is_critical(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "INITIAL_CASH",   amount=100_000, date_str="2026-01-01"),
             _tx(2, "BUY", "BH.BK",  shares=50, price=200.0, amount=10_000, date_str="2026-01-02"),
             _tx(3, "SELL", "BH.BK", shares=100, price=210.0, amount=21_000, date_str="2026-06-01"),
-        ]
+        ])
         _, findings, _ = _replay_and_check(1, txs)
         neg_findings = _only_findings(findings, "NEG_SHARE_BALANCE")
         assert len(neg_findings) == 1
@@ -523,45 +537,45 @@ class TestReplayChecks:
         assert neg_findings[0].details["shares_after"] < 0
 
     def test_negative_cash_balance_is_warning(self):
-        txs = [
+        txs = _canonical([
             # No deposit — cash starts at 0, BUY will push it negative
             _tx(1, "BUY", "AOT.BK", shares=100, price=60.0, amount=6000, date_str="2026-01-01"),
-        ]
+        ])
         _, findings, _ = _replay_and_check(1, txs)
         neg_cash = _only_findings(findings, "NEG_CASH_BALANCE")
         assert len(neg_cash) == 1
         assert neg_cash[0].severity == FindingSeverity.WARNING
 
     def test_qcorr_without_holding_is_error(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "INITIAL_CASH", amount=100_000, date_str="2026-01-01"),
             _tx(2, "QUANTITY_CORRECTION", "GULF.BK", shares=50, price=56.0,
                 date_str="2026-06-01",
                 notes="Quantity correction: +50.0 shares"),
-        ]
+        ])
         _, findings, _ = _replay_and_check(1, txs)
         qcorr = _only_findings(findings, "QCORR_WITHOUT_HOLDING")
         assert len(qcorr) == 1
         assert qcorr[0].severity == FindingSeverity.ERROR
 
     def test_qcorr_on_existing_holding_is_pass(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "INITIAL_CASH",  amount=100_000, date_str="2026-01-01"),
             _tx(2, "BUY", "BH.BK", shares=100, price=200.0, amount=20_000, date_str="2026-01-02"),
             _tx(3, "QUANTITY_CORRECTION", "BH.BK", shares=5, price=200.0,
                 date_str="2026-03-01",
                 notes="Quantity correction: +5.0 shares"),
-        ]
+        ])
         _, findings, _ = _replay_and_check(1, txs)
         qcorr = _only_findings(findings, "QCORR_WITHOUT_HOLDING")
         assert qcorr == []
 
     def test_snapshot_state_captured_at_correct_dates(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "INITIAL_CASH",  amount=100_000, date_str="2026-01-01"),
             _tx(2, "BUY", "AOT.BK", shares=100, price=60.0, amount=6000, date_str="2026-01-02"),
             _tx(3, "BUY", "PTT.BK", shares=200, price=35.0, amount=7000, date_str="2026-03-01"),
-        ]
+        ])
         snap_dates = ["2026-01-01", "2026-01-31", "2026-06-01"]
         _, _, state_by_date = _replay_and_check(1, txs, snapshot_dates=snap_dates)
 
@@ -581,20 +595,20 @@ class TestReplayChecks:
         assert float(s3.holdings.get("PTT.BK", 0)) == pytest.approx(200.0)
 
     def test_full_sell_removes_holding(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "INITIAL_CASH", amount=100_000, date_str="2026-01-01"),
             _tx(2, "BUY",  "AOT.BK", shares=100, price=60.0, amount=6000, date_str="2026-01-02"),
             _tx(3, "SELL", "AOT.BK", shares=100, price=70.0, amount=7000, date_str="2026-06-01"),
-        ]
+        ])
         state, findings, _ = _replay_and_check(1, txs)
         assert findings == []
         assert "AOT.BK" not in state.holdings
 
     def test_initial_position_does_not_affect_cash(self):
-        txs = [
+        txs = _canonical([
             _tx(1, "INITIAL_CASH",     amount=50_000, date_str="2026-01-01"),
             _tx(2, "INITIAL_POSITION", "BH.BK", shares=100, price=200.0, date_str="2026-01-01"),
-        ]
+        ])
         state, _, _ = _replay_and_check(1, txs)
         assert float(state.cash) == pytest.approx(50_000)
         assert float(state.holdings["BH.BK"]) == pytest.approx(100.0)

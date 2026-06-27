@@ -29,7 +29,6 @@ from __future__ import annotations
 import asyncio
 import bisect
 import logging
-import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -42,8 +41,11 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from models.database import Portfolio, PortfolioItem, PortfolioSnapshot, Transaction
-from services.symbol_normalization import get_yfinance_symbol
 from services.data_fetcher import fetch_history
+from services.transaction_canonicalizer import (
+    CanonicalTransaction,
+    canonicalize_transactions,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -57,29 +59,6 @@ _SHARES_TOLERANCE        = 0.001  # shares absolute
 _EQUITY_TYPES  = frozenset({"BUY", "SELL", "INITIAL_POSITION", "QUANTITY_CORRECTION"})
 _BUY_TYPES     = frozenset({"BUY", "INITIAL_POSITION"})
 _CASH_IN_TYPES = frozenset({"DEPOSIT", "INITIAL_CASH"})
-
-# Matches "Quantity correction: +5.0 shares" in tx.notes
-_QCORR_RE = re.compile(r"Quantity correction:\s*([+-]?\d[\d.]*)\s*shares", re.IGNORECASE)
-
-
-def _d(v: Any) -> Decimal:
-    try:
-        return Decimal(str(v))
-    except Exception:
-        return Decimal("0")
-
-
-def _parse_qty_delta(tx: Any) -> Decimal:
-    """Extract signed delta from a QUANTITY_CORRECTION transaction.
-
-    Mirrors the logic in portfolio_rebuilder without importing from it.
-    tx.shares stores abs(delta); the sign comes from tx.notes.
-    """
-    if tx.notes:
-        m = _QCORR_RE.search(tx.notes)
-        if m:
-            return Decimal(m.group(1))
-    return Decimal(str(tx.shares or "0"))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -143,44 +122,45 @@ class LedgerValidationReport:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Structural checks (pure read of transaction list, no replay, no DB beyond txs)
+# Structural checks (pure read of canonical transaction list)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _check_duplicate_initial_positions(
     portfolio_id: int,
-    txs: list[Any],
+    ctxs: list[CanonicalTransaction],
 ) -> list[LedgerFinding]:
     """CHECK 1 — Multiple INITIAL_POSITION records for the same symbol on the same date.
 
     Replay accumulates all of them, silently overstating the position.
+    Groups by canonical_symbol so alias variants (KBANK / KBANK.BK) are detected.
     """
-    groups: dict[tuple[str, str], list[Any]] = defaultdict(list)
-    for tx in txs:
-        if tx.transaction_type != "INITIAL_POSITION":
+    groups: dict[tuple[str, str], list[CanonicalTransaction]] = defaultdict(list)
+    for ctx in ctxs:
+        if ctx.transaction_type != "INITIAL_POSITION":
             continue
-        if not tx.symbol:
+        if not ctx.raw_symbol:
             continue
-        canon    = get_yfinance_symbol(tx.symbol)
-        date_str = tx.transaction_date.strftime("%Y-%m-%d") if tx.transaction_date else "unknown"
-        groups[(canon, date_str)].append(tx)
+        canon    = ctx.canonical_symbol or ctx.raw_symbol
+        date_str = ctx.transaction_date.strftime("%Y-%m-%d")
+        groups[(canon, date_str)].append(ctx)
 
     findings: list[LedgerFinding] = []
     for (canon, date_str), group in sorted(groups.items()):
         if len(group) <= 1:
             continue
-        tx_ids      = [t.id for t in group]
-        raw_symbols = sorted({t.symbol for t in group})
-        total_sh    = sum(float(t.shares or 0) for t in group)
+        tx_ids      = [c.id for c in group]
+        raw_symbols = sorted({c.raw_symbol for c in group if c.raw_symbol})
+        total_sh    = sum(float(c.shares) for c in group)
         entry_lines = "\n".join(
-            f"  tx{t.id}  {t.symbol}  {t.shares or 0:.4f} @ {t.price_per_share or 0:.4f}"
-            for t in group
+            f"  tx{c.id}  {c.raw_symbol}  {float(c.shares):.4f} @ {float(c.price_per_share):.4f}"
+            for c in group
         )
         findings.append(LedgerFinding(
             check_id          = "DUP_INITIAL_POSITION",
             severity          = FindingSeverity.CRITICAL,
             portfolio_id      = portfolio_id,
             transaction_ids   = tx_ids,
-            symbol            = group[0].symbol,
+            symbol            = group[0].raw_symbol,
             normalized_symbol = canon,
             title             = f"Duplicate INITIAL_POSITION: {canon} on {date_str} ({len(group)}×)",
             explanation       = (
@@ -209,7 +189,7 @@ def _check_duplicate_initial_positions(
 
 def _check_symbol_aliases(
     portfolio_id: int,
-    txs: list[Any],
+    ctxs: list[CanonicalTransaction],
 ) -> list[LedgerFinding]:
     """CHECK 2 — Multiple raw symbols resolve to the same canonical yfinance ticker.
 
@@ -220,13 +200,12 @@ def _check_symbol_aliases(
     canon_to_raw:    dict[str, set[str]]  = defaultdict(set)
     canon_to_tx_ids: dict[str, list[int]] = defaultdict(list)
 
-    for tx in txs:
-        if not tx.symbol:
+    for ctx in ctxs:
+        if not ctx.raw_symbol:
             continue
-        raw   = tx.symbol.strip().upper()
-        canon = get_yfinance_symbol(raw)
-        canon_to_raw[canon].add(raw)
-        canon_to_tx_ids[canon].append(tx.id)
+        canon = ctx.canonical_symbol or ctx.raw_symbol
+        canon_to_raw[canon].add(ctx.raw_symbol)
+        canon_to_tx_ids[canon].append(ctx.id)
 
     findings: list[LedgerFinding] = []
     for canon, raw_set in sorted(canon_to_raw.items()):
@@ -265,113 +244,116 @@ def _check_symbol_aliases(
 
 def _check_null_symbols(
     portfolio_id: int,
-    txs: list[Any],
+    ctxs: list[CanonicalTransaction],
 ) -> list[LedgerFinding]:
     """CHECK 3 — Equity transactions with a null or empty symbol."""
     findings: list[LedgerFinding] = []
-    for tx in txs:
-        if tx.transaction_type not in _EQUITY_TYPES:
+    for ctx in ctxs:
+        if ctx.transaction_type not in _EQUITY_TYPES:
             continue
-        if not tx.symbol or not tx.symbol.strip():
-            findings.append(LedgerFinding(
-                check_id          = "NULL_SYMBOL",
-                severity          = FindingSeverity.ERROR,
-                portfolio_id      = portfolio_id,
-                transaction_ids   = [tx.id],
-                symbol            = None,
-                normalized_symbol = None,
-                title             = f"tx{tx.id}: {tx.transaction_type} with null/empty symbol",
-                explanation       = (
-                    f"tx{tx.id} (type={tx.transaction_type}, "
-                    f"date={tx.transaction_date}) has no symbol. "
-                    "Replay silently skips it."
-                ),
-                recommendation    = (
-                    "Determine the correct symbol and update it, or delete "
-                    "this transaction if it was recorded in error."
-                ),
-                details={"transaction_id": tx.id, "type": tx.transaction_type,
-                         "date": str(tx.transaction_date)},
-            ))
+        if ctx.raw_symbol is not None:
+            continue
+        findings.append(LedgerFinding(
+            check_id          = "NULL_SYMBOL",
+            severity          = FindingSeverity.ERROR,
+            portfolio_id      = portfolio_id,
+            transaction_ids   = [ctx.id],
+            symbol            = None,
+            normalized_symbol = None,
+            title             = f"tx{ctx.id}: {ctx.transaction_type} with null/empty symbol",
+            explanation       = (
+                f"tx{ctx.id} (type={ctx.transaction_type}, "
+                f"date={ctx.transaction_date}) has no symbol. "
+                "Replay silently skips it."
+            ),
+            recommendation    = (
+                "Determine the correct symbol and update it, or delete "
+                "this transaction if it was recorded in error."
+            ),
+            details={"transaction_id": ctx.id, "type": ctx.transaction_type,
+                     "date": str(ctx.transaction_date)},
+        ))
     return findings
 
 
 def _check_zero_shares(
     portfolio_id: int,
-    txs: list[Any],
+    ctxs: list[CanonicalTransaction],
 ) -> list[LedgerFinding]:
     """CHECK 4 — Equity transactions with zero or null shares."""
     findings: list[LedgerFinding] = []
-    for tx in txs:
-        if tx.transaction_type not in _EQUITY_TYPES:
+    for ctx in ctxs:
+        if ctx.transaction_type not in _EQUITY_TYPES:
             continue
-        if not tx.shares or float(tx.shares) == 0.0:
-            findings.append(LedgerFinding(
-                check_id          = "ZERO_SHARES",
-                severity          = FindingSeverity.ERROR,
-                portfolio_id      = portfolio_id,
-                transaction_ids   = [tx.id],
-                symbol            = tx.symbol,
-                normalized_symbol = get_yfinance_symbol(tx.symbol) if tx.symbol else None,
-                title             = (
-                    f"tx{tx.id}: {tx.transaction_type} {tx.symbol or '?'} "
-                    f"has zero/null shares"
-                ),
-                explanation       = (
-                    f"tx{tx.id} ({tx.transaction_type} {tx.symbol} on "
-                    f"{tx.transaction_date}) has shares={tx.shares}. "
-                    "Replay skips this transaction."
-                ),
-                recommendation    = (
-                    "Correct the shares field or remove this transaction."
-                ),
-                details={"transaction_id": tx.id, "shares": tx.shares,
-                         "type": tx.transaction_type, "symbol": tx.symbol},
-            ))
+        if ctx.shares != 0:
+            continue
+        findings.append(LedgerFinding(
+            check_id          = "ZERO_SHARES",
+            severity          = FindingSeverity.ERROR,
+            portfolio_id      = portfolio_id,
+            transaction_ids   = [ctx.id],
+            symbol            = ctx.raw_symbol,
+            normalized_symbol = ctx.canonical_symbol,
+            title             = (
+                f"tx{ctx.id}: {ctx.transaction_type} {ctx.raw_symbol or '?'} "
+                f"has zero/null shares"
+            ),
+            explanation       = (
+                f"tx{ctx.id} ({ctx.transaction_type} {ctx.raw_symbol} on "
+                f"{ctx.transaction_date}) has shares={float(ctx.shares)}. "
+                "Replay skips this transaction."
+            ),
+            recommendation    = (
+                "Correct the shares field or remove this transaction."
+            ),
+            details={"transaction_id": ctx.id, "shares": float(ctx.shares),
+                     "type": ctx.transaction_type, "symbol": ctx.raw_symbol},
+        ))
     return findings
 
 
 def _check_zero_prices(
     portfolio_id: int,
-    txs: list[Any],
+    ctxs: list[CanonicalTransaction],
 ) -> list[LedgerFinding]:
     """CHECK 5 — BUY/INITIAL_POSITION with zero or null price_per_share.
 
     Zero price causes avg_cost=0, corrupting cost-basis for all future SELLs.
     """
     findings: list[LedgerFinding] = []
-    for tx in txs:
-        if tx.transaction_type not in {"BUY", "INITIAL_POSITION"}:
+    for ctx in ctxs:
+        if ctx.transaction_type not in {"BUY", "INITIAL_POSITION"}:
             continue
-        if tx.price_per_share is None or float(tx.price_per_share) == 0.0:
-            findings.append(LedgerFinding(
-                check_id          = "ZERO_PRICE",
-                severity          = FindingSeverity.WARNING,
-                portfolio_id      = portfolio_id,
-                transaction_ids   = [tx.id],
-                symbol            = tx.symbol,
-                normalized_symbol = get_yfinance_symbol(tx.symbol) if tx.symbol else None,
-                title             = (
-                    f"tx{tx.id}: {tx.transaction_type} {tx.symbol or '?'} "
-                    f"has zero/null price_per_share"
-                ),
-                explanation       = (
-                    f"tx{tx.id} ({tx.transaction_type} {tx.symbol} on "
-                    f"{tx.transaction_date}) has price_per_share={tx.price_per_share}. "
-                    "This sets avg_cost=0, causing incorrect cost-basis and "
-                    "unrealized P/L calculations."
-                ),
-                recommendation    = "Correct price_per_share for this transaction.",
-                details={"transaction_id": tx.id, "price_per_share": tx.price_per_share,
-                         "symbol": tx.symbol},
-            ))
+        if ctx.price_per_share != 0:
+            continue
+        findings.append(LedgerFinding(
+            check_id          = "ZERO_PRICE",
+            severity          = FindingSeverity.WARNING,
+            portfolio_id      = portfolio_id,
+            transaction_ids   = [ctx.id],
+            symbol            = ctx.raw_symbol,
+            normalized_symbol = ctx.canonical_symbol,
+            title             = (
+                f"tx{ctx.id}: {ctx.transaction_type} {ctx.raw_symbol or '?'} "
+                f"has zero/null price_per_share"
+            ),
+            explanation       = (
+                f"tx{ctx.id} ({ctx.transaction_type} {ctx.raw_symbol} on "
+                f"{ctx.transaction_date}) has price_per_share={float(ctx.price_per_share)}. "
+                "This sets avg_cost=0, causing incorrect cost-basis and "
+                "unrealized P/L calculations."
+            ),
+            recommendation    = "Correct price_per_share for this transaction.",
+            details={"transaction_id": ctx.id, "price_per_share": float(ctx.price_per_share),
+                     "symbol": ctx.raw_symbol},
+        ))
     return findings
 
 
 def _check_pre_portfolio_transactions(
     portfolio_id:        int,
     portfolio_created_at: datetime | None,
-    txs: list[Any],
+    ctxs: list[CanonicalTransaction],
 ) -> list[LedgerFinding]:
     """CHECK 6 — Transactions whose date is before the portfolio was created."""
     if not portfolio_created_at:
@@ -383,29 +365,24 @@ def _check_pre_portfolio_transactions(
         else portfolio_created_at
     )
     findings: list[LedgerFinding] = []
-    for tx in txs:
-        if not tx.transaction_date:
-            continue
-        tx_date = (
-            tx.transaction_date.date()
-            if hasattr(tx.transaction_date, "date")
-            else tx.transaction_date
-        )
+    for ctx in ctxs:
+        # ctx.transaction_date is always a date (canonicalizer guarantees this)
+        tx_date = ctx.transaction_date
         if tx_date >= cutoff:
             continue
         findings.append(LedgerFinding(
             check_id          = "PRE_PORTFOLIO_TX",
             severity          = FindingSeverity.ERROR,
             portfolio_id      = portfolio_id,
-            transaction_ids   = [tx.id],
-            symbol            = tx.symbol,
-            normalized_symbol = get_yfinance_symbol(tx.symbol) if tx.symbol else None,
+            transaction_ids   = [ctx.id],
+            symbol            = ctx.raw_symbol,
+            normalized_symbol = ctx.canonical_symbol,
             title             = (
-                f"tx{tx.id}: {tx.transaction_type} dated {tx_date} "
+                f"tx{ctx.id}: {ctx.transaction_type} dated {tx_date} "
                 f"before portfolio creation ({cutoff})"
             ),
             explanation       = (
-                f"tx{tx.id} has transaction_date={tx_date}, "
+                f"tx{ctx.id} has transaction_date={tx_date}, "
                 f"which precedes the portfolio creation date {cutoff}. "
                 "This suggests a backdated import or a transaction belonging "
                 "to a different portfolio."
@@ -416,11 +393,11 @@ def _check_pre_portfolio_transactions(
                 "Otherwise, correct the date or move to the correct portfolio."
             ),
             details={
-                "transaction_id":       tx.id,
+                "transaction_id":       ctx.id,
                 "transaction_date":     str(tx_date),
                 "portfolio_created_at": str(cutoff),
-                "type":                 tx.transaction_type,
-                "symbol":               tx.symbol,
+                "type":                 ctx.transaction_type,
+                "symbol":               ctx.raw_symbol,
             },
         ))
     return findings
@@ -428,7 +405,7 @@ def _check_pre_portfolio_transactions(
 
 def _check_date_skew(
     portfolio_id: int,
-    txs: list[Any],
+    ctxs: list[CanonicalTransaction],
     warning_days: int = _DATE_SKEW_WARNING_DAYS,
     error_days:   int = _DATE_SKEW_ERROR_DAYS,
 ) -> list[LedgerFinding]:
@@ -439,11 +416,11 @@ def _check_date_skew(
     transaction in different periods — a source of irreconcilable divergence.
     """
     findings: list[LedgerFinding] = []
-    for tx in txs:
-        if not tx.created_at or not tx.transaction_date:
+    for ctx in ctxs:
+        if not ctx.created_at:
             continue
-        ca  = tx.created_at.date()       if hasattr(tx.created_at, "date")       else tx.created_at
-        td  = tx.transaction_date.date() if hasattr(tx.transaction_date, "date") else tx.transaction_date
+        ca   = ctx.created_at.date()
+        td   = ctx.transaction_date
         skew = abs((ca - td).days)
         if skew < warning_days:
             continue
@@ -452,18 +429,18 @@ def _check_date_skew(
             check_id          = "LARGE_DATE_SKEW",
             severity          = severity,
             portfolio_id      = portfolio_id,
-            transaction_ids   = [tx.id],
-            symbol            = tx.symbol,
-            normalized_symbol = get_yfinance_symbol(tx.symbol) if tx.symbol else None,
+            transaction_ids   = [ctx.id],
+            symbol            = ctx.raw_symbol,
+            normalized_symbol = ctx.canonical_symbol,
             title             = (
-                f"tx{tx.id}: {tx.transaction_type} "
+                f"tx{ctx.id}: {ctx.transaction_type} "
                 f"created_at vs transaction_date skew = {skew} days"
             ),
             explanation       = (
-                f"tx{tx.id} ({tx.transaction_type} {tx.symbol or ''}) "
-                f"was inserted (created_at={tx.created_at}) "
+                f"tx{ctx.id} ({ctx.transaction_type} {ctx.raw_symbol or ''}) "
+                f"was inserted (created_at={ctx.created_at}) "
                 f"but bears a transaction_date {skew} days away "
-                f"({tx.transaction_date}). "
+                f"({ctx.transaction_date}). "
                 "The live snapshot engine attributes this transaction to the "
                 "created_at period; the rebuild engine attributes it to "
                 "transaction_date.  A large skew causes these engines to "
@@ -474,12 +451,12 @@ def _check_date_skew(
                 "transaction_date to reflect the actual trade date."
             ),
             details={
-                "transaction_id":   tx.id,
-                "created_at":       str(tx.created_at),
-                "transaction_date": str(tx.transaction_date),
+                "transaction_id":   ctx.id,
+                "created_at":       str(ctx.created_at),
+                "transaction_date": str(ctx.transaction_date),
                 "skew_days":        skew,
-                "type":             tx.transaction_type,
-                "symbol":           tx.symbol,
+                "type":             ctx.transaction_type,
+                "symbol":           ctx.raw_symbol,
             },
         ))
     return findings
@@ -487,23 +464,27 @@ def _check_date_skew(
 
 def _check_duplicate_fingerprints(
     portfolio_id: int,
-    txs: list[Any],
+    ctxs: list[CanonicalTransaction],
 ) -> list[LedgerFinding]:
     """CHECK 8 — Transactions with identical (type, symbol, shares, price, date).
 
     Replay applies each record independently, potentially multiplying the position.
     """
-    seen: dict[tuple, list[int]] = defaultdict(list)
-    for tx in txs:
-        date_str = tx.transaction_date.strftime("%Y-%m-%d") if tx.transaction_date else ""
+    seen:            dict[tuple, list[int]]       = defaultdict(list)
+    canon_for_key:   dict[tuple, str | None]      = {}
+
+    for ctx in ctxs:
+        date_str = ctx.transaction_date.strftime("%Y-%m-%d")
         key = (
-            tx.transaction_type or "",
-            (tx.symbol or "").strip().upper(),
-            round(float(tx.shares or 0), 6),
-            round(float(tx.price_per_share or 0), 4),
+            ctx.transaction_type,
+            ctx.raw_symbol or "",
+            round(float(ctx.shares), 6),
+            round(float(ctx.price_per_share), 4),
             date_str,
         )
-        seen[key].append(tx.id)
+        seen[key].append(ctx.id)
+        if key not in canon_for_key:
+            canon_for_key[key] = ctx.canonical_symbol
 
     findings: list[LedgerFinding] = []
     for key, ids in sorted(seen.items(), key=lambda kv: kv[1][0]):
@@ -516,7 +497,7 @@ def _check_duplicate_fingerprints(
             portfolio_id      = portfolio_id,
             transaction_ids   = ids,
             symbol            = sym or None,
-            normalized_symbol = get_yfinance_symbol(sym) if sym else None,
+            normalized_symbol = canon_for_key.get(key),
             title             = (
                 f"Duplicate fingerprint: {tx_type} {sym} "
                 f"{shares} @ {price} on {date_str} ({len(ids)}×)"
@@ -563,13 +544,17 @@ class _ReplayState:
 
 def _replay_and_check(
     portfolio_id:   int,
-    txs:            list[Any],
+    ctxs:           list[CanonicalTransaction],
     snapshot_dates: list[str] | None = None,
 ) -> tuple[_ReplayState, list[LedgerFinding], dict[str, _ReplayState]]:
     """Single-pass replay that detects balance anomalies and captures snapshot states.
 
     snapshot_dates must be sorted ascending.  State is captured end-of-day:
     transactions on or before each date are included.
+
+    Replay keys holdings by raw_symbol to preserve behavioral equivalence with
+    the live portfolio engine, which stores holdings under each transaction's
+    original symbol form.
 
     Returns:
         (final_state, findings, state_by_date)
@@ -581,11 +566,11 @@ def _replay_and_check(
     snap_idx    = 0
     state_by_date: dict[str, _ReplayState] = {}
 
-    for tx in txs:
-        tx_type = tx.transaction_type
-        amount  = _d(tx.total_amount or "0")
-        sym     = (tx.symbol or "").strip().upper() if tx.symbol else None
-        tx_date = tx.transaction_date.strftime("%Y-%m-%d") if tx.transaction_date else ""
+    for ctx in ctxs:
+        tx_type = ctx.transaction_type
+        amount  = ctx.total_amount
+        sym     = ctx.raw_symbol   # holdings key — raw for behavioral equivalence
+        tx_date = ctx.transaction_date.strftime("%Y-%m-%d")
 
         # Capture snapshot states for all dates that are now "past" (< current tx_date)
         while snap_idx < len(snap_sorted) and snap_sorted[snap_idx] < tx_date:
@@ -599,22 +584,22 @@ def _replay_and_check(
             state.cash -= amount
 
         elif tx_type == "BUY":
-            if not sym or not tx.shares or float(tx.shares) <= 0:
+            if not sym or ctx.shares <= 0:
                 continue
-            shares = _d(tx.shares)
+            shares = ctx.shares
             state.cash -= amount
             if state.cash < Decimal("-0.01"):
                 findings.append(LedgerFinding(
                     check_id          = "NEG_CASH_BALANCE",
                     severity          = FindingSeverity.WARNING,
                     portfolio_id      = portfolio_id,
-                    transaction_ids   = [tx.id],
+                    transaction_ids   = [ctx.id],
                     symbol            = sym,
-                    normalized_symbol = get_yfinance_symbol(sym),
-                    title             = f"tx{tx.id}: BUY {sym} drives cash negative ({float(state.cash):,.2f})",
+                    normalized_symbol = ctx.canonical_symbol,
+                    title             = f"tx{ctx.id}: BUY {sym} drives cash negative ({float(state.cash):,.2f})",
                     explanation       = (
-                        f"After tx{tx.id} (BUY {sym} {tx.shares} @ "
-                        f"{tx.price_per_share} on {tx.transaction_date}), "
+                        f"After tx{ctx.id} (BUY {sym} {float(ctx.shares)} @ "
+                        f"{float(ctx.price_per_share)} on {ctx.transaction_date}), "
                         f"replayed cash drops to {float(state.cash):,.2f}. "
                         "Possible missing DEPOSIT, incorrect total_amount, or "
                         "out-of-order transaction dates."
@@ -624,7 +609,7 @@ def _replay_and_check(
                         "and transaction ordering are correct."
                     ),
                     details={
-                        "transaction_id": tx.id,
+                        "transaction_id": ctx.id,
                         "cash_after":     round(float(state.cash), 2),
                         "buy_amount":     round(float(amount), 2),
                         "date":           tx_date,
@@ -633,21 +618,21 @@ def _replay_and_check(
             state.holdings[sym] = state.holdings.get(sym, Decimal("0")) + shares
 
         elif tx_type == "SELL":
-            if not sym or not tx.shares or float(tx.shares) <= 0:
+            if not sym or ctx.shares <= 0:
                 continue
-            shares = _d(tx.shares)
+            shares = ctx.shares
 
             if sym not in state.holdings:
                 findings.append(LedgerFinding(
                     check_id          = "SELL_WITHOUT_HOLDING",
                     severity          = FindingSeverity.CRITICAL,
                     portfolio_id      = portfolio_id,
-                    transaction_ids   = [tx.id],
+                    transaction_ids   = [ctx.id],
                     symbol            = sym,
-                    normalized_symbol = get_yfinance_symbol(sym),
-                    title             = f"tx{tx.id}: SELL {sym} — no prior holding",
+                    normalized_symbol = ctx.canonical_symbol,
+                    title             = f"tx{ctx.id}: SELL {sym} — no prior holding",
                     explanation       = (
-                        f"tx{tx.id} (SELL {sym} {tx.shares} on {tx.transaction_date}) "
+                        f"tx{ctx.id} (SELL {sym} {float(ctx.shares)} on {ctx.transaction_date}) "
                         f"was reached during replay but {sym} was not in the portfolio. "
                         "Possible causes: missing BUY/INITIAL_POSITION, symbol alias "
                         "mismatch, or orphan SELL transaction."
@@ -658,7 +643,7 @@ def _replay_and_check(
                         "If the SELL is spurious, delete it."
                     ),
                     details={
-                        "transaction_id": tx.id, "symbol": sym,
+                        "transaction_id": ctx.id, "symbol": sym,
                         "shares": float(shares), "date": tx_date,
                     },
                 ))
@@ -673,12 +658,12 @@ def _replay_and_check(
                     check_id          = "NEG_SHARE_BALANCE",
                     severity          = FindingSeverity.CRITICAL,
                     portfolio_id      = portfolio_id,
-                    transaction_ids   = [tx.id],
+                    transaction_ids   = [ctx.id],
                     symbol            = sym,
-                    normalized_symbol = get_yfinance_symbol(sym),
-                    title             = f"tx{tx.id}: SELL {sym} creates negative share balance ({float(new_shares):.4f})",
+                    normalized_symbol = ctx.canonical_symbol,
+                    title             = f"tx{ctx.id}: SELL {sym} creates negative share balance ({float(new_shares):.4f})",
                     explanation       = (
-                        f"tx{tx.id} (SELL {sym} {tx.shares} on {tx.transaction_date}) "
+                        f"tx{ctx.id} (SELL {sym} {float(ctx.shares)} on {ctx.transaction_date}) "
                         f"reduces {sym} shares from {float(state.holdings[sym]):.4f} "
                         f"to {float(new_shares):.4f}. "
                         "Indicates incorrect SELL quantity, missing prior BUY, "
@@ -689,7 +674,7 @@ def _replay_and_check(
                         "Check whether prior BUYs used a different symbol alias."
                     ),
                     details={
-                        "transaction_id": tx.id,
+                        "transaction_id": ctx.id,
                         "symbol":         sym,
                         "shares_sold":    round(float(shares), 6),
                         "shares_before":  round(float(state.holdings[sym]), 6),
@@ -704,28 +689,28 @@ def _replay_and_check(
                 state.holdings[sym] = new_shares
 
         elif tx_type == "INITIAL_POSITION":
-            if not sym or not tx.shares or float(tx.shares) <= 0:
+            if not sym or ctx.shares <= 0:
                 continue
-            state.holdings[sym] = state.holdings.get(sym, Decimal("0")) + _d(tx.shares)
+            state.holdings[sym] = state.holdings.get(sym, Decimal("0")) + ctx.shares
 
         elif tx_type == "QUANTITY_CORRECTION":
             if not sym:
                 continue
-            delta = _parse_qty_delta(tx)
+            # qty_correction_delta is pre-parsed by the canonicalizer
+            delta = ctx.qty_correction_delta  # type: ignore[assignment]
 
             if sym not in state.holdings:
-                # A correction on a symbol not yet held is suspicious
                 findings.append(LedgerFinding(
                     check_id          = "QCORR_WITHOUT_HOLDING",
                     severity          = FindingSeverity.ERROR,
                     portfolio_id      = portfolio_id,
-                    transaction_ids   = [tx.id],
+                    transaction_ids   = [ctx.id],
                     symbol            = sym,
-                    normalized_symbol = get_yfinance_symbol(sym),
-                    title             = f"tx{tx.id}: QUANTITY_CORRECTION for {sym} — not in holdings",
+                    normalized_symbol = ctx.canonical_symbol,
+                    title             = f"tx{ctx.id}: QUANTITY_CORRECTION for {sym} — not in holdings",
                     explanation       = (
-                        f"tx{tx.id} is a QUANTITY_CORRECTION for {sym} "
-                        f"(delta={float(delta):+.4f} on {tx.transaction_date}), "
+                        f"tx{ctx.id} is a QUANTITY_CORRECTION for {sym} "
+                        f"(delta={float(delta):+.4f} on {ctx.transaction_date}), "
                         f"but {sym} was not in the replayed portfolio at that point. "
                         "Replay silently skips corrections on absent symbols."
                     ),
@@ -734,7 +719,7 @@ def _replay_and_check(
                         "or whether a prior BUY/INITIAL_POSITION is missing."
                     ),
                     details={
-                        "transaction_id": tx.id, "symbol": sym,
+                        "transaction_id": ctx.id, "symbol": sym,
                         "delta": round(float(delta), 4), "date": tx_date,
                     },
                 ))
@@ -746,17 +731,17 @@ def _replay_and_check(
                     check_id          = "NEG_SHARE_BALANCE",
                     severity          = FindingSeverity.CRITICAL,
                     portfolio_id      = portfolio_id,
-                    transaction_ids   = [tx.id],
+                    transaction_ids   = [ctx.id],
                     symbol            = sym,
-                    normalized_symbol = get_yfinance_symbol(sym),
-                    title             = f"tx{tx.id}: QUANTITY_CORRECTION {sym} creates negative balance ({float(new_shares):.4f})",
+                    normalized_symbol = ctx.canonical_symbol,
+                    title             = f"tx{ctx.id}: QUANTITY_CORRECTION {sym} creates negative balance ({float(new_shares):.4f})",
                     explanation       = (
-                        f"tx{tx.id} (QUANTITY_CORRECTION {sym} delta={float(delta):+.4f} "
-                        f"on {tx.transaction_date}) would leave {float(new_shares):.4f} shares."
+                        f"tx{ctx.id} (QUANTITY_CORRECTION {sym} delta={float(delta):+.4f} "
+                        f"on {ctx.transaction_date}) would leave {float(new_shares):.4f} shares."
                     ),
                     recommendation    = "Review and correct the quantity correction delta.",
                     details={
-                        "transaction_id": tx.id,
+                        "transaction_id": ctx.id,
                         "symbol":         sym,
                         "delta":          round(float(delta), 4),
                         "shares_before":  round(float(state.holdings[sym]), 6),
@@ -844,7 +829,7 @@ def _check_holdings_consistency(
                 portfolio_id      = portfolio_id,
                 transaction_ids   = [],
                 symbol            = sym,
-                normalized_symbol = get_yfinance_symbol(sym),
+                normalized_symbol = sym,
                 title             = f"Holdings mismatch: {sym} in DB but not in replay",
                 explanation       = (
                     f"PortfolioItem({sym}, shares={curr.shares}) exists in the DB "
@@ -861,7 +846,7 @@ def _check_holdings_consistency(
                 portfolio_id      = portfolio_id,
                 transaction_ids   = [],
                 symbol            = sym,
-                normalized_symbol = get_yfinance_symbol(sym),
+                normalized_symbol = sym,
                 title             = f"Holdings mismatch: {sym} in replay but not in DB",
                 explanation       = (
                     f"Ledger replay produces {float(repl):.4f} shares of {sym}, "
@@ -879,7 +864,7 @@ def _check_holdings_consistency(
                     portfolio_id      = portfolio_id,
                     transaction_ids   = [],
                     symbol            = sym,
-                    normalized_symbol = get_yfinance_symbol(sym),
+                    normalized_symbol = sym,
                     title             = (
                         f"Holdings mismatch: {sym} shares differ "
                         f"(DB={curr.shares:.4f} replay={float(repl):.4f})"
@@ -956,7 +941,7 @@ def _check_snapshot_cash_consistency(
 
 async def _check_impossible_prices(
     portfolio_id:        int,
-    txs:                 list[Any],
+    ctxs:                list[CanonicalTransaction],
     price_deviation_pct: float = 100.0,
 ) -> list[LedgerFinding]:
     """CHECK 11 — Import/buy prices deviating wildly from historical market prices.
@@ -965,20 +950,19 @@ async def _check_impossible_prices(
     """
     findings: list[LedgerFinding] = []
 
-    equity_txs = [
-        tx for tx in txs
-        if tx.transaction_type in _BUY_TYPES
-        and tx.symbol
-        and tx.price_per_share
-        and float(tx.price_per_share) > 0
-        and tx.transaction_date
+    equity_ctxs = [
+        ctx for ctx in ctxs
+        if ctx.transaction_type in _BUY_TYPES
+        and ctx.raw_symbol
+        and ctx.price_per_share > 0
     ]
-    if not equity_txs:
+    if not equity_ctxs:
         return findings
 
-    # Symbols to fetch, date range to cover
-    yf_symbols  = list({get_yfinance_symbol(tx.symbol) for tx in equity_txs})
-    min_date_dt = min(tx.transaction_date for tx in equity_txs)
+    # yfinance symbols and date range
+    yf_symbols = list({ctx.canonical_symbol for ctx in equity_ctxs if ctx.canonical_symbol})
+    min_date   = min(ctx.transaction_date for ctx in equity_ctxs)
+    min_date_dt = datetime(min_date.year, min_date.month, min_date.day)
     delta_days  = (datetime.utcnow() - min_date_dt).days
     period      = "max" if delta_days > 5 * 365 else "10y" if delta_days > 3 * 365 else "5y"
 
@@ -1005,10 +989,10 @@ async def _check_impossible_prices(
         ]
 
         date_price: dict[str, float | None] = {}
-        for tx in equity_txs:
-            if get_yfinance_symbol(tx.symbol) != yf_sym:
+        for ctx in equity_ctxs:
+            if ctx.canonical_symbol != yf_sym:
                 continue
-            ds = tx.transaction_date.strftime("%Y-%m-%d")
+            ds = ctx.transaction_date.strftime("%Y-%m-%d")
             if ds not in date_price:
                 idx = bisect.bisect_right(df_dates, ds) - 1
                 date_price[ds] = df_closes[idx] if idx >= 0 else None
@@ -1016,13 +1000,13 @@ async def _check_impossible_prices(
         price_matrix[yf_sym] = date_price
 
     # Compare recorded vs market price
-    for tx in equity_txs:
-        yf_sym   = get_yfinance_symbol(tx.symbol)
-        date_str = tx.transaction_date.strftime("%Y-%m-%d")
+    for ctx in equity_ctxs:
+        yf_sym   = ctx.canonical_symbol or ""
+        date_str = ctx.transaction_date.strftime("%Y-%m-%d")
         market   = price_matrix.get(yf_sym, {}).get(date_str)
         if market is None:
             continue
-        recorded  = float(tx.price_per_share)
+        recorded  = float(ctx.price_per_share)
         deviation = abs(recorded - market) / market * 100
         if deviation <= price_deviation_pct:
             continue
@@ -1030,16 +1014,16 @@ async def _check_impossible_prices(
             check_id          = "IMPOSSIBLE_PRICE",
             severity          = FindingSeverity.ERROR,
             portfolio_id      = portfolio_id,
-            transaction_ids   = [tx.id],
-            symbol            = tx.symbol,
+            transaction_ids   = [ctx.id],
+            symbol            = ctx.raw_symbol,
             normalized_symbol = yf_sym,
             title             = (
-                f"tx{tx.id}: {tx.transaction_type} {tx.symbol} "
+                f"tx{ctx.id}: {ctx.transaction_type} {ctx.raw_symbol} "
                 f"price {recorded:.2f} deviates {deviation:.0f}% "
                 f"from market {market:.2f}"
             ),
             explanation       = (
-                f"tx{tx.id} ({tx.transaction_type} {tx.symbol} on {date_str}) "
+                f"tx{ctx.id} ({ctx.transaction_type} {ctx.raw_symbol} on {date_str}) "
                 f"records price={recorded:.4f}, but yfinance shows ≈{market:.4f} "
                 f"on that date (deviation={deviation:.1f}%). "
                 "Possible causes: price entry error, split-adjustment mismatch, "
@@ -1051,14 +1035,14 @@ async def _check_impossible_prices(
                 "Correct price_per_share if needed."
             ),
             details={
-                "transaction_id":  tx.id,
-                "symbol":          tx.symbol,
+                "transaction_id":  ctx.id,
+                "symbol":          ctx.raw_symbol,
                 "yfinance_symbol": yf_sym,
                 "date":            date_str,
                 "recorded_price":  round(recorded, 4),
                 "market_price":    round(market, 4),
                 "deviation_pct":   round(deviation, 1),
-                "type":            tx.transaction_type,
+                "type":            ctx.transaction_type,
             },
         ))
     return findings
@@ -1121,7 +1105,7 @@ async def validate_portfolio_ledger(
         )
 
     # ── Load data ─────────────────────────────────────────────────────────────
-    txs: list[Transaction] = (
+    raw_txs: list[Transaction] = (
         db.query(Transaction)
         .filter_by(portfolio_id=portfolio_id)
         .order_by(Transaction.transaction_date, Transaction.id)
@@ -1140,30 +1124,33 @@ async def validate_portfolio_ledger(
     )
     snap_dates = [s.snapshot_date for s in snapshots]
 
+    # ── Canonicalize — single preprocessing pass ──────────────────────────────
+    ctxs: list[CanonicalTransaction] = list(canonicalize_transactions(raw_txs))
+
     report = LedgerValidationReport(
         portfolio_id           = portfolio_id,
         portfolio_name         = portfolio.name,
-        transactions_inspected = len(txs),
+        transactions_inspected = len(ctxs),
     )
-    if not txs:
+    if not ctxs:
         return report
 
     findings: list[LedgerFinding] = []
 
     # ── Structural checks ─────────────────────────────────────────────────────
-    findings.extend(_check_duplicate_initial_positions(portfolio_id, txs))
-    findings.extend(_check_symbol_aliases(portfolio_id, txs))
-    findings.extend(_check_null_symbols(portfolio_id, txs))
-    findings.extend(_check_zero_shares(portfolio_id, txs))
-    findings.extend(_check_zero_prices(portfolio_id, txs))
-    findings.extend(_check_pre_portfolio_transactions(portfolio_id, portfolio.created_at, txs))
-    findings.extend(_check_date_skew(portfolio_id, txs, date_skew_warning, date_skew_error))
-    findings.extend(_check_duplicate_fingerprints(portfolio_id, txs))
+    findings.extend(_check_duplicate_initial_positions(portfolio_id, ctxs))
+    findings.extend(_check_symbol_aliases(portfolio_id, ctxs))
+    findings.extend(_check_null_symbols(portfolio_id, ctxs))
+    findings.extend(_check_zero_shares(portfolio_id, ctxs))
+    findings.extend(_check_zero_prices(portfolio_id, ctxs))
+    findings.extend(_check_pre_portfolio_transactions(portfolio_id, portfolio.created_at, ctxs))
+    findings.extend(_check_date_skew(portfolio_id, ctxs, date_skew_warning, date_skew_error))
+    findings.extend(_check_duplicate_fingerprints(portfolio_id, ctxs))
 
     # ── Replay-based checks ───────────────────────────────────────────────────
     final_state, replay_findings, state_by_date = _replay_and_check(
         portfolio_id   = portfolio_id,
-        txs            = txs,
+        ctxs           = ctxs,
         snapshot_dates = snap_dates,
     )
     findings.extend(replay_findings)
@@ -1192,7 +1179,7 @@ async def validate_portfolio_ledger(
         try:
             price_findings = await _check_impossible_prices(
                 portfolio_id        = portfolio_id,
-                txs                 = txs,
+                ctxs                = ctxs,
                 price_deviation_pct = price_deviation_pct,
             )
             findings.extend(price_findings)
