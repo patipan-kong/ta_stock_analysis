@@ -24,9 +24,21 @@ Reconstruction pipeline
   Stage 4 — Validation / reconciliation report
               → MATCH / DIFFERENT / MISSING / EXTRA per field
 
-  Stage 5 — Atomic commit (single DB transaction; rollback on any failure)
+  Stage 5 — Ledger validation gate
+              → CRITICAL finding → abort; commit is blocked
+              → Multi-dimensional confidence report computed (ConfidenceReport)
 
-  Stage 6 — Idempotency (upsert pattern; running twice = same state)
+  Stage 6 — Execution plan generation (read-only)
+              → Lists every intended DB change before any write occurs
+              → Deterministic: same replay → same plan
+
+  Stage 7 — Pre-commit backup (optional)
+              → Existing rows exported to JSON before any writes
+              → Backup failure aborts the commit
+
+  Stage 8 — Atomic commit (single DB transaction; rollback on any failure)
+
+  Stage 9 — Idempotency (upsert pattern; running twice = same state)
 
 Key design decisions
 ---------------------
@@ -49,6 +61,10 @@ Public API
 ----------
   rebuild_portfolio(db, portfolio_id, workspace_id, ...) -> RebuildResult
   rebuild_all_portfolios(db, workspace_id, ...) -> list[RebuildResult]
+  ConfidenceReport         — multi-dimensional quality assessment (0-100 per dimension)
+  ReconstructionPlan       — immutable execution plan with all intended DB changes
+  PlanOperation            — one intended DB change (table/operation/field/values/reason)
+  PlanSummary              — aggregate counts from a ReconstructionPlan
 """
 from __future__ import annotations
 
@@ -56,6 +72,7 @@ import asyncio
 import bisect
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -66,9 +83,12 @@ from typing import Any, Callable, Optional
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from models.database import Portfolio, PortfolioItem, PortfolioSnapshot, Transaction
+from models.database import LedgerRepair, Portfolio, PortfolioItem, PortfolioSnapshot, Transaction
 from services.data_fetcher import fetch_history
+from services.ledger_repair import apply_repair_overlay, load_active_repairs
+from services.ledger_validator import FindingSeverity, LedgerValidationReport, validate_portfolio_ledger
 from services.symbol_normalization import get_yfinance_symbol
+from services.symbol_resolver import is_dr
 from services.transaction_canonicalizer import CanonicalTransaction, canonicalize_transactions
 
 _log = logging.getLogger(__name__)
@@ -180,6 +200,77 @@ class ReconciliationRow:
     status:              ReconciliationStatus
 
 
+# ── Confidence report ─────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class ConfidenceReport:
+    """Multi-dimensional confidence assessment for one reconstruction run.
+
+    Dimensions (each 0–100):
+      replay_confidence    Stage 1 found transactions to replay.
+      ledger_integrity     Deduction per CRITICAL/ERROR/WARNING validator finding.
+      historical_coverage  Proportion of snapshots with full price coverage.
+      snapshot_consistency Proportion of reconciliation rows that match (items + snaps).
+      validator_confidence Binary gate: 0 if any CRITICAL finding, 100 otherwise.
+
+    overall = weighted sum using _CONF_W_* constants (must sum to 1.0).
+    """
+    replay_confidence:    float
+    ledger_integrity:     float
+    historical_coverage:  float
+    snapshot_consistency: float
+    validator_confidence: float
+    overall:              float
+
+
+# ── Execution plan ────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class PlanOperation:
+    """One intended database change in the reconstruction plan."""
+    table:         str        # "Portfolio" | "PortfolioItem" | "PortfolioSnapshot"
+    operation:     str        # "INSERT" | "UPDATE" | "DELETE" | "UPSERT"
+    object_id:     str        # primary identifier: symbol, date, or str(portfolio_id)
+    field:         str | None # column name; None for whole-row operations
+    current_value: Any
+    new_value:     Any
+    reason:        str
+
+
+@dataclass(frozen=True)
+class PlanSummary:
+    """Aggregate counts from a ReconstructionPlan."""
+    portfolio_updated_fields: tuple[str, ...]
+    item_inserts:             int
+    item_updates:             int    # objects with ≥1 changed field (not field count)
+    item_deletes:             int
+    snapshot_inserts:         int
+    snapshot_updates:         int
+    snapshot_deletes:         int    # always 0; engine never deletes snapshots
+    total_write_operations:   int    # object-level count
+    validator_critical:       int
+    validator_errors:         int
+    validator_warnings:       int
+    confidence_score:         float
+
+
+@dataclass(frozen=True)
+class ReconstructionPlan:
+    """Immutable, deterministic execution plan for a single portfolio rebuild.
+
+    Describes every intended database change before any write occurs.
+    Running the same replay twice on unchanged data produces an identical plan.
+    Plan generation never modifies the database.
+    """
+    portfolio_id:      int
+    confidence_score:  float
+    validator_passed:  bool
+    critical_findings: int
+    operations:        tuple[PlanOperation, ...]
+    summary:           PlanSummary
+    generated_at:      str    # UTC ISO-8601 timestamp
+
+
 @dataclass
 class RebuildResult:
     portfolio_id:   int
@@ -193,6 +284,11 @@ class RebuildResult:
     transactions_replayed:          int   = 0
     reconstructed_holdings_count:   int   = 0
     reconstructed_cash:             float | None = None
+    # Stage 1 (cont.) — effective ledger overlay (Phase 6.7C)
+    effective_transaction_count: int       = 0
+    excluded_transaction_count:  int       = 0
+    repairs_applied:             int       = 0
+    repair_ids:                  list[int] = field(default_factory=list)
     # Stage 2
     snapshots_processed:            int = 0
     snapshots_skipped_low_coverage: int = 0
@@ -206,9 +302,21 @@ class RebuildResult:
     snapshots_missing:  int = 0
     snapshots_extra:    int = 0
     reconciliation_report: list[ReconciliationRow] = field(default_factory=list)
-    # Stage 5
-    committed:      bool  = False
-    elapsed_seconds:float = 0.0
+    # Stage 5 — Ledger validation gate
+    aborted:          bool                   = False
+    ledger_criticals: int                    = 0
+    ledger_errors:    int                    = 0
+    ledger_warnings:  int                    = 0
+    validator_report: LedgerValidationReport | None = field(default=None)
+    # Stage 6 — Confidence report (multi-dimensional)
+    confidence_report: ConfidenceReport | None = field(default=None)
+    confidence_score:  float                   = 100.0   # = confidence_report.overall
+    # Stage 7 — Execution plan
+    execution_plan:   ReconstructionPlan | None = field(default=None)
+    # Stage 8 — Pre-commit backup
+    committed:        bool                   = False
+    backup_path:      str | None             = None
+    elapsed_seconds:  float                  = 0.0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -375,7 +483,14 @@ async def _build_price_matrix(
     result: dict[str, dict[str, float | None]] = {}
 
     for sym in symbols:
-        yf_sym = get_yfinance_symbol(sym)
+        # DR certificates trade on SET at ~1/10 the US underlying price in THB.
+        # get_yfinance_symbol() resolves them to the US ticker (AAPL01.BK → AAPL),
+        # which returns USD prices and inflates NAV by ~10×.  Use the .BK form
+        # directly so yfinance returns the actual SET DR market price.
+        if is_dr(sym):
+            yf_sym = sym if sym.endswith(".BK") else sym + ".BK"
+        else:
+            yf_sym = get_yfinance_symbol(sym)
         try:
             df: Optional[pd.DataFrame] = await asyncio.to_thread(
                 fetch_history, yf_sym, period, "1d"
@@ -709,7 +824,386 @@ def _reconcile_snapshots(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Stage 5 — Atomic commit
+# Stage 5 — Ledger validation gate + confidence report
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Deduction constants for the ledger_integrity dimension (applied within 0-100 scale)
+_CONF_LEDGER_PER_CRITICAL = 10.0
+_CONF_LEDGER_PER_ERROR    =  5.0
+_CONF_LEDGER_PER_WARNING  =  2.0
+
+# Documented weights for ConfidenceReport.overall — must sum exactly to 1.0
+_CONF_W_REPLAY      = 0.20   # Stage 1 success
+_CONF_W_LEDGER      = 0.25   # ledger validator integrity
+_CONF_W_COVERAGE    = 0.20   # historical price coverage
+_CONF_W_CONSISTENCY = 0.20   # item + snapshot field reconciliation
+_CONF_W_VALIDATOR   = 0.15   # binary gate (0 if any CRITICAL)
+
+
+def _compute_confidence_report(
+    result:        RebuildResult,
+    snapshot_days: list[_SnapshotDay],
+) -> ConfidenceReport:
+    """Compute the multi-dimensional ConfidenceReport for a rebuild run.
+
+    Dimensions
+    ----------
+    replay_confidence     0 if no transactions were replayed; 100 otherwise.
+    ledger_integrity      100 minus per-finding deductions (CRITICAL/ERROR/WARNING).
+    historical_coverage   100 × (1 − low_coverage_snaps / total_snaps).
+    snapshot_consistency  100 × (1 − different_recon_rows / total_recon_rows).
+                          Covers both PortfolioItem and PortfolioSnapshot rows.
+    validator_confidence  0 if any CRITICAL finding; 100 otherwise.
+
+    overall = weighted sum using _CONF_W_* constants.
+    """
+    # Replay confidence
+    replay = 100.0 if result.transactions_replayed > 0 else 0.0
+
+    # Ledger integrity
+    ledger = max(0.0, min(100.0,
+        100.0
+        - result.ledger_criticals * _CONF_LEDGER_PER_CRITICAL
+        - result.ledger_errors    * _CONF_LEDGER_PER_ERROR
+        - result.ledger_warnings  * _CONF_LEDGER_PER_WARNING
+    ))
+
+    # Historical coverage
+    total_snaps = len(snapshot_days)
+    low_cov = sum(
+        1 for d in snapshot_days
+        if d.holdings_count > 0 and d.price_coverage < _COVERAGE_THRESHOLD
+    )
+    coverage = max(0.0, min(100.0,
+        100.0 * (1.0 - low_cov / total_snaps) if total_snaps > 0 else 100.0
+    ))
+
+    # Snapshot + item reconciliation consistency
+    total_recon = (
+        result.items_matched    + result.items_different
+        + result.items_missing  + result.items_extra
+        + result.snapshots_matched  + result.snapshots_different
+        + result.snapshots_missing  + result.snapshots_extra
+    )
+    different_recon = result.items_different + result.snapshots_different
+    consistency = max(0.0, min(100.0,
+        100.0 * (1.0 - different_recon / total_recon)
+        if total_recon > 0 else 100.0
+    ))
+
+    # Validator confidence (binary gate)
+    validator_conf = 0.0 if result.ledger_criticals > 0 else 100.0
+
+    # Weighted overall
+    overall = round(
+        replay         * _CONF_W_REPLAY
+        + ledger       * _CONF_W_LEDGER
+        + coverage     * _CONF_W_COVERAGE
+        + consistency  * _CONF_W_CONSISTENCY
+        + validator_conf * _CONF_W_VALIDATOR,
+        1,
+    )
+
+    return ConfidenceReport(
+        replay_confidence    = round(replay, 1),
+        ledger_integrity     = round(ledger, 1),
+        historical_coverage  = round(coverage, 1),
+        snapshot_consistency = round(consistency, 1),
+        validator_confidence = round(validator_conf, 1),
+        overall              = overall,
+    )
+
+
+def _compute_confidence_score(
+    result:        RebuildResult,
+    snapshot_days: list[_SnapshotDay],
+) -> float:
+    """Return the overall confidence score (0–100).
+
+    Delegates to _compute_confidence_report().overall.
+    Kept for backward compatibility with callers that only need the scalar.
+    """
+    return _compute_confidence_report(result, snapshot_days).overall
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Stage 6 — Backup export
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _export_backup(
+    db:           Session,
+    portfolio_id: int,
+    backup_dir:   str = "backups",
+) -> str:
+    """Dump the current PortfolioItem + PortfolioSnapshot + LedgerRepair rows to JSON.
+
+    Called before the atomic commit so the pre-rebuild state is preserved.
+    LedgerRepair rows are included so that a restore from backup can
+    reconstruct the same effective canonical list that was used for the rebuild.
+    Returns the absolute path of the written file.
+    """
+    os.makedirs(backup_dir, exist_ok=True)
+    ts   = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(backup_dir, f"rebuild_{portfolio_id}_{ts}.json")
+
+    portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
+    items     = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id).all()
+    snaps     = db.query(PortfolioSnapshot).filter_by(portfolio_id=portfolio_id).all()
+    repairs   = db.query(LedgerRepair).filter_by(portfolio_id=portfolio_id).all()
+
+    data: dict = {
+        "portfolio_id":     portfolio_id,
+        "backup_timestamp": datetime.utcnow().isoformat() + "Z",
+        "portfolio": {
+            "name":         portfolio.name          if portfolio else None,
+            "cash_balance": portfolio.cash_balance  if portfolio else None,
+        },
+        "portfolio_items": [
+            {
+                "symbol":    item.symbol,
+                "shares":    item.shares,
+                "avg_cost":  item.avg_cost,
+                "sector":    item.sector,
+                "allow_swap": item.allow_swap,
+            }
+            for item in items
+        ],
+        "snapshots": [
+            {
+                "snapshot_date": snap.snapshot_date,
+                "total_value":   snap.total_value,
+                "cash_balance":  snap.cash_balance,
+                "equity_value":  getattr(snap, "equity_value", None),
+                "holdings_json": snap.holdings_json,
+            }
+            for snap in snaps
+        ],
+        "ledger_repairs": [
+            {
+                "id":             repair.id,
+                "transaction_id": repair.transaction_id,
+                "repair_plan_id": repair.repair_plan_id,
+                "repair_type":    repair.repair_type,
+                "reason":         repair.reason,
+                "reason_code":    repair.reason_code,
+                "payload_json":   repair.payload_json,
+                "created_by":     repair.created_by,
+                "created_at":     repair.created_at,
+                "is_active":      repair.is_active,
+            }
+            for repair in repairs
+        ],
+    }
+
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, default=str)
+
+    _log.info("backup written: portfolio=%d path=%s", portfolio_id, path)
+    return path
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Stage 7 — Execution plan
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _values_differ(a: Any, b: Any, tol: float = 0.01) -> bool:
+    """Return True when a and b are meaningfully different.
+
+    None vs None → no difference.
+    Numerics compared with absolute tolerance.
+    Everything else compared as strings.
+    """
+    if a is None and b is None:
+        return False
+    if a is None or b is None:
+        return True
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) > tol
+    return str(a) != str(b)
+
+
+def _generate_execution_plan(
+    db:             Session,
+    portfolio_id:   int,
+    portfolio:      Portfolio,
+    final_state:    _PortfolioState,
+    snapshot_days:  list[_SnapshotDay],
+    from_date:      str | None,
+    confidence:     ConfidenceReport,
+    validator:      LedgerValidationReport | None,
+    skip_snapshots: bool,
+) -> ReconstructionPlan:
+    """Generate a deterministic, read-only execution plan.
+
+    Lists every intended DB change without writing anything.
+    Running the same replay twice on unchanged data produces an identical plan.
+    The plan is the official audit trail for every reconstruction.
+    """
+    ops: list[PlanOperation] = []
+
+    # ── Portfolio.cash_balance ────────────────────────────────────────────────
+    new_cash = _f(final_state.cash_balance)
+    port_updated_fields: list[str] = []
+    if _values_differ(portfolio.cash_balance, new_cash, tol=0.001):
+        port_updated_fields.append("cash_balance")
+        ops.append(PlanOperation(
+            table         = "Portfolio",
+            operation     = "UPDATE",
+            object_id     = str(portfolio_id),
+            field         = "cash_balance",
+            current_value = round(portfolio.cash_balance, 4) if portfolio.cash_balance is not None else None,
+            new_value     = round(new_cash, 4),
+            reason        = "Cash balance reconstructed from transaction ledger",
+        ))
+
+    # ── PortfolioItem rows ────────────────────────────────────────────────────
+    current_items = {
+        item.symbol: item
+        for item in db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id).all()
+    }
+    final_syms   = set(final_state.holdings)
+    current_syms = set(current_items)
+    updated_syms: set[str] = set()   # symbols with ≥1 changed field
+
+    for sym in sorted(final_syms & current_syms):
+        h          = final_state.holdings[sym]
+        curr       = current_items[sym]
+        new_shares = _f(h.shares)
+        new_avg    = _f(h.avg_cost)
+
+        if _values_differ(curr.shares, new_shares, tol=0.0001):
+            updated_syms.add(sym)
+            ops.append(PlanOperation(
+                table         = "PortfolioItem",
+                operation     = "UPDATE",
+                object_id     = sym,
+                field         = "shares",
+                current_value = round(curr.shares, 6) if curr.shares is not None else None,
+                new_value     = round(new_shares, 6),
+                reason        = "Reconstructed from transaction ledger",
+            ))
+
+        if _values_differ(curr.avg_cost, new_avg, tol=0.01):
+            updated_syms.add(sym)
+            ops.append(PlanOperation(
+                table         = "PortfolioItem",
+                operation     = "UPDATE",
+                object_id     = sym,
+                field         = "avg_cost",
+                current_value = round(curr.avg_cost, 6) if curr.avg_cost is not None else None,
+                new_value     = round(new_avg, 6),
+                reason        = "Reconstructed from transaction ledger",
+            ))
+
+    for sym in sorted(final_syms - current_syms):
+        h = final_state.holdings[sym]
+        ops.append(PlanOperation(
+            table         = "PortfolioItem",
+            operation     = "INSERT",
+            object_id     = sym,
+            field         = None,
+            current_value = None,
+            new_value     = {
+                "shares":   _f(h.shares),
+                "avg_cost": _f(h.avg_cost),
+                "sector":   h.sector,
+            },
+            reason        = "Symbol found in transaction ledger but absent from PortfolioItem",
+        ))
+
+    for sym in sorted(current_syms - final_syms):
+        curr = current_items[sym]
+        ops.append(PlanOperation(
+            table         = "PortfolioItem",
+            operation     = "DELETE",
+            object_id     = sym,
+            field         = None,
+            current_value = {"shares": curr.shares, "avg_cost": curr.avg_cost},
+            new_value     = None,
+            reason        = "Symbol absent from replayed final holdings; position fully closed",
+        ))
+
+    # ── PortfolioSnapshot rows ─────────────────────────────────────────────────
+    snap_inserts = 0
+    snap_updates = 0
+
+    if not skip_snapshots:
+        snap_q = db.query(PortfolioSnapshot).filter_by(portfolio_id=portfolio_id)
+        if from_date:
+            snap_q = snap_q.filter(PortfolioSnapshot.snapshot_date >= from_date)
+        current_snaps = {s.snapshot_date: s for s in snap_q.all()}
+
+        for day in snapshot_days:
+            existing = current_snaps.get(day.snapshot_date)
+            if existing:
+                ops.append(PlanOperation(
+                    table         = "PortfolioSnapshot",
+                    operation     = "UPSERT",
+                    object_id     = day.snapshot_date,
+                    field         = None,
+                    current_value = {
+                        "total_value":  existing.total_value,
+                        "cash_balance": existing.cash_balance,
+                    },
+                    new_value     = {
+                        "total_value":  day.total_value,
+                        "cash_balance": day.cash_balance,
+                    },
+                    reason        = "Historical snapshot reconstructed from transaction replay",
+                ))
+                snap_updates += 1
+            else:
+                ops.append(PlanOperation(
+                    table         = "PortfolioSnapshot",
+                    operation     = "INSERT",
+                    object_id     = day.snapshot_date,
+                    field         = None,
+                    current_value = None,
+                    new_value     = {
+                        "total_value":  day.total_value,
+                        "cash_balance": day.cash_balance,
+                    },
+                    reason        = "Missing historical snapshot; reconstructed from transaction replay",
+                ))
+                snap_inserts += 1
+
+    # ── Summary ────────────────────────────────────────────────────────────────
+    n_item_inserts = len(final_syms - current_syms)
+    n_item_updates = len(updated_syms)
+    n_item_deletes = len(current_syms - final_syms)
+
+    summary = PlanSummary(
+        portfolio_updated_fields = tuple(port_updated_fields),
+        item_inserts             = n_item_inserts,
+        item_updates             = n_item_updates,
+        item_deletes             = n_item_deletes,
+        snapshot_inserts         = snap_inserts,
+        snapshot_updates         = snap_updates,
+        snapshot_deletes         = 0,
+        total_write_operations   = (
+            len(port_updated_fields)
+            + n_item_inserts + n_item_updates + n_item_deletes
+            + snap_inserts + snap_updates
+        ),
+        validator_critical = len(validator.criticals) if validator else 0,
+        validator_errors   = len(validator.errors)    if validator else 0,
+        validator_warnings = len(validator.warnings)  if validator else 0,
+        confidence_score   = confidence.overall,
+    )
+
+    return ReconstructionPlan(
+        portfolio_id      = portfolio_id,
+        confidence_score  = confidence.overall,
+        validator_passed  = (validator is None or len(validator.criticals) == 0),
+        critical_findings = len(validator.criticals) if validator else 0,
+        operations        = tuple(ops),
+        summary           = summary,
+        generated_at      = datetime.utcnow().isoformat() + "Z",
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Stage 8 — Atomic commit
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _snap_day_to_db_dict(day: _SnapshotDay) -> dict:
@@ -817,6 +1311,8 @@ async def rebuild_portfolio(
     skip_snapshots: bool       = False,
     skip_benchmark: bool       = False,   # reserved for future benchmark series rebuild
     dry_run:        bool       = False,
+    backup:         bool       = False,
+    apply_repairs:  bool       = True,
     progress_cb:    Callable[[str], None] | None = None,
 ) -> RebuildResult:
     """Rebuild a portfolio from its transaction ledger.
@@ -824,10 +1320,19 @@ async def rebuild_portfolio(
     Stages
     ------
     1. Replay all transactions → final cash + holdings + realized P/L
+       When apply_repairs=True, loads active LedgerRepair rows and applies
+       apply_repair_overlay() before replay so excluded transactions are
+       invisible to every downstream stage.
     2. Reconstruct historical portfolio state at each existing snapshot date
     3. Recalculate return metrics for each snapshot
     4. Generate a reconciliation report (current DB vs reconstructed)
-    5. Commit (atomically) unless dry_run=True
+    5. Run ledger validator — abort commit if any CRITICAL finding is present
+       + compute multi-dimensional ConfidenceReport
+       When apply_repairs=True, validates the effective ledger (mode="effective").
+    6. Generate the execution plan (deterministic, read-only list of DB changes)
+    7. Export pre-rebuild backup (when backup=True and not dry_run)
+       — backup failure aborts the commit
+    8. Commit (atomically) unless dry_run=True or Stage 5 aborted
 
     Args:
         db:             SQLAlchemy session (caller manages lifecycle).
@@ -838,10 +1343,20 @@ async def rebuild_portfolio(
         skip_snapshots: Skip Stages 2–3 (only rebuild portfolio items + cash).
         skip_benchmark: (reserved) Skip benchmark series regeneration.
         dry_run:        Run all stages but do not write to the database.
+        backup:         Export existing rows to JSON before committing (Stage 7).
+                        If the export fails, the commit is aborted.
+        apply_repairs:  When True (default), load active LedgerRepair rows and
+                        apply the repair overlay before replay.  Excluded
+                        transactions are omitted from every downstream stage
+                        including validation and confidence scoring.
+                        When False, behaviour is identical to Phase 6.7B.
         progress_cb:    Optional callable(message) for progress reporting.
 
     Returns:
-        RebuildResult with per-stage statistics and reconciliation report.
+        RebuildResult with per-stage statistics, reconciliation report,
+        multi-dimensional ConfidenceReport, and execution plan.
+        result.aborted=True means a CRITICAL ledger finding or backup failure
+        blocked the commit.
     """
     t_start = time.monotonic()
 
@@ -886,8 +1401,51 @@ async def rebuild_portfolio(
             result.error = "No transactions found — nothing to rebuild"
             return result
 
-        all_txs: list[CanonicalTransaction] = list(canonicalize_transactions(raw_txs))
+        canonical_txs: list[CanonicalTransaction] = list(canonicalize_transactions(raw_txs))
+        raw_canonical_count = len(canonical_txs)
 
+        # ── Repair overlay (Phase 6.7C) ────────────────────────────────────────
+        active_repairs: list = []
+        if apply_repairs:
+            active_repairs = load_active_repairs(db, portfolio_id)
+            if active_repairs:
+                effective_tuple, provenance_map = apply_repair_overlay(
+                    tuple(canonical_txs), active_repairs
+                )
+                excluded_count = sum(
+                    1 for v in provenance_map.values() if v == "EXCLUDED"
+                )
+                all_txs = list(effective_tuple)
+                result.repairs_applied            = excluded_count
+                result.excluded_transaction_count = excluded_count
+                result.repair_ids                 = [r.id for r in active_repairs]
+                excluded_tx_ids = sorted(
+                    tx_id for tx_id, prov in provenance_map.items()
+                    if prov == "EXCLUDED"
+                )
+                # Phase 6.7G diagnostic — printed unconditionally so the
+                # effective-ledger state is always visible before replay.
+                print(
+                    f"[PIPELINE] raw={raw_canonical_count}  "
+                    f"repairs(rows)={len(active_repairs)}  "
+                    f"excluded={excluded_count}  "
+                    f"effective={len(all_txs)}"
+                )
+                if excluded_tx_ids:
+                    print(f"[PIPELINE] excluded tx IDs: {excluded_tx_ids}")
+                if excluded_count:
+                    _progress(
+                        f"Stage 1: overlay applied — "
+                        f"raw={raw_canonical_count}  "
+                        f"repairs_applied={excluded_count}  "
+                        f"effective={len(all_txs)}"
+                    )
+            else:
+                all_txs = canonical_txs
+        else:
+            all_txs = canonical_txs
+
+        result.effective_transaction_count = len(all_txs)
         result.transactions_replayed = len(all_txs)
         _progress(f"Stage 1: replaying {len(all_txs)} transactions...")
 
@@ -1035,9 +1593,98 @@ async def rebuild_portfolio(
         result.snapshots_missing   = sum(1 for r in snap_rows if r.status == ReconciliationStatus.MISSING)
         result.snapshots_extra     = sum(1 for r in snap_rows if r.status == ReconciliationStatus.EXTRA)
 
-        # ── Stage 5: atomic commit ─────────────────────────────────────────────
-        if not dry_run:
-            _progress("Stage 5: committing...")
+        # ── Stage 5: ledger validation gate ───────────────────────────────────
+        _progress("Stage 5: validating ledger...")
+        if apply_repairs:
+            validation_report = await validate_portfolio_ledger(
+                db           = db,
+                portfolio_id = portfolio_id,
+                workspace_id = workspace_id,
+                repairs      = active_repairs,
+                mode         = "effective",
+            )
+        else:
+            validation_report = await validate_portfolio_ledger(
+                db           = db,
+                portfolio_id = portfolio_id,
+                workspace_id = workspace_id,
+            )
+        result.validator_report  = validation_report
+        result.ledger_criticals  = len(validation_report.criticals)
+        result.ledger_errors     = len(validation_report.errors)
+        result.ledger_warnings   = len(validation_report.warnings)
+
+        if result.ledger_criticals > 0:
+            result.aborted = True
+            _progress(
+                f"  → ABORTED: {result.ledger_criticals} CRITICAL finding(s) — "
+                "commit blocked until ledger is corrected"
+            )
+        else:
+            _progress(
+                f"  → clean  (C={result.ledger_criticals} "
+                f"E={result.ledger_errors} "
+                f"W={result.ledger_warnings})"
+            )
+
+        # ── Stage 5 (cont.): confidence report ────────────────────────────────
+        conf_report = _compute_confidence_report(result, snapshot_days)
+        result.confidence_report = conf_report
+        result.confidence_score  = conf_report.overall
+        _progress(
+            f"  → confidence {conf_report.overall:.1f}%  "
+            f"(replay={conf_report.replay_confidence:.0f}% "
+            f"ledger={conf_report.ledger_integrity:.0f}% "
+            f"coverage={conf_report.historical_coverage:.0f}% "
+            f"consistency={conf_report.snapshot_consistency:.0f}% "
+            f"validator={conf_report.validator_confidence:.0f}%)"
+        )
+
+        # ── Stage 6: execution plan ────────────────────────────────────────────
+        _progress("Stage 6: generating execution plan...")
+        if result.excluded_transaction_count > 0:
+            _progress(
+                f"  → transaction summary  "
+                f"raw={raw_canonical_count}  "
+                f"repairs_applied={result.repairs_applied}  "
+                f"effective={result.effective_transaction_count}"
+            )
+        exec_plan = _generate_execution_plan(
+            db             = db,
+            portfolio_id   = portfolio_id,
+            portfolio      = portfolio,
+            final_state    = final_state,
+            snapshot_days  = snapshot_days,
+            from_date      = from_date,
+            confidence     = conf_report,
+            validator      = result.validator_report,
+            skip_snapshots = skip_snapshots,
+        )
+        result.execution_plan = exec_plan
+        s = exec_plan.summary
+        _progress(
+            f"  → {s.total_write_operations} write operation(s) planned  "
+            f"(items: +{s.item_inserts} ~{s.item_updates} -{s.item_deletes}  "
+            f"snapshots: +{s.snapshot_inserts} ~{s.snapshot_updates})"
+        )
+
+        # ── Stage 7: pre-commit backup ─────────────────────────────────────────
+        if backup and not dry_run and not result.aborted:
+            _progress("Stage 7: exporting backup...")
+            try:
+                result.backup_path = _export_backup(db, portfolio_id)
+                _progress(f"  → backup written: {result.backup_path}")
+            except Exception as backup_exc:
+                _log.error(
+                    "rebuild backup failed portfolio=%d: %s", portfolio_id, backup_exc
+                )
+                result.aborted = True
+                result.error   = f"Backup failed (commit aborted): {backup_exc}"
+                _progress(f"  → ABORTED: backup failed: {backup_exc}")
+
+        # ── Stage 8: atomic commit ─────────────────────────────────────────────
+        if not dry_run and not result.aborted:
+            _progress("Stage 8: committing...")
             try:
                 _commit_rebuild(
                     db             = db,
@@ -1058,6 +1705,8 @@ async def rebuild_portfolio(
                     "rebuild commit failed portfolio=%d", portfolio_id
                 )
                 return result
+        elif result.aborted:
+            _progress("  → skipped: CRITICAL validator findings or backup failure blocked commit")
         else:
             _progress("  → dry-run: no database changes written")
 
@@ -1085,11 +1734,16 @@ async def rebuild_all_portfolios(
     skip_snapshots: bool       = False,
     skip_benchmark: bool       = False,
     dry_run:        bool       = False,
+    backup:         bool       = False,
+    apply_repairs:  bool       = True,
     progress_cb:    Callable[[int, str, str], None] | None = None,
 ) -> list[RebuildResult]:
     """Rebuild every portfolio in a workspace.
 
     Args:
+        apply_repairs:  Passed through to rebuild_portfolio().  When True
+                        (default), active LedgerRepair rows are applied as an
+                        overlay before each portfolio is replayed.
         progress_cb: Optional callable(portfolio_id, portfolio_name, message).
     """
     portfolios = (
@@ -1120,6 +1774,8 @@ async def rebuild_all_portfolios(
             skip_snapshots = skip_snapshots,
             skip_benchmark = skip_benchmark,
             dry_run        = dry_run,
+            backup         = backup,
+            apply_repairs  = apply_repairs,
             progress_cb    = _cb,
         )
         results.append(r)

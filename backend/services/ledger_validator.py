@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import dataclasses
 import logging
 import time
 from collections import defaultdict
@@ -35,13 +36,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 from sqlalchemy.orm import Session
 
 from models.database import Portfolio, PortfolioItem, PortfolioSnapshot, Transaction
 from services.data_fetcher import fetch_history
+from services.ledger_repair import apply_repair_overlay
 from services.transaction_canonicalizer import (
     CanonicalTransaction,
     canonicalize_transactions,
@@ -87,6 +89,8 @@ class LedgerFinding:
     explanation:       str
     recommendation:    str
     details:           dict[str, Any] = field(default_factory=dict)
+    # Populated only in effective mode: "RAW" = transaction present; None = raw mode.
+    origin:            str | None     = None
 
 
 @dataclass
@@ -119,6 +123,61 @@ class LedgerValidationReport:
         if self.warnings:
             return "WARNING"
         return "PASS"
+
+
+@dataclass(frozen=True)
+class LedgerValidationComparison:
+    """Side-by-side result of raw vs effective ledger validation.
+
+    Produced by compare_ledger_validation().  No replay is performed beyond
+    what the two validation runs already do; no DB writes occur.
+
+    Fields
+    ------
+    raw_report         — report produced with mode="raw" (no overlay).
+    effective_report   — report produced with mode="effective" (overlay applied).
+    resolved_findings  — finding keys present in raw but absent in effective
+                         (EXCLUDE or SUPPRESS_FINDING removed them).
+    remaining_findings — finding keys present in both reports (unresolved).
+    newly_introduced_findings — finding keys absent in raw but present in
+                         effective (should normally be empty).
+    """
+    raw_report:                  LedgerValidationReport
+    effective_report:            LedgerValidationReport
+    resolved_findings:           tuple[str, ...]
+    remaining_findings:          tuple[str, ...]
+    newly_introduced_findings:   tuple[str, ...]
+
+
+# ── Private helpers for comparison ────────────────────────────────────────────
+
+def _finding_key(f: LedgerFinding) -> str:
+    """Deterministic string key that uniquely identifies a finding instance.
+
+    Uses check_id + sorted transaction_ids when present; falls back to the
+    first 60 chars of title for findings with no transaction references
+    (e.g. CASH_MISMATCH, HOLDINGS_MISMATCH).
+    """
+    if f.transaction_ids:
+        tx_part = ",".join(str(i) for i in sorted(f.transaction_ids))
+        return f"{f.check_id}:{tx_part}"
+    return f"{f.check_id}:{f.title[:60]}"
+
+
+def _ledger_confidence(report: LedgerValidationReport) -> float:
+    """Confidence score 0–100 derived from finding severity counts.
+
+    Penalty weights:  CRITICAL × 25, ERROR × 10, WARNING × 3.
+    A clean ledger (no findings) yields 100.0.
+    """
+    if not report.findings:
+        return 100.0
+    penalty = (
+        len(report.criticals) * 25
+        + len(report.errors)   * 10
+        + len(report.warnings) * 3
+    )
+    return max(0.0, 100.0 - float(penalty))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1062,6 +1121,8 @@ async def validate_portfolio_ledger(
     date_skew_error:     int   = _DATE_SKEW_ERROR_DAYS,
     cash_tolerance:      float = _CASH_TOLERANCE,
     shares_tolerance:    float = _SHARES_TOLERANCE,
+    repairs:             list[Any] | None = None,
+    mode:                Literal["raw", "effective"] = "raw",
 ) -> LedgerValidationReport:
     """Validate the transaction ledger for a single portfolio.
 
@@ -1077,6 +1138,14 @@ async def validate_portfolio_ledger(
         date_skew_error:     Days of skew → ERROR.
         cash_tolerance:      Absolute THB tolerance for cash comparison.
         shares_tolerance:    Absolute shares tolerance for holdings comparison.
+        repairs:             Active LedgerRepair rows for this portfolio.  When
+                             None, behaviour is identical to Phase 6.7A (mode is
+                             ignored).
+        mode:                "raw"       — ignore repairs completely (default).
+                             "effective" — apply apply_repair_overlay() before
+                             running every validation rule; also suppresses
+                             findings covered by SUPPRESS_FINDING repairs.
+                             Has no effect when repairs is None.
     """
     t_start = time.monotonic()
 
@@ -1126,6 +1195,24 @@ async def validate_portfolio_ledger(
 
     # ── Canonicalize — single preprocessing pass ──────────────────────────────
     ctxs: list[CanonicalTransaction] = list(canonicalize_transactions(raw_txs))
+
+    # ── Effective mode: apply repair overlay ──────────────────────────────────
+    # Build provenance map and SUPPRESS_FINDING lookup before running checks.
+    # When repairs is None the mode parameter is ignored (Phase 6.7A compat).
+    _effective = mode == "effective" and repairs is not None
+    _provenance: dict[int, str] = {}
+    _suppress_keys: set[tuple[str, int]] = set()
+
+    if _effective:
+        effective_tuple, _provenance = apply_repair_overlay(tuple(ctxs), repairs)
+        ctxs = list(effective_tuple)
+        for r in repairs:  # type: ignore[union-attr]
+            if (
+                getattr(r, "repair_type", None) == "SUPPRESS_FINDING"
+                and getattr(r, "reason_code", None)
+                and getattr(r, "transaction_id", None) is not None
+            ):
+                _suppress_keys.add((r.reason_code, r.transaction_id))
 
     report = LedgerValidationReport(
         portfolio_id           = portfolio_id,
@@ -1199,6 +1286,27 @@ async def validate_portfolio_ledger(
                 details={"error": str(exc)},
             ))
 
+    # ── Effective mode: tag findings with provenance and suppress as needed ───
+    # Every finding produced in effective mode is tagged with origin="RAW".
+    # Findings covered by a SUPPRESS_FINDING repair (check_id matches
+    # reason_code AND at least one transaction_id matches) are dropped from
+    # the report — they become "resolved" in the comparison.
+    # This block is a no-op when repairs is None (raw mode, Phase 6.7A compat).
+    if _effective:
+        tagged: list[LedgerFinding] = []
+        for f in findings:
+            is_suppressed = bool(
+                _suppress_keys
+                and any(
+                    (f.check_id, tx_id) in _suppress_keys
+                    for tx_id in f.transaction_ids
+                )
+            )
+            if not is_suppressed:
+                tagged.append(dataclasses.replace(f, origin="RAW"))
+            # suppressed findings are intentionally dropped
+        findings = tagged
+
     # ── Sort findings: CRITICAL first, then ERROR, then WARNING; within each
     #    severity sort by check_id for deterministic output ────────────────────
     report.findings = sorted(findings, key=lambda f: (_SEV_ORDER[f.severity], f.check_id))
@@ -1238,3 +1346,55 @@ async def validate_all_ledgers(
         )
         results.append(r)
     return results
+
+
+async def compare_ledger_validation(
+    db:                  Session,
+    portfolio_id:        int,
+    workspace_id:        int,
+    repairs:             list[Any],
+    fetch_prices:        bool  = False,
+    price_deviation_pct: float = 100.0,
+    date_skew_warning:   int   = _DATE_SKEW_WARNING_DAYS,
+    date_skew_error:     int   = _DATE_SKEW_ERROR_DAYS,
+    cash_tolerance:      float = _CASH_TOLERANCE,
+    shares_tolerance:    float = _SHARES_TOLERANCE,
+) -> LedgerValidationComparison:
+    """Validate the ledger in both raw and effective modes and return a comparison.
+
+    Runs validate_portfolio_ledger() twice — once with mode="raw" and once with
+    mode="effective" using the supplied repairs — then computes the sets of
+    resolved, remaining, and newly-introduced findings.
+
+    Read-only.  Never modifies the database.  Never raises.
+
+    Args:
+        repairs: Active LedgerRepair rows pre-loaded by the caller.  An empty
+                 list is valid; effective_report will equal raw_report.
+    """
+    common: dict[str, Any] = dict(
+        db                  = db,
+        portfolio_id        = portfolio_id,
+        workspace_id        = workspace_id,
+        fetch_prices        = fetch_prices,
+        price_deviation_pct = price_deviation_pct,
+        date_skew_warning   = date_skew_warning,
+        date_skew_error     = date_skew_error,
+        cash_tolerance      = cash_tolerance,
+        shares_tolerance    = shares_tolerance,
+    )
+    raw_report = await validate_portfolio_ledger(mode="raw", **common)
+    eff_report = await validate_portfolio_ledger(
+        repairs=repairs, mode="effective", **common
+    )
+
+    raw_keys = {_finding_key(f) for f in raw_report.findings}
+    eff_keys = {_finding_key(f) for f in eff_report.findings}
+
+    return LedgerValidationComparison(
+        raw_report               = raw_report,
+        effective_report         = eff_report,
+        resolved_findings        = tuple(sorted(raw_keys - eff_keys)),
+        remaining_findings       = tuple(sorted(raw_keys & eff_keys)),
+        newly_introduced_findings= tuple(sorted(eff_keys - raw_keys)),
+    )

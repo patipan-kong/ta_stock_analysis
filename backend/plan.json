@@ -1,0 +1,383 @@
+{
+  "portfolio_id": 4,
+  "generated_at": "2026-06-29T03:47:47.942190Z",
+  "confidence_score": 95.6,
+  "validator_passed": true,
+  "critical_findings": 0,
+  "summary": {
+    "portfolio_updated_fields": [],
+    "item_inserts": 0,
+    "item_updates": 0,
+    "item_deletes": 0,
+    "snapshot_inserts": 0,
+    "snapshot_updates": 24,
+    "snapshot_deletes": 0,
+    "total_write_operations": 24,
+    "validator_critical": 0,
+    "validator_errors": 0,
+    "validator_warnings": 2,
+    "confidence_score": 95.6
+  },
+  "operations": [
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-05-23",
+      "field": null,
+      "current_value": {
+        "total_value": 785367.1173,
+        "cash_balance": 141072.11
+      },
+      "new_value": {
+        "total_value": 960867.1173,
+        "cash_balance": 141072.11
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-05-25",
+      "field": null,
+      "current_value": {
+        "total_value": 789667.1173,
+        "cash_balance": 141072.11
+      },
+      "new_value": {
+        "total_value": 965167.1173,
+        "cash_balance": 141072.11
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-05-26",
+      "field": null,
+      "current_value": {
+        "total_value": 1169968.7097,
+        "cash_balance": 100633.7213
+      },
+      "new_value": {
+        "total_value": 1346118.7097,
+        "cash_balance": 100633.7213
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-05-27",
+      "field": null,
+      "current_value": {
+        "total_value": 1722029.9006,
+        "cash_balance": 107622.0118
+      },
+      "new_value": {
+        "total_value": 1856529.9006,
+        "cash_balance": 107622.0118
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-05-28",
+      "field": null,
+      "current_value": {
+        "total_value": 1881922.329,
+        "cash_balance": 97669.4768
+      },
+      "new_value": {
+        "total_value": 1976072.329,
+        "cash_balance": 97669.4768
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-05-29",
+      "field": null,
+      "current_value": {
+        "total_value": 2054551.1751,
+        "cash_balance": 76934.7029
+      },
+      "new_value": {
+        "total_value": 2148701.1751,
+        "cash_balance": 76934.7029
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-02",
+      "field": null,
+      "current_value": {
+        "total_value": 2647110.5205,
+        "cash_balance": 76831.6111
+      },
+      "new_value": {
+        "total_value": 2743360.5205,
+        "cash_balance": 76831.6111
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-04",
+      "field": null,
+      "current_value": {
+        "total_value": 2653650.2864,
+        "cash_balance": 76831.6111
+      },
+      "new_value": {
+        "total_value": 2752350.2864,
+        "cash_balance": 76831.6111
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-05",
+      "field": null,
+      "current_value": {
+        "total_value": 2600370.6065,
+        "cash_balance": 76831.6111
+      },
+      "new_value": {
+        "total_value": 2699070.6065,
+        "cash_balance": 76831.6111
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-08",
+      "field": null,
+      "current_value": {
+        "total_value": 2573150.6209,
+        "cash_balance": 76831.6111
+      },
+      "new_value": {
+        "total_value": 2669050.6209,
+        "cash_balance": 76831.6111
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-09",
+      "field": null,
+      "current_value": {
+        "total_value": 2552491.6215,
+        "cash_balance": 76831.6111
+      },
+      "new_value": {
+        "total_value": 2648741.6215,
+        "cash_balance": 76831.6111
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-10",
+      "field": null,
+      "current_value": {
+        "total_value": 3439368.4686,
+        "cash_balance": 113445.4781
+      },
+      "new_value": {
+        "total_value": 3480618.4686,
+        "cash_balance": 113445.4781
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-11",
+      "field": null,
+      "current_value": {
+        "total_value": 3616359.298,
+        "cash_balance": 141961.3381
+      },
+      "new_value": {
+        "total_value": 3616359.298,
+        "cash_balance": 141961.3381
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-12",
+      "field": null,
+      "current_value": {
+        "total_value": 3591799.328,
+        "cash_balance": 141961.3381
+      },
+      "new_value": {
+        "total_value": 3591799.328,
+        "cash_balance": 141961.3381
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-15",
+      "field": null,
+      "current_value": {
+        "total_value": 3761923.3676,
+        "cash_balance": 141961.3381
+      },
+      "new_value": {
+        "total_value": 3761923.3676,
+        "cash_balance": 141961.3381
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-16",
+      "field": null,
+      "current_value": {
+        "total_value": 3699845.3378,
+        "cash_balance": 141961.3381
+      },
+      "new_value": {
+        "total_value": 3699845.3378,
+        "cash_balance": 141961.3381
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-17",
+      "field": null,
+      "current_value": {
+        "total_value": 3857211.9596,
+        "cash_balance": 103596.998
+      },
+      "new_value": {
+        "total_value": 3857211.9596,
+        "cash_balance": 103596.998
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-18",
+      "field": null,
+      "current_value": {
+        "total_value": 3993663.0065,
+        "cash_balance": 103596.998
+      },
+      "new_value": {
+        "total_value": 3993663.0065,
+        "cash_balance": 103596.998
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-19",
+      "field": null,
+      "current_value": {
+        "total_value": 3993663.0065,
+        "cash_balance": 103596.998
+      },
+      "new_value": {
+        "total_value": 3993663.0065,
+        "cash_balance": 103596.998
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-22",
+      "field": null,
+      "current_value": {
+        "total_value": 3991502.9718,
+        "cash_balance": 103596.998
+      },
+      "new_value": {
+        "total_value": 3991502.9718,
+        "cash_balance": 103596.998
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-23",
+      "field": null,
+      "current_value": {
+        "total_value": 4465547.9084,
+        "cash_balance": 105117.8976
+      },
+      "new_value": {
+        "total_value": 4465547.9084,
+        "cash_balance": 105117.8976
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-24",
+      "field": null,
+      "current_value": {
+        "total_value": 4455855.9153,
+        "cash_balance": 105117.8976
+      },
+      "new_value": {
+        "total_value": 4455855.9153,
+        "cash_balance": 105117.8976
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-25",
+      "field": null,
+      "current_value": {
+        "total_value": 4738382.997,
+        "cash_balance": 105117.8976
+      },
+      "new_value": {
+        "total_value": 4738382.997,
+        "cash_balance": 105117.8976
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    },
+    {
+      "table": "PortfolioSnapshot",
+      "operation": "UPSERT",
+      "object_id": "2026-06-26",
+      "field": null,
+      "current_value": {
+        "total_value": 4580745.8296,
+        "cash_balance": 105117.8976
+      },
+      "new_value": {
+        "total_value": 4580745.8296,
+        "cash_balance": 105117.8976
+      },
+      "reason": "Historical snapshot reconstructed from transaction replay"
+    }
+  ]
+}

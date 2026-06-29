@@ -538,6 +538,40 @@ class UserUsage(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 
 
+class LedgerRepair(Base):
+    """Durable repair metadata for the immutable transaction ledger — Phase 6.7A.
+
+    Append-only in intent: is_active=True rows form the effective repair set;
+    deactivated rows (is_active=False) are retained for full audit history.
+    Transaction rows are never modified; this table is a soft overlay.
+
+    repair_type values (Phase 6.7A)
+    --------------------------------
+    EXCLUDE          — remove transaction from effective canonical list at rebuild time
+    SUPPRESS_FINDING — silence a specific validator check_id for this transaction
+                       (Phase 6.7B validator integration; no effect on canonical list)
+
+    Version history
+    ---------------
+    repair_plan_id (UUID string) groups all repairs created in one plan invocation.
+    The sequence of plans ordered by created_at is the version history.
+    repair_revision is intentionally omitted; plan-level UUIDs are the version identifier.
+    """
+    __tablename__ = "ledger_repairs"
+
+    id             = Column(Integer, primary_key=True, index=True)
+    portfolio_id   = Column(Integer, ForeignKey("portfolios.id",   ondelete="CASCADE"),  nullable=False, index=True)
+    transaction_id = Column(Integer, ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True,  index=True)
+    repair_plan_id = Column(String,  nullable=False, index=True)   # UUID — groups repairs from one plan
+    repair_type    = Column(String,  nullable=False, index=True)   # "EXCLUDE" | "SUPPRESS_FINDING"
+    reason         = Column(Text,    nullable=False)               # human-readable explanation (required)
+    reason_code    = Column(String,  nullable=True)                # machine enum, e.g. "DUPLICATE_SUBMISSION"
+    payload_json   = Column(Text,    nullable=True)                # extra data, e.g. {"keep_tx_id": 52}
+    created_by     = Column(String,  nullable=False, default="system")
+    created_at     = Column(DateTime, nullable=False, default=datetime.utcnow)
+    is_active      = Column(Boolean, nullable=False, default=True)
+
+
 def get_db():
     db = SessionLocal()
     try:

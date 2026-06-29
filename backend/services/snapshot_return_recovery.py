@@ -52,13 +52,13 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
 from models.database import Portfolio, PortfolioSnapshot, Transaction
+from services.transaction_canonicalizer import canonicalize_transactions
 
 _log = logging.getLogger(__name__)
 
@@ -67,8 +67,6 @@ _CASH_INFLOW_TYPES  = {"DEPOSIT", "INITIAL_CASH"}
 _CASH_OUTFLOW_TYPES = {"WITHDRAW"}
 _ASSET_IMPORT_TYPES = {"INITIAL_POSITION"}
 _MANUAL_ADJ_TYPES   = {"QUANTITY_CORRECTION"}
-
-_REALIZED_RE = re.compile(r"Realized P&L:\s*([-+]?\d+\.?\d*)")
 
 # Ordered tuple keeps field order consistent in dry-run output.
 _RETURN_FIELDS: tuple[str, ...] = (
@@ -177,19 +175,23 @@ def _compute_return_fields(
     prev_day_end = datetime.strptime(prev_snap.snapshot_date, "%Y-%m-%d") + timedelta(days=1)
 
     # ── BUY / SELL transactions (needed for net_ecf and period decomposition) ──
-    sell_txs = db.query(Transaction).filter(
-        Transaction.portfolio_id == portfolio_id,
-        Transaction.transaction_type == "SELL",
-        Transaction.created_at >= prev_day_end,
-        Transaction.created_at <  today_end,
-    ).all()
+    sell_txs = list(canonicalize_transactions(
+        db.query(Transaction).filter(
+            Transaction.portfolio_id == portfolio_id,
+            Transaction.transaction_type == "SELL",
+            Transaction.created_at >= prev_day_end,
+            Transaction.created_at <  today_end,
+        ).all()
+    ))
 
-    buy_txs = db.query(Transaction).filter(
-        Transaction.portfolio_id == portfolio_id,
-        Transaction.transaction_type == "BUY",
-        Transaction.created_at >= prev_day_end,
-        Transaction.created_at <  today_end,
-    ).all()
+    buy_txs = list(canonicalize_transactions(
+        db.query(Transaction).filter(
+            Transaction.portfolio_id == portfolio_id,
+            Transaction.transaction_type == "BUY",
+            Transaction.created_at >= prev_day_end,
+            Transaction.created_at <  today_end,
+        ).all()
+    ))
 
     # ── Net external cash flow from actual cash balance change ────────────────
     # Formula: net_ecf = (curr_cash − prev_cash) + BUY_cash_out − SELL_cash_in
@@ -201,8 +203,8 @@ def _compute_return_fields(
     # actually updated (retroactive bookkeeping), the formula returns zero.
     curr_cash = curr_snap.cash_balance or 0.0
     prev_cash = prev_snap.cash_balance or 0.0
-    buy_cash_out  = sum(tx.total_amount for tx in buy_txs)
-    sell_cash_in  = sum(tx.total_amount for tx in sell_txs)
+    buy_cash_out  = sum(float(ctx.total_amount) for ctx in buy_txs)
+    sell_cash_in  = sum(float(ctx.total_amount) for ctx in sell_txs)
     net_ecf = (curr_cash - prev_cash) + buy_cash_out - sell_cash_in
 
     # ── Symbols already tracked in the previous snapshot ─────────────────────
@@ -218,41 +220,47 @@ def _compute_return_fields(
             pass
 
     # ── Asset imports (INITIAL_POSITION) ──────────────────────────────────────
-    # Use tx.price_per_share as the best-available approximation for the
+    # Use ctx.price_per_share as the best-available approximation for the
     # market value at import time.  The live pipeline uses the current day's
     # price; here we cannot fetch it without a network call.
     # Skip any import for a symbol that already appears in prev_snap with
     # equal or more shares — those are retroactive entries, not new capital.
-    import_txs = db.query(Transaction).filter(
-        Transaction.portfolio_id == portfolio_id,
-        Transaction.transaction_type.in_(list(_ASSET_IMPORT_TYPES)),
-        Transaction.created_at >= prev_day_end,
-        Transaction.created_at <  today_end,
-    ).all()
+    # Use ctx.raw_symbol for holdings_json lookup: those keys were stored using
+    # the raw symbol at write time.
+    import_txs = list(canonicalize_transactions(
+        db.query(Transaction).filter(
+            Transaction.portfolio_id == portfolio_id,
+            Transaction.transaction_type.in_(list(_ASSET_IMPORT_TYPES)),
+            Transaction.created_at >= prev_day_end,
+            Transaction.created_at <  today_end,
+        ).all()
+    ))
 
     imported_asset_value = 0.0
-    for tx in import_txs:
-        tx_shares   = tx.shares or 0.0
-        prev_shares = prev_holdings.get(tx.symbol or "", 0.0)
+    for ctx in import_txs:
+        tx_shares   = float(ctx.shares)
+        prev_shares = prev_holdings.get(ctx.raw_symbol or "", 0.0)
         if tx_shares <= prev_shares:
             _log.debug(
                 "[IMPORT SKIP] portfolio=%d %s %.4f shares already in prev snapshot (had %.4f)",
-                portfolio_id, tx.symbol, tx_shares, prev_shares,
+                portfolio_id, ctx.raw_symbol, tx_shares, prev_shares,
             )
             continue
-        imported_asset_value += tx_shares * (tx.price_per_share or 0.0)
+        imported_asset_value += tx_shares * float(ctx.price_per_share)
 
     # ── Manual quantity corrections (QUANTITY_CORRECTION) ─────────────────────
-    adj_txs = db.query(Transaction).filter(
-        Transaction.portfolio_id == portfolio_id,
-        Transaction.transaction_type.in_(list(_MANUAL_ADJ_TYPES)),
-        Transaction.created_at >= prev_day_end,
-        Transaction.created_at <  today_end,
-    ).all()
+    adj_txs = list(canonicalize_transactions(
+        db.query(Transaction).filter(
+            Transaction.portfolio_id == portfolio_id,
+            Transaction.transaction_type.in_(list(_MANUAL_ADJ_TYPES)),
+            Transaction.created_at >= prev_day_end,
+            Transaction.created_at <  today_end,
+        ).all()
+    ))
 
     manual_adj_value = sum(
-        (tx.shares or 0.0) * (tx.price_per_share or 0.0)
-        for tx in adj_txs
+        float(ctx.qty_correction_delta) * float(ctx.price_per_share)
+        for ctx in adj_txs
     )
 
     # ── Return calculation ─────────────────────────────────────────────────────
@@ -273,25 +281,25 @@ def _compute_return_fields(
     # ── Period realized P/L + SELL fees ───────────────────────────────────────
     period_realized_pnl = 0.0
     period_fees_paid    = 0.0
-    for tx in sell_txs:
-        if tx.notes:
-            m = _REALIZED_RE.search(tx.notes)
-            if m:
-                period_realized_pnl += float(m.group(1))
-        period_fees_paid += (tx.fees or 0.0) + (tx.taxes or 0.0)
+    for ctx in sell_txs:
+        if ctx.realized_pnl is not None:
+            period_realized_pnl += ctx.realized_pnl
+        period_fees_paid += float(ctx.fees) + float(ctx.taxes)
 
     # ── Dividend income ────────────────────────────────────────────────────────
-    div_txs = db.query(Transaction).filter(
-        Transaction.portfolio_id == portfolio_id,
-        Transaction.transaction_type == "DIVIDEND",
-        Transaction.created_at >= prev_day_end,
-        Transaction.created_at <  today_end,
-    ).all()
-    period_dividend_income = sum(tx.total_amount for tx in div_txs)
+    div_txs = list(canonicalize_transactions(
+        db.query(Transaction).filter(
+            Transaction.portfolio_id == portfolio_id,
+            Transaction.transaction_type == "DIVIDEND",
+            Transaction.created_at >= prev_day_end,
+            Transaction.created_at <  today_end,
+        ).all()
+    ))
+    period_dividend_income = sum(float(ctx.total_amount) for ctx in div_txs)
 
     # ── BUY fees ──────────────────────────────────────────────────────────────
-    for tx in buy_txs:
-        period_fees_paid += (tx.fees or 0.0) + (tx.taxes or 0.0)
+    for ctx in buy_txs:
+        period_fees_paid += float(ctx.fees) + float(ctx.taxes)
 
     return {
         "net_external_cash_flow":   _round_or_none(net_ecf),

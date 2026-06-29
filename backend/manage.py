@@ -86,7 +86,11 @@ from services.snapshot_return_recovery import (
     recover_portfolio_snapshot_returns,
 )
 from services.portfolio_rebuilder import (
+    ConfidenceReport,
+    PlanOperation,
+    PlanSummary,
     RebuildResult,
+    ReconstructionPlan,
     ReconciliationStatus,
     rebuild_all_portfolios,
     rebuild_portfolio,
@@ -94,9 +98,20 @@ from services.portfolio_rebuilder import (
 from services.ledger_validator import (
     FindingSeverity,
     LedgerFinding,
+    LedgerValidationComparison,
     LedgerValidationReport,
+    compare_ledger_validation,
     validate_all_ledgers,
     validate_portfolio_ledger,
+    _ledger_confidence,
+)
+from services.ledger_repair import load_active_repairs
+from services.repair_plan_executor import (
+    RepairApplyResult,
+    RepairPlan,
+    RepairPlanError,
+    apply_repair_plan,
+    load_repair_plan,
 )
 
 
@@ -1640,6 +1655,112 @@ _STATUS_ICON_RECON = {
 }
 
 
+def _print_confidence_report(r: ConfidenceReport) -> None:
+    """Print the multi-dimensional confidence report."""
+    print()
+    print("  Confidence Report")
+    print(f"    Replay confidence    : {r.replay_confidence:.0f}%")
+    print(f"    Ledger integrity     : {r.ledger_integrity:.0f}%")
+    print(f"    Historical coverage  : {r.historical_coverage:.0f}%")
+    print(f"    Snapshot consistency : {r.snapshot_consistency:.0f}%")
+    print(f"    Validator confidence : {r.validator_confidence:.0f}%")
+    print(f"    {'─' * 32}")
+    print(f"    Overall              : {r.overall:.1f}%")
+
+
+def _plan_to_dict(plan: ReconstructionPlan) -> dict:
+    """Serialize a ReconstructionPlan to a JSON-safe dict."""
+    s = plan.summary
+    return {
+        "portfolio_id":      plan.portfolio_id,
+        "generated_at":      plan.generated_at,
+        "confidence_score":  plan.confidence_score,
+        "validator_passed":  plan.validator_passed,
+        "critical_findings": plan.critical_findings,
+        "summary": {
+            "portfolio_updated_fields": list(s.portfolio_updated_fields),
+            "item_inserts":             s.item_inserts,
+            "item_updates":             s.item_updates,
+            "item_deletes":             s.item_deletes,
+            "snapshot_inserts":         s.snapshot_inserts,
+            "snapshot_updates":         s.snapshot_updates,
+            "snapshot_deletes":         s.snapshot_deletes,
+            "total_write_operations":   s.total_write_operations,
+            "validator_critical":       s.validator_critical,
+            "validator_errors":         s.validator_errors,
+            "validator_warnings":       s.validator_warnings,
+            "confidence_score":         s.confidence_score,
+        },
+        "operations": [
+            {
+                "table":         op.table,
+                "operation":     op.operation,
+                "object_id":     op.object_id,
+                "field":         op.field,
+                "current_value": op.current_value,
+                "new_value":     op.new_value,
+                "reason":        op.reason,
+            }
+            for op in plan.operations
+        ],
+    }
+
+
+def _print_execution_plan(plan: ReconstructionPlan) -> None:
+    """Print a formatted execution plan."""
+    s = plan.summary
+    print(f"\n{_hr()}")
+    print(f"Execution Plan  —  Portfolio {plan.portfolio_id}")
+    print(_hr())
+    print(f"  Generated at              : {plan.generated_at}")
+    print()
+    print("  PortfolioItem")
+    print(f"    INSERT  : {s.item_inserts}")
+    print(f"    UPDATE  : {s.item_updates}")
+    print(f"    DELETE  : {s.item_deletes}")
+    print()
+    print("  PortfolioSnapshot")
+    print(f"    INSERT  : {s.snapshot_inserts}")
+    print(f"    UPSERT  : {s.snapshot_updates}")
+    if s.snapshot_deletes:
+        print(f"    DELETE  : {s.snapshot_deletes}")
+    if s.portfolio_updated_fields:
+        print()
+        print("  Portfolio")
+        print(f"    UPDATE  : {', '.join(s.portfolio_updated_fields)}")
+    print()
+    print("  Validator")
+    print(f"    CRITICAL : {s.validator_critical}")
+    print(f"    ERROR    : {s.validator_errors}")
+    print(f"    WARNING  : {s.validator_warnings}")
+    print()
+    print(f"  Confidence                : {plan.confidence_score:.1f}%")
+    print()
+    print(f"  Estimated write operations: {s.total_write_operations}")
+
+    if plan.operations:
+        print()
+        print("  Operations")
+        hdr_table = "Table"
+        hdr_op    = "Op"
+        hdr_id    = "ID"
+        hdr_field = "Field"
+        print(f"  {hdr_table:<20}  {hdr_op:<7}  {hdr_id:<24}  {hdr_field:<18}  Reason")
+        print(f"  {'-'*20}  {'-'*7}  {'-'*24}  {'-'*18}  {'-'*38}")
+        display_ops = plan.operations[:60]
+        for op in display_ops:
+            fld    = op.field or "*"
+            reason = (op.reason[:38] + "…") if len(op.reason) > 39 else op.reason
+            print(f"  {op.table:<20}  {op.operation:<7}  {op.object_id:<24}  {fld:<18}  {reason}")
+        if len(plan.operations) > 60:
+            remaining = len(plan.operations) - 60
+            print(
+                f"\n  ({remaining} more operation(s) not shown — "
+                "use --plan-json for the complete list)"
+            )
+    print(_hr())
+
+
 def _print_rebuild_result(r: RebuildResult, verbose: bool = False) -> None:
     """Print a formatted reconciliation report for one portfolio."""
     print(f"\n{_hr()}")
@@ -1683,12 +1804,46 @@ def _print_rebuild_result(r: RebuildResult, verbose: bool = False) -> None:
         if r.snapshots_extra:
             print(f"    Extra     : {r.snapshots_extra}")
 
-    # Stage 5
+    # Stage 5 — Ledger validation
     print()
-    if r.dry_run:
+    if r.ledger_criticals or r.ledger_errors or r.ledger_warnings:
+        print("  Ledger validation")
+        if r.ledger_criticals:
+            print(f"    Critical : {r.ledger_criticals}  ← COMMIT BLOCKED")
+        if r.ledger_errors:
+            print(f"    Error    : {r.ledger_errors}")
+        if r.ledger_warnings:
+            print(f"    Warning  : {r.ledger_warnings}")
+    elif r.validator_report is not None:
+        print("  Ledger validation       : CLEAN")
+
+    # Stage 6 — Confidence report
+    if r.confidence_report is not None:
+        _print_confidence_report(r.confidence_report)
+    else:
+        print(f"\n  Confidence              : {r.confidence_score:.1f}%")
+
+    # Stage 7 — Execution plan summary (brief)
+    if r.execution_plan is not None:
+        s = r.execution_plan.summary
+        print()
+        print(f"  Execution plan          : {s.total_write_operations} write operation(s)")
+        if s.item_inserts or s.item_updates or s.item_deletes:
+            print(f"    PortfolioItem         : +{s.item_inserts} ~{s.item_updates} -{s.item_deletes}")
+        if s.snapshot_inserts or s.snapshot_updates:
+            print(f"    PortfolioSnapshot     : +{s.snapshot_inserts} ~{s.snapshot_updates}")
+
+    # Commit status
+    print()
+    if r.aborted:
+        print("  ABORTED — CRITICAL ledger findings blocked the commit")
+        print("  Run:  python manage.py validate_ledger --portfolio", r.portfolio_id)
+    elif r.dry_run:
         print("  DRY RUN — no database changes were made")
     elif r.committed:
         print("  COMMITTED — database updated successfully")
+        if r.backup_path:
+            print(f"  Backup                  : {r.backup_path}")
     else:
         print("  NOT COMMITTED — see error above")
 
@@ -1718,12 +1873,18 @@ def _print_rebuild_summary(
     elapsed:  float,
     dry_run:  bool,
 ) -> None:
-    total      = len(results)
-    succeeded  = sum(1 for r in results if r.success)
-    failed     = total - succeeded
-    committed  = sum(1 for r in results if r.committed)
-    diff_items = sum(r.items_different for r in results)
-    diff_snaps = sum(r.snapshots_different for r in results)
+    total        = len(results)
+    succeeded    = sum(1 for r in results if r.success)
+    failed       = total - succeeded
+    aborted      = sum(1 for r in results if r.aborted)
+    committed    = sum(1 for r in results if r.committed)
+    diff_items   = sum(r.items_different for r in results)
+    diff_snaps   = sum(r.snapshots_different for r in results)
+    crit_total   = sum(r.ledger_criticals for r in results)
+    err_total    = sum(r.ledger_errors    for r in results)
+    avg_conf     = (
+        sum(r.confidence_score for r in results) / total if total else 100.0
+    )
 
     print(f"\n{_hr()}")
     if dry_run:
@@ -1735,10 +1896,17 @@ def _print_rebuild_summary(
     print(f"  Succeeded               : {succeeded}")
     if failed:
         print(f"  Failed                  : {failed}")
+    if aborted:
+        print(f"  Aborted (CRITICAL)      : {aborted}  ← fix ledger before committing")
     if diff_items:
         print(f"  Holdings with drift     : {diff_items}")
     if diff_snaps:
         print(f"  Snapshots with NAV diff : {diff_snaps}")
+    if crit_total:
+        print(f"  Ledger CRITICAL findings: {crit_total}")
+    if err_total:
+        print(f"  Ledger ERROR findings   : {err_total}")
+    print(f"  Avg confidence score    : {avg_conf:.1f}%")
     if dry_run:
         print(f"\n  No database changes were made.")
     else:
@@ -1750,7 +1918,16 @@ def _print_rebuild_summary(
 
 async def _cmd_rebuild_portfolio(args: argparse.Namespace) -> int:
     """Deterministic portfolio rebuild from the transaction ledger."""
-    dry_run: bool = getattr(args, "dry_run", False)
+    # --plan and --plan-json imply dry_run; --commit is the explicit write opt-in
+    dry_run:   bool     = getattr(args, "dry_run", False)
+    show_plan: bool     = getattr(args, "plan", False)
+    plan_json: str|None = getattr(args, "plan_json", None)
+
+    if show_plan or plan_json:
+        dry_run = True   # plan-only mode never writes
+    elif getattr(args, "commit", False):
+        dry_run = False  # explicit --commit overrides default dry-run
+
     verbose: bool = getattr(args, "verbose", False)
     yes:     bool = getattr(args, "yes", False)
     t_start  = time.monotonic()
@@ -1790,10 +1967,16 @@ async def _cmd_rebuild_portfolio(args: argparse.Namespace) -> int:
         from_date      = getattr(args, "from_date", None)
         skip_snapshots = getattr(args, "skip_snapshots", False)
         skip_benchmark = getattr(args, "skip_benchmark", False)
+        do_backup      = getattr(args, "backup", False)
 
         # ── Confirmation prompt ───────────────────────────────────────────────
         print(f"\n{_hr()}")
-        action = "DRY RUN — " if dry_run else ""
+        if show_plan or plan_json:
+            action = "PLAN ONLY — "
+        elif dry_run:
+            action = "DRY RUN — "
+        else:
+            action = ""
         print(f"{action}Portfolio Reconstruction Engine")
         print(_hr())
         print(f"  Portfolios       : {rebuild_ids}")
@@ -1801,9 +1984,15 @@ async def _cmd_rebuild_portfolio(args: argparse.Namespace) -> int:
             print(f"  From date        : {from_date}")
         if skip_snapshots:
             print(f"  Skip snapshots   : yes")
-        print(f"  Stages           : 1-Stage1 (transactions)"
-              + ("" if skip_snapshots else " + 2-3 (snapshots)") + " + 4 (reconcile)"
-              + (" + 5 (commit)" if not dry_run else ""))
+        stage_list = "1 (replay)"
+        if not skip_snapshots:
+            stage_list += " + 2-3 (snapshots)"
+        stage_list += " + 4 (reconcile) + 5 (validate) + 6 (plan)"
+        if not dry_run:
+            stage_list += " + 7 (backup) + 8 (commit)"
+        print(f"  Stages           : {stage_list}")
+        if show_plan or plan_json:
+            print("  Mode             : PLAN — no database writes")
         print()
 
         if not dry_run and not yes:
@@ -1831,10 +2020,28 @@ async def _cmd_rebuild_portfolio(args: argparse.Namespace) -> int:
                 skip_snapshots = skip_snapshots,
                 skip_benchmark = skip_benchmark,
                 dry_run        = dry_run,
+                backup         = do_backup,
                 progress_cb    = _cb,
             )
             results.append(r)
             _print_rebuild_result(r, verbose=verbose)
+
+            # Explicit plan display (--plan or --plan-json)
+            if (show_plan or plan_json) and r.execution_plan:
+                _print_execution_plan(r.execution_plan)
+
+            # Export plan to JSON (--plan-json)
+            if plan_json and r.execution_plan:
+                plan_path = plan_json
+                if len(rebuild_ids) > 1:
+                    base, ext = os.path.splitext(plan_json)
+                    plan_path = f"{base}_{pid}{ext or '.json'}"
+                try:
+                    with open(plan_path, "w", encoding="utf-8") as fh:
+                        json.dump(_plan_to_dict(r.execution_plan), fh, indent=2, default=str)
+                    print(f"\n  Execution plan JSON: {plan_path}")
+                except Exception as exc:
+                    print(f"\n  WARNING: Could not write plan JSON: {exc}", file=sys.stderr)
 
     except Exception as exc:
         print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
@@ -1971,6 +2178,45 @@ def _print_ledger_overall_summary(
     print()
 
 
+def _print_ledger_confidence(report: LedgerValidationReport, label: str = "") -> None:
+    """Print a single-line confidence score for a validation report."""
+    score = _ledger_confidence(report)
+    tag   = f"  ({label})" if label else ""
+    print(f"\n  Ledger confidence{tag}: {score:.1f}%")
+
+
+def _print_ledger_comparison(c: LedgerValidationComparison) -> None:
+    """Print a structured raw → effective comparison for one portfolio."""
+    r = c.raw_report
+    e = c.effective_report
+
+    print(f"\n{_hr()}")
+    print(f"Portfolio {r.portfolio_id}  \"{r.portfolio_name}\"")
+    print(_hr())
+
+    raw_conf = _ledger_confidence(r)
+    eff_conf = _ledger_confidence(e)
+
+    print(f"Raw ledger findings   : {len(r.findings)}   (confidence {raw_conf:.1f}%)")
+    print(f"Effective findings    : {len(e.findings)}   (confidence {eff_conf:.1f}%)")
+    print()
+
+    print(f"Resolved  (raw only)  : {len(c.resolved_findings)}")
+    for key in c.resolved_findings:
+        print(f"  - {key}")
+
+    print(f"Remaining (both)      : {len(c.remaining_findings)}")
+    for key in c.remaining_findings:
+        print(f"  = {key}")
+
+    if c.newly_introduced_findings:
+        print(f"New       (eff only)  : {len(c.newly_introduced_findings)}")
+        for key in c.newly_introduced_findings:
+            print(f"  + {key}")
+    else:
+        print("New       (eff only)  : 0  [invariant holds]")
+
+
 async def _cmd_validate_ledger(args: argparse.Namespace) -> int:
     """Read-only transaction ledger audit. Never modifies the database."""
     db      = SessionLocal()
@@ -1979,6 +2225,8 @@ async def _cmd_validate_ledger(args: argparse.Namespace) -> int:
 
     fetch_prices        = getattr(args, "price_check", False)
     price_deviation_pct = getattr(args, "price_threshold", 100.0)
+    do_effective        = getattr(args, "effective", False)
+    do_compare          = getattr(args, "compare", False)
 
     try:
         ws = db.query(Workspace).first()
@@ -2002,23 +2250,62 @@ async def _cmd_validate_ledger(args: argparse.Namespace) -> int:
             print("ERROR: Specify --portfolio ID  or  --all", file=sys.stderr)
             return 1
 
+        # ── Header ────────────────────────────────────────────────────────────
         print(f"\n{_hr()}")
-        print("Ledger Validator  (read-only — never modifies the database)")
+        if do_compare:
+            print("Ledger Validator  —  Raw vs Effective Comparison")
+            print("(read-only — never modifies the database)")
+        elif do_effective:
+            print("Ledger Validator  —  Effective Ledger Mode")
+            print("(read-only — repair overlay applied before validation)")
+        else:
+            print("Ledger Validator  (read-only — never modifies the database)")
         if fetch_prices:
             print(f"Price check enabled  threshold={price_deviation_pct:.0f}%")
         print(_hr())
 
+        # ── Per-portfolio validation ──────────────────────────────────────────
         for p in portfolios:
             print(f"  Validating portfolio {p.id} \"{p.name}\"...")
-            r = await validate_portfolio_ledger(
-                db                  = db,
-                portfolio_id        = p.id,
-                workspace_id        = ws_id,
-                fetch_prices        = fetch_prices,
-                price_deviation_pct = price_deviation_pct,
-            )
-            results.append(r)
-            _print_ledger_report(r)
+
+            if do_compare:
+                repairs = load_active_repairs(db, p.id)
+                c = await compare_ledger_validation(
+                    db                  = db,
+                    portfolio_id        = p.id,
+                    workspace_id        = ws_id,
+                    repairs             = repairs,
+                    fetch_prices        = fetch_prices,
+                    price_deviation_pct = price_deviation_pct,
+                )
+                _print_ledger_comparison(c)
+                results.append(c.effective_report)
+
+            elif do_effective:
+                repairs = load_active_repairs(db, p.id)
+                r = await validate_portfolio_ledger(
+                    db                  = db,
+                    portfolio_id        = p.id,
+                    workspace_id        = ws_id,
+                    fetch_prices        = fetch_prices,
+                    price_deviation_pct = price_deviation_pct,
+                    repairs             = repairs,
+                    mode                = "effective",
+                )
+                results.append(r)
+                _print_ledger_report(r)
+                _print_ledger_confidence(r, label="effective")
+
+            else:
+                r = await validate_portfolio_ledger(
+                    db                  = db,
+                    portfolio_id        = p.id,
+                    workspace_id        = ws_id,
+                    fetch_prices        = fetch_prices,
+                    price_deviation_pct = price_deviation_pct,
+                )
+                results.append(r)
+                _print_ledger_report(r)
 
     except Exception as exc:
         print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
@@ -2030,12 +2317,156 @@ async def _cmd_validate_ledger(args: argparse.Namespace) -> int:
     _print_ledger_overall_summary(results, elapsed)
 
     # Exit codes: 0 = clean, 1 = warnings/errors, 2 = criticals
-    total_crit = sum(len(r.criticals) for r in results)
-    total_issues = sum(len(r.findings) for r in results)
+    total_crit   = sum(len(r.criticals) for r in results)
+    total_issues = sum(len(r.findings)  for r in results)
     if total_crit:
         return 2
     if total_issues:
         return 1
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Apply repairs: apply_repair
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_apply_repair_preview(plan: RepairPlan, portfolio_id: int) -> None:
+    """Print plan details before any write."""
+    print(f"\n{_hr()}")
+    print(f"Repair Plan Preview  —  Portfolio {portfolio_id}")
+    print(_hr())
+    print(f"  Plan ID           : {plan.repair_plan_id}")
+    print(f"  Generated at      : {plan.generated_at or 'n/a'}")
+    print(f"  Portfolio ID      : {plan.portfolio_id}")
+    print(f"  Operations        : {len(plan.operations)}")
+    if plan.operations:
+        print()
+        print(f"  {'#':<4}  {'Type':<18}  {'TX ID':<8}  Reason")
+        print(f"  {'-'*4}  {'-'*18}  {'-'*8}  {'-'*38}")
+        for i, op in enumerate(plan.operations, 1):
+            tx_str = str(op.transaction_id) if op.transaction_id is not None else "—"
+            reason = (op.reason[:38] + "…") if len(op.reason) > 39 else op.reason
+            print(f"  {i:<4}  {op.repair_type:<18}  {tx_str:<8}  {reason}")
+    print(_hr())
+
+
+def _print_apply_repair_result(r: RepairApplyResult) -> None:
+    """Print the outcome of apply_repair_plan()."""
+    print(f"\n{_hr()}")
+    print(f"Apply Repair Result  —  Portfolio {r.portfolio_id}")
+    print(_hr())
+
+    if r.error:
+        print(f"  ERROR: {r.error}")
+        return
+
+    print(f"  Plan ID                : {r.repair_plan_id}")
+    print()
+    print("  Operations")
+    print(f"    Requested            : {r.operations_requested}")
+    print(f"    Inserted             : {r.operations_inserted}")
+    print(f"    Already active       : {r.already_active}")
+    if r.skipped:
+        print(f"    Skipped              : {r.skipped}")
+    if r.rollback:
+        print(f"    Rollback             : YES — {r.rollback_reason}")
+
+    if r.backup_path:
+        print()
+        print(f"  Backup               : {r.backup_path}")
+
+    if r.effective_before is not None:
+        print()
+        print("  Effective Validator")
+        n_before = len(r.effective_before.findings)
+        n_after  = len(r.effective_after.findings) if r.effective_after else n_before
+        crit_b   = len(r.effective_before.criticals)
+        crit_a   = len(r.effective_after.criticals) if r.effective_after else crit_b
+        print(f"    Findings before      : {n_before}  (critical={crit_b})")
+        print(f"    Findings after       : {n_after}  (critical={crit_a})")
+        print()
+        print(f"  Confidence before    : {r.confidence_before:.1f}%")
+        print(f"  Confidence after     : {r.confidence_after:.1f}%")
+
+    print()
+    if r.rollback:
+        print("  ROLLED BACK — no database changes written")
+    elif r.dry_run:
+        print("  DRY RUN — no database changes written")
+    elif r.operations_inserted == 0 and r.already_active == r.operations_requested:
+        print("  NO-OP — all operations were already active (plan already applied)")
+    else:
+        print(f"  COMMITTED — {r.operations_inserted} repair(s) written")
+        if r.inserted_repair_ids:
+            ids_str = ", ".join(str(i) for i in r.inserted_repair_ids)
+            print(f"  Repair IDs           : {ids_str}")
+
+    print(_hr())
+
+
+async def _cmd_apply_repair(args: argparse.Namespace) -> int:
+    """Write LedgerRepair rows from a validated repair plan JSON.
+
+    Transaction rows are never modified.
+    """
+    dry_run: bool = getattr(args, "dry_run", False)
+    yes:     bool = getattr(args, "yes", False)
+    force:   bool = getattr(args, "force", False)
+
+    # ── Load and validate plan ────────────────────────────────────────────────
+    plan_path: str = args.plan
+    try:
+        plan = load_repair_plan(plan_path)
+    except RepairPlanError as exc:
+        print(f"\nERROR: Invalid repair plan — {exc}", file=sys.stderr)
+        return 1
+
+    portfolio_id: int = args.portfolio
+
+    # ── Preview ───────────────────────────────────────────────────────────────
+    _print_apply_repair_preview(plan, portfolio_id)
+
+    # ── Confirmation ──────────────────────────────────────────────────────────
+    if not dry_run:
+        if not yes:
+            print("\nThis will insert LedgerRepair rows.  Transaction rows are NOT modified.")
+            if not _confirm():
+                print("\nApply cancelled.")
+                return 3
+    else:
+        print(f"\n{_hr()}")
+        print("DRY RUN — no database changes will be written")
+        print(_hr())
+
+    # ── Run ───────────────────────────────────────────────────────────────────
+    db = SessionLocal()
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        result = await apply_repair_plan(
+            db           = db,
+            plan         = plan,
+            portfolio_id = portfolio_id,
+            workspace_id = ws_id,
+            dry_run      = dry_run,
+            force        = force,
+        )
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+    _print_apply_repair_result(result)
+
+    if result.error:
+        return 1
+    if result.rollback:
+        return 2
     return 0
 
 
@@ -2231,7 +2662,19 @@ def _build_parser() -> argparse.ArgumentParser:
               Stage 4  Reconciliation report (MATCH / DIFFERENT / MISSING / EXTRA)
                        → Never writes automatically if validation shows drift
 
-              Stage 5  Atomic commit (single DB transaction; rollback on failure)
+              Stage 5  Ledger validation gate (runs validate_ledger rules)
+                       → CRITICAL finding → abort; commit is blocked
+                       → Multi-dimensional ConfidenceReport computed
+
+              Stage 6  Execution plan (deterministic, read-only)
+                       → Lists every intended DB change before any write
+                       → Use --plan to display; --plan-json to export as JSON
+
+              Stage 7  Pre-commit backup (--backup only)
+                       → Existing rows exported to JSON before any writes
+                       → Backup failure aborts the commit
+
+              Stage 8  Atomic commit (single DB transaction; rollback on failure)
 
             Use --all to process every portfolio in the workspace.
             Use --dry-run to preview without writing.
@@ -2279,6 +2722,38 @@ def _build_parser() -> argparse.ArgumentParser:
         "--yes", "-y",
         action="store_true",
         help="Skip confirmation prompt (for automation / scripting)",
+    )
+    rebuild.add_argument(
+        "--backup",
+        action="store_true",
+        help=(
+            "Export existing PortfolioItem and PortfolioSnapshot rows to a JSON "
+            "backup file before committing (Stage 6).  No-op with --dry-run."
+        ),
+    )
+    rebuild.add_argument(
+        "--commit",
+        action="store_true",
+        help="Explicit opt-in to write to the database (equivalent to omitting --dry-run).",
+    )
+    rebuild.add_argument(
+        "--plan",
+        action="store_true",
+        help=(
+            "Generate and print the execution plan without writing to the database. "
+            "Equivalent to --dry-run with explicit plan display. "
+            "Shows every intended DB change: table, operation, field, current→new value."
+        ),
+    )
+    rebuild.add_argument(
+        "--plan-json",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Generate the execution plan and write it as JSON to PATH. "
+            "No database writes. Useful for CI, auditing, and approval workflows. "
+            "With --all, appends _{portfolio_id} before the extension for each portfolio."
+        ),
     )
     rebuild.add_argument(
         "--verbose", "-v",
@@ -2397,6 +2872,105 @@ def _build_parser() -> argparse.ArgumentParser:
             "yfinance market price (default: 100.0)"
         ),
     )
+    validate.add_argument(
+        "--effective",
+        action="store_true",
+        help=(
+            "Load active LedgerRepair rows and validate the effective ledger "
+            "(repair overlay applied before running all checks). "
+            "EXCLUDE repairs remove transactions; SUPPRESS_FINDING repairs "
+            "suppress matching findings.  Read-only — no DB writes."
+        ),
+    )
+    validate.add_argument(
+        "--compare",
+        action="store_true",
+        help=(
+            "Show a side-by-side comparison of raw vs effective validation: "
+            "resolved findings (fixed by repairs), remaining findings (still "
+            "present), and newly-introduced findings (should be zero). "
+            "Read-only — no rebuild, no replay changes, no DB writes."
+        ),
+    )
+
+    # ── apply_repair ──────────────────────────────────────────────────────────
+    apply = sub.add_parser(
+        "apply_repair",
+        help="Apply a repair plan — writes LedgerRepair rows only",
+        description=textwrap.dedent("""\
+            Apply a validated repair plan JSON to the portfolio.
+
+            Writes LedgerRepair rows only.  The Transaction table is never
+            modified.  All inserts run in a single database transaction;
+            rolled back automatically if new CRITICAL validator findings appear
+            after insertion (unless --force is given).
+
+            Supported repair types (Phase 6.7D)
+            ------------------------------------
+              EXCLUDE           — remove transaction from effective canonical list
+              SUPPRESS_FINDING  — suppress a specific validator finding
+
+            Rejected repair types (deferred to Phase 6.8)
+            -----------------------------------------------
+              SYMBOL_RENAME / IMPORT_CORRECTION / LEDGER_EXCEPTION
+
+            Idempotency
+            -----------
+            Applying the same plan twice is safe.  Operations that already have
+            an active row with the same (portfolio_id, repair_plan_id,
+            transaction_id, repair_type) are counted as "already active" and
+            skipped without error.
+
+            Backup
+            ------
+            The current PortfolioItem + PortfolioSnapshot + LedgerRepair rows
+            are exported to a JSON backup file before any insert.
+
+            Exit codes
+            ----------
+              0  Success (committed or no-op)
+              1  Fatal error (invalid plan, backup failure, unexpected exception)
+              2  Rolled back (new CRITICAL findings introduced)
+              3  Cancelled by user
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    apply.add_argument(
+        "--portfolio", "-p",
+        type=int,
+        required=True,
+        metavar="ID",
+        help="Portfolio ID to apply the repair plan to",
+    )
+    apply.add_argument(
+        "--plan",
+        required=True,
+        metavar="PATH",
+        help="Path to the repair plan JSON file",
+    )
+    apply.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Run all stages (backup, idempotency check, validator) but do not "
+            "commit any changes to the database"
+        ),
+    )
+    apply.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip the confirmation prompt (for automation / scripting)",
+    )
+    apply.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Commit even when new CRITICAL validator findings appear after "
+            "insertion.  USE WITH CAUTION: intended only when you have "
+            "verified that the new findings are expected or benign."
+        ),
+    )
 
     return parser
 
@@ -2429,6 +3003,9 @@ def main() -> None:
         sys.exit(exit_code)
     elif args.command == "validate_ledger":
         exit_code = asyncio.run(_cmd_validate_ledger(args))
+        sys.exit(exit_code)
+    elif args.command == "apply_repair":
+        exit_code = asyncio.run(_cmd_apply_repair(args))
         sys.exit(exit_code)
     else:
         parser.print_help()

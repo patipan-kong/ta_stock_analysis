@@ -1,0 +1,78 @@
+{
+  "schema_version": "1.0",
+  "portfolio_id": 4,
+  "repair_plan_id": "6e5f4d3c-2b1a-0f9e-8d7c-6b5a4f3e2d1c",
+  "generated_at": "2026-06-29T00:00:00Z",
+  "operations": [
+    {
+      "repair_type": "EXCLUDE",
+      "transaction_id": 21,
+      "reason": "Duplicate INITIAL_POSITION for GULF.BK on 2026-05-19. tx21 price 124.59 matches SCB.BK (tx20) exactly — a copy-paste error. tx24 at 56.25 is the authoritative record consistent with GULF.BK market data.",
+      "reason_code": "DUPLICATE_SUBMISSION",
+      "payload_json": {"keep_tx_id": 24}
+    },
+    {
+      "repair_type": "EXCLUDE",
+      "transaction_id": 22,
+      "reason": "Duplicate INITIAL_POSITION for KBANK.BK on 2026-05-19. tx22 uses non-canonical raw symbol 'KBANK'; tx23 uses canonical form 'KBANK.BK' with identical shares and price. tx23 is the authoritative record.",
+      "reason_code": "DUPLICATE_SUBMISSION",
+      "payload_json": {"keep_tx_id": 23}
+    },
+    {
+      "repair_type": "EXCLUDE",
+      "transaction_id": 53,
+      "reason": "Duplicate BUY for NVDA01.BK: tx52 and tx53 share identical fingerprint (1000 shares @ 20.70 on 2026-05-29). tx52 is the authoritative record; tx53 is the duplicate.",
+      "reason_code": "DUPLICATE_SUBMISSION",
+      "payload_json": {"keep_tx_id": 52}
+    },
+    {
+      "repair_type": "EXCLUDE",
+      "transaction_id": 65,
+      "reason": "Duplicate BUY for MICRON01.BK: tx63 and tx65 share identical fingerprint (1000 shares @ 18.50 on 2026-06-10). tx63 is the authoritative record; tx65 is the duplicate.",
+      "reason_code": "DUPLICATE_SUBMISSION",
+      "payload_json": {"keep_tx_id": 63}
+    },
+    {
+      "repair_type": "SUPPRESS_FINDING",
+      "transaction_id": 18,
+      "reason": "Intentional backdated INITIAL_POSITION import for AAPL01.BK. Date 2026-05-19 is the original acquisition date; portfolio was created 2026-05-23. This is a known-acceptable pattern for historical position imports.",
+      "reason_code": "PRE_PORTFOLIO_TX",
+      "payload_json": null
+    },
+    {
+      "repair_type": "SUPPRESS_FINDING",
+      "transaction_id": 19,
+      "reason": "Intentional backdated INITIAL_POSITION import for BH.BK. Date 2026-05-19 is the original acquisition date; portfolio was created 2026-05-23.",
+      "reason_code": "PRE_PORTFOLIO_TX",
+      "payload_json": null
+    },
+    {
+      "repair_type": "SUPPRESS_FINDING",
+      "transaction_id": 20,
+      "reason": "Intentional backdated INITIAL_POSITION import for SCB.BK. Date 2026-05-19 is the original acquisition date; portfolio was created 2026-05-23.",
+      "reason_code": "PRE_PORTFOLIO_TX",
+      "payload_json": null
+    },
+    {
+      "repair_type": "SUPPRESS_FINDING",
+      "transaction_id": 23,
+      "reason": "Intentional backdated INITIAL_POSITION import for KBANK.BK (canonical form; tx22 non-canonical duplicate excluded). Date 2026-05-19 is the original acquisition date.",
+      "reason_code": "PRE_PORTFOLIO_TX",
+      "payload_json": null
+    },
+    {
+      "repair_type": "SUPPRESS_FINDING",
+      "transaction_id": 24,
+      "reason": "Intentional backdated INITIAL_POSITION import for GULF.BK (authoritative record at 56.25; tx21 incorrect-price duplicate excluded). Date 2026-05-19 is the original acquisition date.",
+      "reason_code": "PRE_PORTFOLIO_TX",
+      "payload_json": null
+    },
+    {
+      "repair_type": "SUPPRESS_FINDING",
+      "transaction_id": 25,
+      "reason": "Intentional backdated INITIAL_CASH deposit on portfolio inception date 2026-05-19 (portfolio created 2026-05-23). This represents the initial funding at import time.",
+      "reason_code": "PRE_PORTFOLIO_TX",
+      "payload_json": null
+    }
+  ]
+}

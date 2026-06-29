@@ -10,6 +10,7 @@ frontend/.env.local
 .venv/
 venv/
 backend/.venv/
+backend/backups/
 
 # Python caches and build artifacts
 __pycache__/
