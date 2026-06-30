@@ -87,6 +87,7 @@ from models.database import LedgerRepair, Portfolio, PortfolioItem, PortfolioSna
 from services.data_fetcher import fetch_history
 from services.ledger_repair import apply_repair_overlay, load_active_repairs
 from services.ledger_validator import FindingSeverity, LedgerValidationReport, validate_portfolio_ledger
+from services.portfolio_metrics import compute_period_metrics
 from services.symbol_normalization import get_yfinance_symbol
 from services.symbol_resolver import is_dr
 from services.transaction_canonicalizer import CanonicalTransaction, canonicalize_transactions
@@ -644,18 +645,17 @@ def _populate_return_fields(
 
     Window: prev_date < tx.transaction_date <= curr_date.
     Uses transaction_date (not created_at) — correct for historical reconstruction.
+
+    Delegates the actual formulas to services.portfolio_metrics.compute_period_metrics
+    (ADR-004 — exactly one implementation of portfolio return calculations,
+    shared across every snapshot-producing engine).
     """
     window_txs = [
         ctx for ctx in all_txs
         if prev_date < ctx.transaction_date.strftime("%Y-%m-%d") <= curr_date
     ]
 
-    # ── Cash flows ────────────────────────────────────────────────────────────
-    deposits    = sum(float(ctx.total_amount) for ctx in window_txs if ctx.transaction_type in _CASH_INFLOW_TYPES)
-    withdrawals = sum(float(ctx.total_amount) for ctx in window_txs if ctx.transaction_type == "WITHDRAW")
-    net_ecf     = deposits - withdrawals
-
-    # Current prices from holdings_json for valuing asset imports
+    # Current prices from holdings_json for valuing asset imports/corrections
     price_map: dict[str, float] = {}
     try:
         for h in json.loads(day.holdings_json):
@@ -666,68 +666,24 @@ def _populate_return_fields(
     except (ValueError, TypeError):
         pass
 
-    # ── Asset imports (INITIAL_POSITION) ─────────────────────────────────────
-    imported_asset_value = sum(
-        float(ctx.shares) * price_map.get(ctx.raw_symbol or "", float(ctx.price_per_share))
-        for ctx in window_txs
-        if ctx.transaction_type == "INITIAL_POSITION" and ctx.raw_symbol and ctx.shares > 0
+    metrics = compute_period_metrics(
+        curr_nav=day.total_value,
+        prev_nav=prev_nav,
+        period_transactions=window_txs,
+        price_lookup=price_map,
     )
-
-    # ── Quantity corrections (QUANTITY_CORRECTION) ────────────────────────────
-    manual_adj_value = sum(
-        abs(float(ctx.qty_correction_delta))
-        * price_map.get(ctx.raw_symbol or "", float(ctx.price_per_share))
-        for ctx in window_txs
-        if ctx.transaction_type == "QUANTITY_CORRECTION" and ctx.raw_symbol
-    )
-
-    # ── Period decomposition ──────────────────────────────────────────────────
-    period_realized_pnl    = 0.0
-    period_fees_paid       = 0.0
-    period_dividend_income = 0.0
-
-    for ctx in window_txs:
-        if ctx.transaction_type == "SELL":
-            period_realized_pnl += ctx.realized_pnl if ctx.realized_pnl is not None else 0.0
-            period_fees_paid    += float(ctx.fees) + float(ctx.taxes)
-        elif ctx.transaction_type == "BUY":
-            period_fees_paid += float(ctx.fees) + float(ctx.taxes)
-        elif ctx.transaction_type == "DIVIDEND":
-            period_dividend_income += float(ctx.total_amount)
-
-    # ── Cash-flow-adjusted return (Modified Dietz, daily) ─────────────────────
-    curr_nav    = day.total_value
-    pure_gain   = curr_nav - prev_nav - net_ecf - imported_asset_value - manual_adj_value
-    inv_ret_pct = round(pure_gain / prev_nav * 100, 4)
-    inv_ret_amt = round(pure_gain, 4)
 
     # ── Set return fields ─────────────────────────────────────────────────────
     day.total_invested           = round(day.total_invested, 4)
-    day.net_external_cash_flow   = round(net_ecf, 4)            if net_ecf            else None
-    day.imported_asset_value     = round(imported_asset_value, 4) if imported_asset_value else None
-    day.manual_adjustment_value  = round(manual_adj_value, 4)   if manual_adj_value    else None
-    day.period_realized_pnl      = round(period_realized_pnl, 4) if period_realized_pnl  else None
-    day.period_dividend_income   = round(period_dividend_income, 4) if period_dividend_income else None
-    day.period_fees_paid         = round(period_fees_paid, 4)   if period_fees_paid    else None
-    day.investment_return_pct    = inv_ret_pct
-    day.investment_return_amount = inv_ret_amt
-    day.daily_return_pct         = inv_ret_pct
-
-    if(curr_date=='2026-05-27'):
-        print(curr_date)
-        print("Cash Flow Transactions")
-        print("curr_nav", curr_nav)
-        print("prev_nav", prev_nav)
-        print("deposits", deposits)
-        print("withdrawals", withdrawals)
-        print("net_ecf", net_ecf)
-        print("imported_asset_value", imported_asset_value)
-        print("manual_adj_value", manual_adj_value)
-        print("pure_gain", pure_gain)
-        print("inv_ret_pct", inv_ret_pct)
-        print("inv_ret_amt", inv_ret_amt)
-        print("net_external_cash_flow", day.net_external_cash_flow)
-        print("daily_return_pct", day.daily_return_pct)
+    day.net_external_cash_flow   = metrics.net_external_cash_flow
+    day.imported_asset_value     = metrics.imported_asset_value
+    day.manual_adjustment_value  = metrics.manual_adjustment_value
+    day.period_realized_pnl      = metrics.period_realized_pnl
+    day.period_dividend_income   = metrics.period_dividend_income
+    day.period_fees_paid         = metrics.period_fees_paid
+    day.investment_return_pct    = metrics.investment_return_pct
+    day.investment_return_amount = metrics.investment_return_amount
+    day.daily_return_pct         = metrics.daily_return_pct
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Stage 4 — Reconciliation
