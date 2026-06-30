@@ -14,8 +14,8 @@ Coverage
   6.  net_external_cash_flow is None when zero (rounding convention)
   7.  INITIAL_POSITION valued at price_lookup price
   8.  INITIAL_POSITION falls back to price_per_share when symbol absent from price_lookup
-  9.  QUANTITY_CORRECTION valued unsigned (abs) — current pre-fix behaviour
-  10. QUANTITY_CORRECTION downward delta still produces a positive strip (pre-fix bug, asserted intentionally)
+  9.  QUANTITY_CORRECTION upward delta produces a positive strip
+  10. QUANTITY_CORRECTION downward delta produces a negative strip (signed-delta fix)
   11. SELL contributes realized_pnl and fees to period decomposition
   12. BUY contributes fees only (no realized_pnl)
   13. DIVIDEND counted in period_dividend_income
@@ -137,24 +137,23 @@ def test_initial_position_falls_back_to_price_per_share():
     assert m.imported_asset_value == pytest.approx(50_000.0)
 
 
-# ── 9-10. QUANTITY_CORRECTION (current pre-fix unsigned behaviour) ──────────
+# ── 9-10. QUANTITY_CORRECTION (signed) ───────────────────────────────────────
 
-def test_quantity_correction_unsigned_upward():
+def test_quantity_correction_upward_strips_positive_amount():
     txs = [_ctx(1, "QUANTITY_CORRECTION", raw_symbol="PTT.BK", price_per_share=30.0,
                 qty_correction_delta=Decimal("10"))]
     m = _compute(txs)
     assert m.manual_adjustment_value == pytest.approx(300.0)
 
 
-def test_quantity_correction_unsigned_downward_still_positive():
-    """Documents the pre-fix bug: a downward correction strips a POSITIVE
-    amount because the current formula is abs(delta). The signed-delta fix
-    (frozen doc Section 7) lands in its own isolated commit, which will
-    change this test's expected value to -300.0."""
+def test_quantity_correction_downward_strips_negative_amount():
+    """Signed-delta fix (frozen doc Section 7): a downward correction must
+    strip a NEGATIVE amount, since equity left the books without a trade.
+    Using abs() here would double-subtract a downward correction's NAV drop."""
     txs = [_ctx(1, "QUANTITY_CORRECTION", raw_symbol="PTT.BK", price_per_share=30.0,
                 qty_correction_delta=Decimal("-10"))]
     m = _compute(txs)
-    assert m.manual_adjustment_value == pytest.approx(300.0)
+    assert m.manual_adjustment_value == pytest.approx(-300.0)
 
 
 # ── 11-13. Period decomposition ──────────────────────────────────────────────

@@ -22,11 +22,11 @@ Canonical formulas
   imported_asset_value    = sum(shares × price for INITIAL_POSITION)
                              (no duplicate-import dedup — that is a ledger-repair
                              concern, not a snapshot-math concern)
-  manual_adjustment_value = sum(qty_correction_delta × price
+  manual_adjustment_value = sum(signed qty_correction_delta × price
                              for QUANTITY_CORRECTION)
-                             (signed once the isolated bug-fix commit lands —
-                             see the QUANTITY_CORRECTION section below for the
-                             current state of this extraction)
+                             (frozen doc Section 7 — fixes the documented
+                             downward-correction bug present in 2 of the 3
+                             original engines)
   investment_return_pct   = (curr_nav − prev_nav − net_ecf − imported
                              − manual_adj) / prev_nav × 100
   investment_return_amount = the numerator above
@@ -141,13 +141,15 @@ def compute_period_metrics(
         if ctx.transaction_type == "INITIAL_POSITION" and ctx.raw_symbol and ctx.shares > 0
     )
 
-    # ── Quantity corrections (QUANTITY_CORRECTION) ─────────────────────────────
-    # NOTE: unsigned (abs) to match current portfolio_rebuilder.py /
-    # portfolio_snapshots.py behaviour bit-for-bit during initial extraction.
-    # The signed-delta fix (frozen doc Section 7) lands in its own isolated
-    # commit — see docs/DECISION_LOG.md "Signed Manual Adjustment Value Fix".
+    # ── Quantity corrections (QUANTITY_CORRECTION) — signed ───────────────────
+    # A downward correction must strip a NEGATIVE amount (equity left the
+    # books without a trade), not abs(delta). Using abs() here previously
+    # caused a downward correction to double-subtract: once for the real NAV
+    # drop, once again for the (wrongly positive) strip — see
+    # docs/PORTFOLIO_CALCULATION_RULES.md Section 7 and
+    # docs/DECISION_LOG.md "Signed Manual Adjustment Value Fix".
     manual_adjustment_value = sum(
-        abs(float(ctx.qty_correction_delta))
+        float(ctx.qty_correction_delta)
         * price_lookup.get(ctx.raw_symbol or "", float(ctx.price_per_share))
         for ctx in period_transactions
         if ctx.transaction_type == "QUANTITY_CORRECTION" and ctx.raw_symbol
