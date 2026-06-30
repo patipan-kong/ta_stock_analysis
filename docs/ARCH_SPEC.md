@@ -73,7 +73,13 @@ investment_return_pct =
 
 # period_realized_pnl / period_dividend_income / period_fees_paid are TRANSPARENCY ONLY
 # They are already embedded in today_nav via cash balances; not added/subtracted here.
+
+net_external_cash_flow =
+  sum(DEPOSIT.total_amount) + sum(INITIAL_CASH.total_amount) − sum(WITHDRAW.total_amount)
+# Ledger-derived (not a cash_balance delta) — see "Portfolio Metrics Engine" below.
 ```
+
+Computed by exactly one implementation, `services/portfolio_metrics.py::compute_period_metrics()` — see [Portfolio Metrics Engine](#portfolio-metrics-engine-servicesportfolio_metricspy) below.
 
 ### Transaction accounting invariants
 - `fees` column = pre-VAT subtotal (commission + trading + clearing)
@@ -405,6 +411,42 @@ Total        ≈ Gross × 0.001680
 ### Admin repair endpoints
 - `POST /admin/recalculate-cost-basis?from_date=2026-05-27&dry_run=false` — re-splits fees/taxes columns, replays full cost-basis history, regenerates snapshots from date
 - `GET /admin/validate-portfolio/{id}` — 4-check audit: NAV reconciliation, cash ledger, realized P/L, negative shares
+
+---
+
+## Portfolio Metrics Engine (`services/portfolio_metrics.py`)
+
+Single shared implementation (ADR-004, 2026-06-30) of the nine period-return `PortfolioSnapshot` fields. `portfolio_rebuilder.py`, `portfolio_snapshots.py`, and `snapshot_return_recovery.py` all delegate to it instead of each computing these formulas independently. Full design rationale: [PORTFOLIO_CALCULATION_RULES.md](PORTFOLIO_CALCULATION_RULES.md).
+
+### Contract
+- **Pure**: no ORM, no DB session, no network access, no logging, no global state.
+- **Windowing-agnostic**: never reads `transaction_date` or `created_at`. Callers filter `period_transactions` to the window themselves, using whichever field is correct for that engine (`created_at` for the two incrementally-built engines, `transaction_date` for the full rebuild — see PORTFOLIO_CALCULATION_RULES.md Section 2 / ADR-003).
+- **Input**: `CanonicalTransaction` (existing, `transaction_canonicalizer.py`) — never raw ORM `Transaction` rows.
+
+```python
+def compute_period_metrics(
+    *,
+    curr_nav: float,
+    prev_nav: float | None,
+    period_transactions: Sequence[CanonicalTransaction],
+    price_lookup: Mapping[str, float] | None = None,
+    prev_cumulative_realized_pnl: float = 0.0,
+) -> PeriodMetrics
+```
+
+### Canonical formulas
+| Field | Formula |
+|---|---|
+| `net_external_cash_flow` | Ledger-derived: `sum(DEPOSIT + INITIAL_CASH) − sum(WITHDRAW)` (ADR-002 — never a `cash_balance` delta) |
+| `imported_asset_value` | `sum(shares × price for INITIAL_POSITION)` — no duplicate-import dedup (that's a `ledger_repair_plan.py` concern) |
+| `manual_adjustment_value` | `sum(signed qty_correction_delta × price for QUANTITY_CORRECTION)` |
+| `investment_return_pct` / `investment_return_amount` | `(curr_nav − prev_nav − net_ecf − imported − manual_adj) / prev_nav × 100`; `None` when `prev_nav` is `None`/`≤0` |
+| `daily_return_pct` | `= investment_return_pct` |
+| `period_realized_pnl` / `period_dividend_income` / `period_fees_paid` | Transparency-only sums (Section 5/8 of PORTFOLIO_CALCULATION_RULES.md) |
+| `cumulative_realized_pnl` | `prev_cumulative_realized_pnl + period_realized_pnl` — **not** wired into `portfolio_snapshots.py`'s `PortfolioSnapshot.realized_pnl` (still computed by summing every SELL ever; see module docstring for why the incremental formula isn't safe there) |
+
+### Scope boundary
+Does **not** own NAV calculation, the replay engine, price fetching, or holdings reconstruction — those remain in each caller. A ledger-corruption precondition (e.g. requiring a clean `ledger_validator` pass before computing) is not enforced here (open question — see PORTFOLIO_CALCULATION_RULES.md Section 12 #6).
 
 ---
 

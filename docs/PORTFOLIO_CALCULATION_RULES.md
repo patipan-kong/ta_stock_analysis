@@ -1,7 +1,7 @@
 # Portfolio Calculation Rules
 _Canonical business specification for Portfolio Performance Calculation. Source of truth for `portfolio_metrics.py` and every existing/future engine that touches NAV, return, or attribution math._
 
-_Status: **Business rules frozen for documentation purposes only.** This document records what the current engines do today, evaluates where they disagree, and recommends canonical answers. It does **not** change any code. See [Section 12](#12-open-questions) for what still requires a human decision before implementation begins._
+_Status: **Implemented.** `backend/services/portfolio_metrics.py` is the single shared implementation this document specifies, and `portfolio_rebuilder.py`, `portfolio_snapshots.py`, and `snapshot_return_recovery.py` all delegate to it (ADR-001 through ADR-004, ratified 2026-06-30). Sections 4, 6, and 7's recommendations are implemented as described below. See [Section 12](#12-open-questions) for what remains open (Open Questions #4-#6 — not addressed by this implementation)._
 
 _Companion docs: [ARCH_SPEC.md](ARCH_SPEC.md) (schema + formula reference), [DECISION_LOG.md](DECISION_LOG.md) (why past decisions were made)._
 
@@ -67,6 +67,8 @@ User has live snapshots through 2026-06-14. On 2026-06-15 they import a 1,000-sh
 > A from-scratch full rebuild may use `transaction_date` for both, because it has no pre-existing snapshot history to be blind to — but this is an optimization specific to "no prior state exists," not a different business rule.
 > `created_at` must never influence the *amount* of any field (shares, price, P/L) — only whether a transaction is counted *in this window vs. a different one*.
 
+**ADR-003 resolution (2026-06-30):** ADR-003 ("Portfolio performance uses `transaction_date`; `created_at` is audit metadata only and must never affect investment performance attribution") is scoped to exactly the rule above: `transaction_date` governs replay-order/portfolio-state questions, which is the only thing `services/portfolio_metrics.py`'s pure formulas ever read a date from (the module never reads `created_at` at all — see its docstring). Window membership remains each calling engine's own pre-existing responsibility, unchanged: `created_at` for `portfolio_snapshots.py` and `snapshot_return_recovery.py` (preserving the Phase 3B.9 backdated-import fix described above), `transaction_date` for `portfolio_rebuilder.py`. Applying ADR-003 literally to window membership in the two incrementally-built engines would reintroduce the exact bug Phase 3B.9 fixed; this was evaluated and rejected during the `portfolio_metrics.py` implementation. `test_portfolio_metrics_parity.py::test_backdated_transaction_attributed_per_engine_own_window_field` is the regression test for this resolution.
+
 ---
 
 ## 3. Snapshot Window Definition
@@ -127,7 +129,7 @@ If a snapshot is skipped (e.g. `SnapshotCoverageError`, market closed, scheduler
 net_external_cash_flow = sum(DEPOSIT.total_amount) + sum(INITIAL_CASH.total_amount) - sum(WITHDRAW.total_amount)
 ```
 
-### Implementation B — cash-balance delta reconciliation (`snapshot_return_recovery.py`)
+### Implementation B — cash-balance delta reconciliation (formerly `snapshot_return_recovery.py`; superseded — see Canonical rule below)
 
 ```python
 net_ecf = (curr_cash_balance - prev_cash_balance) + sum(BUY.total_amount) - sum(SELL.total_amount)
@@ -145,15 +147,19 @@ Algebraically, since `cash_balance` is maintained by every transaction type (`BU
 | **Robustness** | Vulnerable to "phantom" cash-flow entries (a `DEPOSIT` logged without a real balance change) — A still counts it as external inflow even though no actual cash moved, incorrectly stripping a same-size chunk of real investment gain. | Immune to phantom entries (the documented motivation in `snapshot_return_recovery.py`'s own docstring). Vulnerable instead to undetected `BUY`/`SELL` recording bugs masquerading as cash-flow stripping error, since A's two components (event sums) are isolated from each other while B's formula conflates them into one number. |
 | **Historical imports / full rebuild** | Works standalone with no dependency on a previously-computed `cash_balance` — appropriate when reconstructing from nothing. | In a full rebuild, `cash_balance` is *itself* derived in the same replay pass by summing the very same transactions — so for a clean, from-scratch rebuild, B reduces to being numerically identical to A. No information is lost by using B here; it is just unnecessary indirection in that one context. |
 
-### Recommendation: **Implementation B (cash-balance delta) as the canonical rule, everywhere.**
+### Canonical rule (implemented 2026-06-30): **Implementation A (ledger-derived event sum), everywhere.**
 
-Reasoning:
-1. **B is strictly safer.** In a portfolio with a clean, fully-consistent ledger (the common case, and always true immediately after a full rebuild), A and B produce identical numbers — there is no case where switching to B changes a correct result.
-2. **B is the only one of the two that is self-validating against the authority column.** `cash_balance` is the field NAV (`total_value = cash + equity_value`) actually depends on — see [Section 9](#9-nav-definition). A formula that can silently diverge from the column driving NAV is a latent source of phantom returns; B cannot diverge from it by construction.
-3. **The "B needs a prior persisted `cash_balance`" objection does not apply to the full rebuild.** `portfolio_rebuilder.py` already derives `cash_balance` for every reconstructed day as part of Stage 1/2 replay (`_SnapshotDay.cash_balance`), and stores it as `PortfolioSnapshot.cash_balance` for both the `prev` and `curr` rows being compared in Stage 3. The data Implementation B needs is already present at the point `_populate_return_fields()` runs — switching the rebuilder to B requires no new data, only the formula change.
-4. Adopting B everywhere directly satisfies Design Principle 5 — one formula, three engines, identical output.
+This reverses the recommendation that originally stood in this section. A follow-up architecture review (recorded in `docs/DECISION_LOG.md` → "External Cash Flow Formula Confirmed Canonical") found that Implementation B's apparent safety property — "self-validating against the authority column" — was based on treating `Portfolio.cash_balance` as authoritative. That inverts Design Principle 1: the Transaction ledger is the single source of truth, and `cash_balance` is a *derived, disposable* column that is allowed to drift and then be corrected by replay (this is exactly what `ledger_validator.py` CHECK 8, `CASH_MISMATCH`, already does — it replays the ledger to get the true cash figure and reports `Portfolio.cash_balance` as the thing that "has drifted from the transaction ledger," not the other way around).
 
-This recommendation requires changing `portfolio_snapshots.py` and `portfolio_rebuilder.py` to compute `net_external_cash_flow` via the cash-delta formula instead of the event-sum formula. **No such change is made by this document** — it is a recommendation for the eventual `portfolio_metrics.py` implementation, flagged again in [Section 12](#12-open-questions).
+The decisive finding: **A fails loud on `cash_balance` drift; B fails quiet.**
+- If `cash_balance` is under-credited relative to a real DEPOSIT in the ledger, A reports a large, obviously-wrong negative return (impossible to miss). B silently treats the missing cash flow as "nothing happened" — a flat, unremarkable return that hides the bug.
+- If `cash_balance` is corrupted upward with no ledger backing (e.g. a manual SQL edit), A reports a phantom gain (a real, visible anomaly the existing diagnostic logging is designed to catch). B silently absorbs the untracked cash as if it were a legitimate deposit, erasing all trace of it.
+
+In both directions, B's "immunity to phantom entries" is actually blindness: a formula defined in terms of `cash_balance` cannot, by construction, ever disagree with `cash_balance`. A real production case surfaced this exact failure mode and became the regression test for the fix — see `test_phantom_deposit_and_initial_position_surface_as_anomalous_return` in `test_snapshot_return_recovery.py`.
+
+This also aligns with ADR-002 ("Portfolio Metrics never compensate for ledger corruption; validation belongs to Ledger Validator; repair belongs to Ledger Repair; Metrics assume a valid replay") — Implementation B is, by definition, a compensation mechanism: it strips whatever actually happened to `cash_balance`, ledger-explained or not. Implementation A keeps Metrics strictly downstream of the ledger, with no second input path.
+
+`net_external_cash_flow` is computed by `services/portfolio_metrics.py::compute_period_metrics()` for all three engines as of this implementation. `snapshot_return_recovery.py` (previously the only Implementation-B holdout) was migrated; `portfolio_rebuilder.py` and `portfolio_snapshots.py` already used Implementation A and required no formula change.
 
 ---
 
@@ -202,19 +208,19 @@ Market value, at the snapshot's effective price (live price in the incremental e
 
 **Should duplicate imports be ignored?**
 
-This is **where the three engines currently disagree**, and it is the most consequential open gap in this section:
+**Resolved, implemented 2026-06-30 — no.** This was previously where the three engines disagreed:
 
-| Engine | Duplicate-import handling |
+| Engine | Duplicate-import handling (historical, pre-implementation) |
 |---|---|
 | `portfolio_snapshots.py` | **No dedup.** Every `INITIAL_POSITION` transaction in the window is stripped, unconditionally. |
 | `portfolio_rebuilder.py` | **No dedup.** Same — sums `shares × price` for every `INITIAL_POSITION` row in the window. |
-| `snapshot_return_recovery.py` | **Dedups.** Skips a re-import for a symbol already present in `prev_snap.holdings_json` with `shares >= tx_shares`, on the documented theory that it's "a retroactive documentation entry for equity already embedded in the previous NAV." |
+| `snapshot_return_recovery.py` | **Dedupped.** Skipped a re-import for a symbol already present in `prev_snap.holdings_json` with `shares >= tx_shares`. Removed during the `portfolio_metrics.py` migration. |
 
-### Recommendation
+### Canonical rule (implemented)
 
-Duplicate `INITIAL_POSITION` rows are a **ledger-quality problem**, not a snapshot-math problem, and the codebase already has the right tool for it: `ledger_repair_plan.py`'s `generate_repair_plan()` already auto-detects and repairs `DUP_INITIAL_POSITION` (per [[project_phase6_7e]] memory — Phase 6.7E shipped 2026-06-30). The snapshot-level dedup heuristic in `snapshot_return_recovery.py` is a defensive workaround for exactly the condition the ledger repair tooling is meant to eliminate upstream.
+Duplicate `INITIAL_POSITION` rows are a **ledger-quality problem**, not a snapshot-math problem, and the codebase already has the right tool for it: `ledger_repair_plan.py`'s `generate_repair_plan()` already auto-detects and repairs `DUP_INITIAL_POSITION` (per [[project_phase6_7e]] memory — Phase 6.7E shipped 2026-06-30). The snapshot-level dedup heuristic that used to live in `snapshot_return_recovery.py` was a defensive workaround for exactly the condition the ledger repair tooling is meant to eliminate upstream.
 
-Canonical rule: **`INITIAL_POSITION` snapshot stripping should assume a clean ledger (no duplicates) and apply no dedup heuristic at compute time.** Duplicate detection and correction belongs exclusively in `ledger_validator.py` (detection) and `ledger_repair_plan.py` / `repair_plan_executor.py` (correction), run *before* any snapshot engine touches the ledger. This both resolves the three-way inconsistency and avoids encoding ledger-cleanliness assumptions into three separate snapshot engines. Until the ledger repair step is mandatory/automatic ahead of every rebuild, `snapshot_return_recovery.py`'s defensive dedup remains a reasonable belt-and-suspenders check — but it should not be treated as "the canonical rule," only as a safety net.
+`services/portfolio_metrics.py::compute_period_metrics()` applies **no dedup heuristic** — it strips every `INITIAL_POSITION` transaction in the window at face value, matching what `portfolio_snapshots.py` and `portfolio_rebuilder.py` always did. Duplicate detection and correction belongs exclusively in `ledger_validator.py` (detection) and `ledger_repair_plan.py` / `repair_plan_executor.py` (correction), run *before* any snapshot engine touches the ledger. A portfolio with an un-repaired duplicate `INITIAL_POSITION` will now show an inflated `imported_asset_value` and a correspondingly distorted `investment_return_pct` for that period — by design, per ADR-002 ("Metrics never compensate for ledger corruption"); run `validate_ledger` / `generate_repair_plan` on any portfolio that predates this change before trusting recomputed numbers.
 
 ---
 
@@ -236,9 +242,9 @@ No. No cash moves (`execute_quantity_correction` explicitly does not touch `cash
 
 No — it must be fully stripped from `investment_return_pct`, the same as `imported_asset_value`, via `manual_adjustment_value`. A correction is not a market event; the user did not buy or sell anything, so it cannot be a gain or loss.
 
-### A correctness gap found while researching this document
+### A correctness gap found while researching this document (fixed 2026-06-30)
 
-Stripping must be **signed**, not magnitude-only, and two of the three engines currently get this wrong:
+Stripping must be **signed**, not magnitude-only, and two of the three engines previously got this wrong:
 
 | Engine | Formula used |
 |---|---|
@@ -253,9 +259,9 @@ The formula subtracts `manual_adjustment_value` from `pure_market_gain` (`pure_g
 
 An upward correction happens to net out correctly under the absolute-value formula only because the sign of the NAV change and the (always-positive) strip happen to point the same way in that one direction — the bug is specific to **downward** corrections, which is presumably why it has not been noticed in practice (most recorded corrections likely add missing shares rather than remove erroneous ones).
 
-### Recommendation
+### Canonical rule (implemented 2026-06-30)
 
-Canonical rule: **`manual_adjustment_value` must be signed**, computed as `qty_correction_delta × price_per_share` (not `abs(qty_correction_delta)`), matching `snapshot_return_recovery.py`. This is flagged here as a found defect for awareness, not fixed in this document per the no-code-changes constraint — see [Section 12](#12-open-questions).
+**`manual_adjustment_value` is signed**, computed as `qty_correction_delta × price_per_share` (not `abs(qty_correction_delta)`), in `services/portfolio_metrics.py::compute_period_metrics()` — matching what `snapshot_return_recovery.py` always did independently. All three engines now agree. This changes historical numbers only for a portfolio that is rebuilt/recomputed after this fix and has a downward `QUANTITY_CORRECTION` in its ledger; no automatic backfill of already-persisted snapshots was performed (forward-only, consistent with the project's existing `POST /admin/recalculate-cost-basis` pattern for formula changes). Regression test: `test_quantity_correction_downward_strips_negative_amount` in `test_portfolio_metrics.py`.
 
 ---
 
@@ -340,13 +346,13 @@ These must hold for any conforming implementation, including the eventual `portf
 
 1. **`total_value = cash_balance + equity_value`**, always, by construction — not just approximately, exactly (`portfolio_snapshots.py`'s reconciliation check formalizes this as a `0.01` tolerance, which exists only to catch floating-point drift, not legitimate divergence).
 2. **Rebuilding twice produces identical snapshots.** Same Transaction rows in, same `PortfolioSnapshot` rows out, every time — no clock dependency, no ordering dependency beyond `(transaction_date, id)`.
-3. **`rebuild_portfolio()` and `recover_portfolio_snapshot_returns()` must produce identical return metrics for the same date range.** ⚠️ **Currently false** — see [Section 4](#4-external-cash-flow-definition) (cash-flow formula divergence) and [Section 7](#7-quantity-corrections) (signed-delta divergence). This is the most important invariant violation this document surfaces.
+3. **`rebuild_portfolio()` and `recover_portfolio_snapshot_returns()` must produce identical return metrics for the same date range, for windows where both engines agree on transaction attribution.** ✅ **Holds as of 2026-06-30** — both engines delegate to `services/portfolio_metrics.py::compute_period_metrics()` (see [Section 4](#4-external-cash-flow-definition), [Section 7](#7-quantity-corrections); regression test: `test_parity_full_transaction_mix` in `test_portfolio_metrics_parity.py`). The qualifier matters: a transaction with `transaction_date != created_at` (a backdated entry) is *correctly* attributed to a different window by each engine per Section 2 / ADR-003 — that is not a violation of this invariant, since the two engines are answering different questions for that one transaction (see `test_backdated_transaction_attributed_per_engine_own_window_field`).
 4. **Transaction insertion order must not affect historical performance**, *given identical `(transaction_date, id)` values*. Replay order is fully determined by the canonicalizer's `(transaction_date, id)` sort key, not by wall-clock insertion order.
-5. **`created_at` must never influence the *magnitude* of any computed field** — share count, price, P/L, fee amount. It may only influence *which window a transaction is attributed to* (Section 2), and only in incrementally-built (non-from-scratch) contexts.
+5. **`created_at` must never influence the *magnitude* of any computed field** — share count, price, P/L, fee amount. It may only influence *which window a transaction is attributed to* (Section 2), and only in incrementally-built (non-from-scratch) contexts. `services/portfolio_metrics.py` enforces this structurally: it never reads `created_at` at all, only `period_transactions` already filtered by the caller.
 6. **`fees` and `taxes` always sum to the same total fee burden**, regardless of whether a row predates the Phase 3B.10 decomposition (`taxes=0` rows still sum correctly).
 7. **`avg_cost` is always fee-inclusive** (`net_buy_amount / shares`) — never a bare price-per-share figure.
 8. **Realized P&L (cumulative or period) is never a term in `investment_return_pct`** — it is fully transparency-only (Section 5).
-9. **`imported_asset_value` and `manual_adjustment_value` always net to zero effect on `investment_return_pct`** for the period in which they occur, when correctly signed (Section 6, Section 7) — this currently holds for imports but is violated for downward quantity corrections in two of three engines.
+9. **`imported_asset_value` and `manual_adjustment_value` always net to zero effect on `investment_return_pct`** for the period in which they occur, when correctly signed (Section 6, Section 7) and the ledger is clean (no un-repaired duplicate imports). ✅ **Holds as of 2026-06-30** for a clean ledger — `manual_adjustment_value` is now signed in all three engines. Note this is now a precondition, not an unconditional guarantee: per the Section 6 resolution, a portfolio with an un-repaired duplicate `INITIAL_POSITION` will *deliberately* show a non-zero net effect (fail loud, per ADR-002) until the ledger is repaired.
 10. **A snapshot is never written with `equity_value` computed from a holding's `avg_cost` as a price fallback.** (This was the historical corruption pattern `snapshot_repair.py` exists to fix — see its docstring.)
 11. **The `(portfolio_id, snapshot_date)` pair is unique** — `generate_daily_snapshot()` upserts rather than duplicating, enforced by a DB unique constraint, not just application logic.
 12. **`investment_return_pct` is `None` (not `0`) when there is no valid previous snapshot** (`prev is None` or `prev.total_value <= 0`) — `0` would falsely claim a measured flat return; `None` correctly states "no return is computable yet." All three engines respect this.
@@ -355,39 +361,30 @@ These must hold for any conforming implementation, including the eventual `portf
 
 ## 12. Open Questions
 
-These require an explicit human decision before `portfolio_metrics.py` implementation begins. None are answered by this document — they are listed so the decision is made deliberately rather than inherited by accident from whichever engine happens to get ported first.
+Questions #1–#3 were resolved and implemented on 2026-06-30 (ADR-001 through ADR-004). Questions #4–#6 remain open — out of scope for the `portfolio_metrics.py` implementation and not addressed by it.
 
-1. **Which cash-flow formula becomes canonical — A (event sum) or B (cash delta)?** Section 4 recommends B, but this changes `net_external_cash_flow` output for any portfolio whose ledger and `cash_balance` have ever drifted apart. Adopting B retroactively could change historical `investment_return_pct` values on past dates where drift existed. Decision needed: backfill historical snapshots with the new formula, or apply only going forward?
+1. ~~Which cash-flow formula becomes canonical — A (event sum) or B (cash delta)?~~ **Resolved: Implementation A**, forward-only (no backfill of already-persisted snapshots). See [Section 4](#4-external-cash-flow-definition) and `docs/DECISION_LOG.md` → "External Cash Flow Formula Confirmed Canonical."
 
-2. **Should the live engine and rebuilder be migrated to signed `manual_adjustment_value`** (Section 7)? This is closer to a bug fix than a policy choice, but it is listed here because (a) no code changes are permitted in this task, and (b) fixing it changes historical numbers for any portfolio with a downward `QUANTITY_CORRECTION` in its ledger — same backfill-vs-forward-only question as #1.
+2. ~~Should the live engine and rebuilder be migrated to signed `manual_adjustment_value`?~~ **Resolved: yes**, forward-only. See [Section 7](#7-quantity-corrections) and `docs/DECISION_LOG.md` → "Signed Manual Adjustment Value Fix."
 
-3. **Should duplicate-`INITIAL_POSITION` dedup live exclusively in ledger repair, or should snapshot engines keep a defensive check?** (Section 6.) Removing it from `snapshot_return_recovery.py` simplifies the formula but removes a safety net for ledgers that haven't been through repair yet.
+3. ~~Should duplicate-`INITIAL_POSITION` dedup live exclusively in ledger repair, or should snapshot engines keep a defensive check?~~ **Resolved: ledger repair only** — the snapshot-level dedup heuristic was removed from `snapshot_return_recovery.py`. See [Section 6](#6-imported-assets) and `docs/DECISION_LOG.md` → "INITIAL_POSITION Dedup Removed from Snapshot Engines."
 
-4. **Should `daily_return_pct` be removed as a separate column** now that it is set to exactly `investment_return_pct` in all three engines with no documented case of divergence? Keeping both is harmless but is unexplained duplication that a new contributor reading `portfolio_metrics.py` would reasonably question.
+4. **[Still open] Should `daily_return_pct` be removed as a separate column** now that it is set to exactly `investment_return_pct` in all three engines with no documented case of divergence? `services/portfolio_metrics.py::PeriodMetrics.daily_return_pct` preserves this duplication unchanged — not addressed by this implementation.
 
-5. **What should happen to `imported_asset_value`/`manual_adjustment_value` valuation when the live price is unavailable?** All three engines fall back to `tx.price_per_share` (the user-entered or historical transaction price) when no live/historical price is found for that symbol on that date. This means the stripped amount can differ from the "true" market value if the price moved between the transaction date and the snapshot date for genuinely backdated entries — is `price_per_share` fallback acceptable, or should such transactions block the snapshot entirely (similar to the coverage-threshold gate for holdings)?
+5. **[Still open] What should happen to `imported_asset_value`/`manual_adjustment_value` valuation when the live price is unavailable?** All three engines (now via the shared `price_lookup` fallback in `compute_period_metrics()`) still fall back to `tx.price_per_share` when no live/historical price is found. Not addressed by this implementation.
 
-6. **Is `transaction_date` always trustworthy as portfolio-state ordering, or should there be a validation gate (block negative-share states, etc.) before a rebuild trusts it blindly?** `ledger_validator.py` already has checks for some of this (date skew, missing symbols, non-positive shares/prices) — should `portfolio_metrics.py` require a clean `ledger_validator` pass (no CRITICAL/ERROR findings) as a precondition for any return calculation, live or rebuilt?
+6. **[Still open] Is `transaction_date` always trustworthy as portfolio-state ordering, or should there be a validation gate before a rebuild trusts it blindly?** `services/portfolio_metrics.py` has no ledger-validity precondition built in — per ADR-002, it "assumes a valid replay," but nothing currently enforces a clean `ledger_validator` pass before any engine calls it. Not addressed by this implementation.
 
-7. **Stray debug output found in `portfolio_rebuilder.py`** (`_populate_return_fields`, lines ~716-730): an unconditional `print()` block gated on a hardcoded date string (`if curr_date == '2026-05-27'`). This has no effect on correctness (it's pure stdout noise) but indicates the cash-flow formula was being actively debugged around that date — worth checking whether that debugging session left any other unresolved questions about that specific portfolio/date before treating the rebuilder's current formula as settled. Not fixed here per the no-code-changes constraint.
+7. ~~Stray debug output found in `portfolio_rebuilder.py`~~ **Resolved** — the `if curr_date == '2026-05-27': print(...)` block was removed when `_populate_return_fields` was migrated to call `compute_period_metrics()`.
 
 ---
 
 # Summary of Remaining Unresolved Business Decisions
 
-1. Canonical external-cash-flow formula: Implementation A vs. B (recommended: B, but needs a backfill/forward-only decision).
-2. Whether to fix the signed-vs-absolute `manual_adjustment_value` discrepancy now or treat it as a tracked defect for later (recommended: fix, signed; same backfill question applies).
-3. Where duplicate-`INITIAL_POSITION` detection should live long-term: ledger repair only, or snapshot-level defense-in-depth too.
-4. Whether `daily_return_pct` should be deprecated as a duplicate column.
-5. Fallback pricing policy for stripped non-performance transactions when live/historical price lookup fails.
-6. Whether a clean `ledger_validator` pass should be a hard precondition for trusting any return calculation.
+1. Whether `daily_return_pct` should be deprecated as a duplicate column.
+2. Fallback pricing policy for stripped non-performance transactions when live/historical price lookup fails.
+3. Whether a clean `ledger_validator` pass should be a hard precondition for trusting any return calculation.
 
-# Recommendation: Is the system ready to implement `portfolio_metrics.py`?
+# Implementation status
 
-**Not yet — close, but two of the six open questions (#1 and #2 above) are not stylistic, they are correctness questions that change historical numbers depending on the answer.** Implementing `portfolio_metrics.py` against whichever formula is ported first (most likely the live engine's, since it's the most-used) without first deciding #1 and #2 would silently canonize the less-robust cash-flow formula and a signed-delta bug into the new single source of truth — exactly the outcome this freeze exercise was meant to prevent.
-
-Suggested sequence before implementation starts:
-1. Resolve open questions #1 and #2 explicitly (a short decision-log entry each, same format as existing `DECISION_LOG.md` entries).
-2. Decide the backfill question for both (apply retroactively to historical snapshots, or forward-only from a cutover date) — this is itself worth a `DECISION_LOG.md` entry, since it affects every existing portfolio's historical return chart.
-3. Resolve #3–#6 (lower-stakes, but each changes the shape of `portfolio_metrics.py`'s public surface).
-4. Only then begin implementation, against this document as the frozen spec — and update this document (not just `DECISION_LOG.md`) if any answer changes during implementation, since this is meant to remain the living source of truth referenced by every future engine (shadow snapshots, recommendation snapshots, benchmark analytics, performance analytics) per the original goal stated in the task.
+**Implemented 2026-06-30.** `backend/services/portfolio_metrics.py` is the single shared implementation (ADR-001 through ADR-004); `portfolio_rebuilder.py`, `portfolio_snapshots.py`, and `snapshot_return_recovery.py` all delegate to it. Open Questions #1–#3 (cash-flow formula, signed manual_adjustment_value, dedup ownership) were resolved as part of this implementation — all forward-only, no backfill of already-persisted snapshots. Open Questions #4–#6 above remain genuinely open and are not addressed by this implementation; resolve them in a future change and update this document (not just `DECISION_LOG.md`) when they are.

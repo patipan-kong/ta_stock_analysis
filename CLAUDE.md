@@ -4,6 +4,7 @@
 - **Architecture & API specs:** [docs/ARCH_SPEC.md](docs/ARCH_SPEC.md)
 - **Design decisions & why:** [docs/DECISION_LOG.md](docs/DECISION_LOG.md)
 - **Phase history & roadmap:** [docs/ROADMAP.md](docs/ROADMAP.md)
+- **Portfolio return/NAV calculation rules:** [docs/PORTFOLIO_CALCULATION_RULES.md](docs/PORTFOLIO_CALCULATION_RULES.md)
 
 ---
 
@@ -130,3 +131,4 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 - Adding a new signal level: update `_VALID_SIGNALS` in `summary.py`, `SignalBadge.tsx`, `api.ts` union type, and all AI prompts
 - Adding a new snapshot column: update `PortfolioSnapshot` model, `migrate_legacy_data()`, new Alembic migration, `_snapshot_row()` in `main.py`, `PortfolioSnapshotRow` in `api.ts`
 - After any fee formula change: run `POST /admin/recalculate-cost-basis` on live DB; validate with `GET /admin/validate-portfolio/{id}`
+- Changing any return-metric formula (net_external_cash_flow, imported_asset_value, manual_adjustment_value, investment_return_pct, period_realized_pnl/dividend_income/fees_paid): edit `services/portfolio_metrics.py::compute_period_metrics()` only — it is the single shared implementation used by `portfolio_rebuilder.py`, `portfolio_snapshots.py`, and `snapshot_return_recovery.py` (ADR-004). Never reintroduce a per-engine copy of these formulas.

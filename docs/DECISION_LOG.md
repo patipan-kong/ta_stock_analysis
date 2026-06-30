@@ -140,3 +140,53 @@ _See [ARCH_SPEC.md](ARCH_SPEC.md) for current specs. See [ROADMAP.md](ROADMAP.md
 **Problem:** PostgreSQL requires `ORDER BY` to use `func.sum()` not bare column in aggregation queries.  
 **Decision:** Use `func.sum()` in ORDER BY clause for model cost report query.  
 **Impact:** Production PostgreSQL deployment works correctly; SQLite dev environment was unaffected.
+
+---
+
+## Portfolio Metrics Engine Consolidation
+
+**Date:** 2026-06-30  
+**Problem:** `portfolio_rebuilder.py`, `portfolio_snapshots.py`, and `snapshot_return_recovery.py` each independently implemented the same nine period-return fields, with subtle, undocumented divergences (window field, cash-flow formula, signed-vs-absolute quantity correction, duplicate-import handling). `docs/PORTFOLIO_CALCULATION_RULES.md` documented these divergences and recommended canonical answers but made no code changes.  
+**Decision:** Extract one pure function, `services/portfolio_metrics.py::compute_period_metrics()`, and migrate all three engines (plus `snapshot_repair.py`, which inherits the fix via delegation) to call it instead of duplicating the formulas. ADR-001 (Transaction ledger is the single source of truth), ADR-002 (Metrics never compensate for ledger corruption), ADR-003 (`transaction_date` governs replay-order; `created_at` governs window-membership in incrementally-built engines only — see below), ADR-004 (exactly one implementation) were ratified to guide this.  
+**Reasoning:** ADR-004 directly states the goal — one formula, three engines, identical output for any given ledger and window. Per-engine duplication was the root cause of every divergence found during the architecture review.  
+**Impact:** `portfolio_rebuilder.py` and `portfolio_snapshots.py` were mechanically migrated with zero behavior change (verified by their full existing test suites passing unchanged). `snapshot_return_recovery.py`'s migration intentionally changed two formulas — see the next two entries. New regression suite: `test_portfolio_metrics.py` (pure unit tests) and `test_portfolio_metrics_parity.py` (cross-engine parity + the ADR-003 backdated-transaction case).
+
+---
+
+## External Cash Flow Formula Confirmed Canonical (Implementation A)
+
+**Date:** 2026-06-30  
+**Problem:** `portfolio_rebuilder.py`/`portfolio_snapshots.py` summed ledger DEPOSIT/WITHDRAW/INITIAL_CASH events directly ("Implementation A"); `snapshot_return_recovery.py` instead derived the figure from the change in `Portfolio.cash_balance` minus BUY/SELL cash movement ("Implementation B"). `PORTFOLIO_CALCULATION_RULES.md` Section 4 originally recommended B as "self-validating against the authority column."  
+**Decision:** Implementation A (ledger-derived) is canonical, reversing the original recommendation.  
+**Reasoning:** A follow-up architecture review found B's "self-validation" property inverts Design Principle 1 — it treats `Portfolio.cash_balance` (a derived, disposable column per the ledger-is-truth principle) as authoritative input to the return formula, rather than as something checked against the ledger (which is exactly what `ledger_validator.py` CHECK 8, `CASH_MISMATCH`, already does). Worked examples showed A fails loud on `cash_balance` drift (an obviously-wrong return number, easy to catch) while B fails quiet (silently absorbs the drift into a plausible-looking "clean" return, hiding the underlying bug). A real production case — phantom DEPOSIT + duplicate INITIAL_POSITION on a specific portfolio/date — confirmed this concretely and became the regression test for the fix.  
+**Impact:** `snapshot_return_recovery.py` migrated from B to A. Only affects portfolios whose ledger and `cash_balance` have ever drifted apart; forward-only (no backfill of already-persisted snapshots). Test: `test_phantom_deposit_and_initial_position_surface_as_anomalous_return` in `test_snapshot_return_recovery.py`.
+
+---
+
+## Signed Manual Adjustment Value Fix
+
+**Date:** 2026-06-30  
+**Problem:** `manual_adjustment_value` (the QUANTITY_CORRECTION strip in the return formula) used `abs(qty_correction_delta)` in `portfolio_rebuilder.py` and `portfolio_snapshots.py`, but the correct, signed formula in `snapshot_return_recovery.py`. A downward correction therefore double-subtracted in two of the three engines: once for the real NAV drop, once again for a wrongly-positive strip in the same direction, fabricating a loss of roughly 2× the correction's market value.  
+**Decision:** `manual_adjustment_value = qty_correction_delta × price` (signed), matching `snapshot_return_recovery.py`'s original formula, in the shared `compute_period_metrics()`.  
+**Reasoning:** This is a correctness bug, not a policy choice — an unsigned strip cannot make a pure data-entry correction net to zero effect on return, which Design Principle 2/3 require.  
+**Impact:** Changes historical numbers only for a portfolio with a downward `QUANTITY_CORRECTION` that is rebuilt/recomputed after this fix; forward-only, no backfill. Test: `test_quantity_correction_downward_strips_negative_amount` in `test_portfolio_metrics.py`.
+
+---
+
+## INITIAL_POSITION Dedup Removed from Snapshot Engines
+
+**Date:** 2026-06-30  
+**Problem:** `snapshot_return_recovery.py` skipped an `INITIAL_POSITION` transaction's contribution to `imported_asset_value` when the symbol already appeared in the previous snapshot's holdings with equal-or-more shares (a defensive heuristic against duplicate imports). `portfolio_rebuilder.py` and `portfolio_snapshots.py` had no such dedup, creating a three-way inconsistency.  
+**Decision:** Remove the dedup heuristic. `compute_period_metrics()` strips every `INITIAL_POSITION` transaction in the window at face value, unconditionally.  
+**Reasoning:** Duplicate-import detection and correction is a ledger-quality concern with a dedicated owner — `ledger_validator.py` (detection) and `ledger_repair_plan.py` (Phase 6.7E, already shipped, auto-detects and repairs `DUP_INITIAL_POSITION`). Per ADR-002, the metrics layer should not silently compensate for ledger defects that a purpose-built repair pipeline already exists to fix upstream.  
+**Impact:** A portfolio with an un-repaired duplicate `INITIAL_POSITION` will show an inflated `imported_asset_value` (and distorted `investment_return_pct`) after this change, where previously the dedup heuristic masked it. Run `validate_ledger` / `generate_repair_plan` on any portfolio that predates this change before trusting recomputed numbers.
+
+---
+
+## Time Attribution Scope (ADR-003 Resolution)
+
+**Date:** 2026-06-30  
+**Problem:** ADR-003 states "`transaction_date` governs investment performance attribution; `created_at` must never affect it." Taken literally, this would require switching `portfolio_snapshots.py` and `snapshot_return_recovery.py`'s window-membership logic from `created_at` to `transaction_date` — but `created_at`-windowing in those two engines is the documented fix for the Phase 3B.9 "Backdated Import Detection" bug (a backdated transaction would become invisible to every window check under `transaction_date`-only attribution in an incrementally-built snapshot series, leaking its value into NAV as an undetected phantom gain).  
+**Decision:** ADR-003 is scoped to portfolio-state/replay-order questions (cost basis, holdings-as-of-date, chronological sort) — the only thing `compute_period_metrics()` itself ever uses a date for (it reads neither field; callers pre-filter). Window-membership logic is unchanged and remains each engine's own responsibility: `created_at` for the two incrementally-built engines, `transaction_date` for the full rebuild.  
+**Reasoning:** Applying ADR-003 literally to window membership would reintroduce a previously-fixed, documented production bug, directly conflicting with this refactor's "business behaviour must remain unchanged" constraint. This decision was confirmed explicitly with the task requester before implementation began.  
+**Impact:** No behavior change to window membership in any engine. Regression test: `test_backdated_transaction_attributed_per_engine_own_window_field` in `test_portfolio_metrics_parity.py`, demonstrating each engine correctly uses its own window field for the same backdated transaction.
