@@ -1336,18 +1336,9 @@ def _commit_rebuild(
                 f"  cash={day.cash_balance}"
                 f"  holdings_count={day.holdings_count}"
                 f"  holdings_json[:500]={day.holdings_json[:500]}"
+                f"  investment_return_pct={day.investment_return_pct}"
             )
             snap_data = _snap_day_to_db_dict(day)
-            print(
-                "[SNAP DATA]",
-                day.snapshot_date,
-                snap_data["daily_return_pct"],
-                snap_data["investment_return_pct"],
-                snap_data["net_external_cash_flow"],
-                snap_data["total_value"],
-                snap_data["cash"],
-                snap_data["holdings"],
-            )
             if existing:
                 for k, v in snap_data.items():
                     setattr(existing, k, v)
@@ -1639,6 +1630,7 @@ async def rebuild_portfolio(
                         f"  holdings_count={day.holdings_count}"
                         f"  id(day)={id(day)}"
                         f"  holdings_json[:500]={day.holdings_json[:500]}"
+                        f"  investment_return_pct={day.investment_return_pct}"
                     )
 
                     snapshot_days.append(day)
