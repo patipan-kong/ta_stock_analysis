@@ -3,6 +3,14 @@
 Computes a point-in-time summary of portfolio value, P/L, sector allocation,
 and per-holding breakdown using the latest market prices from yfinance.
 
+The actual return-metric formulas (net_external_cash_flow, imported_asset_value,
+manual_adjustment_value, investment_return_pct/amount, daily_return_pct,
+period_realized_pnl, period_dividend_income, period_fees_paid) live in
+services.portfolio_metrics.compute_period_metrics() — the single shared
+implementation used by every snapshot-producing engine (ADR-004). This module
+remains responsible for window detection (created_at-based — see below),
+price fetching, and NAV/holdings construction.
+
 Cash-flow-adjusted return accounting
 -------------------------------------
 External non-performance events must be stripped from the day-over-day NAV
@@ -94,6 +102,8 @@ from sqlalchemy.orm import Session
 
 from models.database import Portfolio, PortfolioItem, PortfolioSnapshot, Transaction
 from services.data_fetcher import fetch_price_info
+from services.portfolio_metrics import compute_period_metrics
+from services.transaction_canonicalizer import canonicalize_transactions
 
 _log = logging.getLogger(__name__)
 
@@ -319,6 +329,10 @@ async def generate_daily_snapshot(
     # recording an import; filtering by transaction_date would silently exclude
     # any backdated entry whose stated date falls before prev_snapshot_date.
     # created_at is always the moment the equity actually entered the system.
+    #
+    # Formulas live in services.portfolio_metrics.compute_period_metrics()
+    # (ADR-004 — exactly one implementation of portfolio return calculations,
+    # shared across every snapshot-producing engine).
     net_external_cash_flow = 0.0
     net_deposits_amount = 0.0
     net_withdrawals_amount = 0.0
@@ -333,134 +347,64 @@ async def generate_daily_snapshot(
     period_dividend_income = 0.0   # dividends received (pure market income)
     period_fees_paid = 0.0         # brokerage drag from trades
 
-    if prev:
-        prev_day_end = datetime.strptime(prev.snapshot_date, "%Y-%m-%d") + timedelta(days=1)
-        today_end = datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)
-
-        # ── Cash inflows / outflows ────────────────────────────────────────────
-        cf_txs = db.query(Transaction).filter(
-            Transaction.portfolio_id == portfolio_id,
-            Transaction.transaction_type.in_(
-                list(_CASH_INFLOW_TYPES | _CASH_OUTFLOW_TYPES)
-            ),
-            Transaction.created_at >= prev_day_end,
-            Transaction.created_at < today_end,
-        ).all()
-
-        net_deposits_amount = sum(
-            t.total_amount
-            for t in cf_txs
-            if t.transaction_type in _CASH_INFLOW_TYPES
-        )
-        net_withdrawals_amount = sum(
-            t.total_amount
-            for t in cf_txs
-            if t.transaction_type in _CASH_OUTFLOW_TYPES
-        )
-        net_external_cash_flow = net_deposits_amount - net_withdrawals_amount
-
-        # ── Asset imports (INITIAL_POSITION) ──────────────────────────────────
-        # New-position imports: strip current market value so the import has
-        # exactly zero effect on investment_return_pct.
-        import_txs = db.query(Transaction).filter(
-            Transaction.portfolio_id == portfolio_id,
-            Transaction.transaction_type.in_(list(_ASSET_IMPORT_TYPES)),
-            Transaction.created_at >= prev_day_end,
-            Transaction.created_at < today_end,
-        ).all()
-
-        for tx in import_txs:
-            if tx.symbol and tx.shares:
-                live_price = price_map.get(tx.symbol, tx.price_per_share or 0.0)
-                imported_asset_value += tx.shares * live_price
-
-        # ── Manual quantity corrections (QUANTITY_CORRECTION) ─────────────────
-        # Share-count corrections to existing positions are balance-sheet events,
-        # not trades.  Strip the same way as asset imports.
-        adj_txs = db.query(Transaction).filter(
-            Transaction.portfolio_id == portfolio_id,
-            Transaction.transaction_type.in_(list(_MANUAL_ADJUSTMENT_TYPES)),
-            Transaction.created_at >= prev_day_end,
-            Transaction.created_at < today_end,
-        ).all()
-
-        for tx in adj_txs:
-            if tx.symbol and tx.shares:
-                live_price = price_map.get(tx.symbol, tx.price_per_share or 0.0)
-                manual_adjustment_value += tx.shares * live_price
-
-        # ── Period realized P/L from SELLs ────────────────────────────────────
-        # Realized P&L = (sell_price − avg_cost) × shares − fees.
-        # This value is already embedded in investment_return_pct through the
-        # cash balance increase from execute_sell(). We compute it here purely
-        # for transparency so the UI can show users the trade-level contribution.
-        #
-        # Important distinction:
-        #   period_realized_pnl = TOTAL gain from original cost to sell price
-        #   Contribution to today's return = sell_price_delta × shares − fees
-        #     where sell_price_delta = sell_price − prev_snapshot_price_of_stock
-        # The latter is always smaller when the stock appreciated over multiple days.
-        sell_txs_period = db.query(Transaction).filter(
-            Transaction.portfolio_id == portfolio_id,
-            Transaction.transaction_type == "SELL",
-            Transaction.created_at >= prev_day_end,
-            Transaction.created_at < today_end,
-        ).all()
-
-        for tx in sell_txs_period:
-            if tx.notes:
-                m = _REALIZED_RE.search(tx.notes)
-                if m:
-                    period_realized_pnl += float(m.group(1))
-            # fees = pre-VAT component; taxes = VAT component (both non-zero for
-            # transactions recorded after the broker-fee decomposition upgrade).
-            # Historical rows have taxes=0 so fees alone equalled the total — the
-            # sum is correct for both old and new records.
-            period_fees_paid += (tx.fees or 0.0) + (tx.taxes or 0.0)
-
-        # ── Period dividend income ─────────────────────────────────────────────
-        div_txs = db.query(Transaction).filter(
-            Transaction.portfolio_id == portfolio_id,
-            Transaction.transaction_type == "DIVIDEND",
-            Transaction.created_at >= prev_day_end,
-            Transaction.created_at < today_end,
-        ).all()
-        period_dividend_income = sum(tx.total_amount for tx in div_txs)
-
-        # ── Period fees from BUY transactions ─────────────────────────────────
-        buy_txs_period = db.query(Transaction).filter(
-            Transaction.portfolio_id == portfolio_id,
-            Transaction.transaction_type == "BUY",
-            Transaction.created_at >= prev_day_end,
-            Transaction.created_at < today_end,
-        ).all()
-        for tx in buy_txs_period:
-            period_fees_paid += (tx.fees or 0.0) + (tx.taxes or 0.0)
-
-    # ── Cash-flow-adjusted daily return ──────────────────────────────────────
-    # pure_market_gain = today_nav
-    #                  - prev_nav
-    #                  - net_external_cash_flow     (cash deposits / withdrawals)
-    #                  - imported_asset_value       (new-position imports)
-    #                  - manual_adjustment_value    (quantity corrections)
-    #
-    # Realized gains and dividends are NOT stripped — they are market returns.
-    # Fees are NOT stripped — they are real costs that drag on performance.
     daily_return_pct: float | None = None
     investment_return_pct: float | None = None
     investment_return_amount: float | None = None
 
-    if prev and prev.total_value and prev.total_value > 0:
-        pure_market_gain = (
-            total_value
-            - prev.total_value
-            - net_external_cash_flow
-            - imported_asset_value
-            - manual_adjustment_value
+    if prev:
+        prev_day_end = datetime.strptime(prev.snapshot_date, "%Y-%m-%d") + timedelta(days=1)
+        today_end = datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)
+
+        window_txs = canonicalize_transactions(
+            db.query(Transaction).filter(
+                Transaction.portfolio_id == portfolio_id,
+                Transaction.transaction_type.in_(list(
+                    _CASH_INFLOW_TYPES | _CASH_OUTFLOW_TYPES | _ASSET_IMPORT_TYPES
+                    | _MANUAL_ADJUSTMENT_TYPES | {"SELL", "BUY", "DIVIDEND"}
+                )),
+                Transaction.created_at >= prev_day_end,
+                Transaction.created_at < today_end,
+            ).all()
         )
-        investment_return_pct = round(pure_market_gain / prev.total_value * 100, 4)
-        investment_return_amount = round(pure_market_gain, 4)
-        daily_return_pct = investment_return_pct  # always performance-adjusted
+
+        # CanonicalTransaction.raw_symbol is always .strip().upper()'d, but
+        # price_map is keyed by item.symbol as stored — normalize the lookup
+        # so symbol casing/whitespace differences can't silently break the
+        # price match (price_map itself is left untouched; it's also used by
+        # the holdings valuation loop above, keyed by the raw item.symbol).
+        normalized_price_lookup = {
+            sym.strip().upper(): price for sym, price in price_map.items()
+        }
+
+        metrics = compute_period_metrics(
+            curr_nav=total_value,
+            prev_nav=prev.total_value,
+            period_transactions=window_txs,
+            price_lookup=normalized_price_lookup,
+        )
+
+        # net_deposits_amount / net_withdrawals_amount are returned to API
+        # callers as a breakdown of net_external_cash_flow — not part of
+        # compute_period_metrics()'s output (which only returns the net),
+        # so derive them directly from the same already-fetched window_txs.
+        net_deposits_amount = sum(
+            float(ctx.total_amount) for ctx in window_txs
+            if ctx.transaction_type in _CASH_INFLOW_TYPES
+        )
+        net_withdrawals_amount = sum(
+            float(ctx.total_amount) for ctx in window_txs
+            if ctx.transaction_type in _CASH_OUTFLOW_TYPES
+        )
+
+        net_external_cash_flow  = metrics.net_external_cash_flow or 0.0
+        imported_asset_value    = metrics.imported_asset_value or 0.0
+        manual_adjustment_value = metrics.manual_adjustment_value or 0.0
+        period_realized_pnl     = metrics.period_realized_pnl or 0.0
+        period_dividend_income  = metrics.period_dividend_income or 0.0
+        period_fees_paid        = metrics.period_fees_paid or 0.0
+        investment_return_pct    = metrics.investment_return_pct
+        investment_return_amount = metrics.investment_return_amount
+        daily_return_pct         = metrics.daily_return_pct
 
     # ── Diagnostic logging ────────────────────────────────────────────────────
     prev_nav = prev.total_value if prev else None
