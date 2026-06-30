@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "portfolio_id": 4,
+  "repair_plan_id": "7e0d928f-d0b0-4b75-bd65-bd84559d1296",
+  "generated_at": "2026-06-30T07:42:23.492108Z",
+  "operations": [
+    {
+      "repair_type": "EXCLUDE",
+      "transaction_id": 24,
+      "reason": "Duplicate INITIAL_POSITION: GULF.BK on 2026-05-19 (2\u00d7) \u2014 duplicate of tx21, the earliest record.",
+      "reason_code": "DUP_INITIAL_POSITION",
+      "payload_json": {
+        "keep_tx_id": 21
+      }
+    },
+    {
+      "repair_type": "EXCLUDE",
+      "transaction_id": 23,
+      "reason": "Duplicate INITIAL_POSITION: KBANK.BK on 2026-05-19 (2\u00d7) \u2014 duplicate of tx22, the earliest record.",
+      "reason_code": "DUP_INITIAL_POSITION",
+      "payload_json": {
+        "keep_tx_id": 22
+      }
+    },
+    {
+      "repair_type": "EXCLUDE",
+      "transaction_id": 53,
+      "reason": "Duplicate fingerprint: BUY NVDA01.BK 1000.0 @ 20.7 on 2026-05-29 (2\u00d7) \u2014 duplicate of tx52, the earliest record.",
+      "reason_code": "DUP_TX_FINGERPRINT",
+      "payload_json": {
+        "keep_tx_id": 52
+      }
+    },
+    {
+      "repair_type": "EXCLUDE",
+      "transaction_id": 65,
+      "reason": "Duplicate fingerprint: BUY MICRON01.BK 1000.0 @ 18.5 on 2026-06-10 (2\u00d7) \u2014 duplicate of tx63, the earliest record.",
+      "reason_code": "DUP_TX_FINGERPRINT",
+      "payload_json": {
+        "keep_tx_id": 63
+      }
+    }
+  ]
+}

@@ -552,7 +552,7 @@ def _check_duplicate_fingerprints(
         tx_type, sym, shares, price, date_str = key
         findings.append(LedgerFinding(
             check_id          = "DUP_TX_FINGERPRINT",
-            severity          = FindingSeverity.ERROR,
+            severity          = FindingSeverity.WARNING,
             portfolio_id      = portfolio_id,
             transaction_ids   = ids,
             symbol            = sym or None,
@@ -565,11 +565,16 @@ def _check_duplicate_fingerprints(
                 f"Transactions {ids} share identical "
                 f"(type={tx_type}, symbol={sym}, shares={shares}, "
                 f"price={price}, date={date_str}). "
-                "Replay applies each independently, likely doubling the position."
+                "Replay applies each independently. This can be a genuine "
+                "duplicate, or it can reflect legitimate repeated activity "
+                "(multiple fills, staged entries, DCA, repeated orders on "
+                "the same day) — human review is needed to tell them apart."
             ),
             recommendation    = (
-                "Keep the authoritative record and delete the duplicate(s), "
-                "then run rebuild_portfolio."
+                "Review the transactions. If they are true duplicates, keep "
+                "the authoritative record and delete the duplicate(s), then "
+                "run rebuild_portfolio. If they reflect distinct fills/orders, "
+                "no action is needed."
             ),
             details={
                 "transaction_ids": ids,

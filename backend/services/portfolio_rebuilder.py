@@ -577,16 +577,6 @@ def _build_snapshot_day(
 
         price    = price_row.get(sym)
 
-        if sym in ("AAPL01.BK", "AMZN01.BK", "BH.BK") and snapshot_date == "2026-05-26":
-            print(
-            "[SNAPSHOT]",
-            snapshot_date,
-            sym,
-            "price=", price,
-            "shares=", shares,
-            "avg_cost=", avg_cost,
-            )
-
         mv       = shares * price if price is not None else None
         cost     = shares * avg_cost
         upnl     = (mv - cost) if mv is not None else None
@@ -711,6 +701,8 @@ def _populate_return_fields(
     inv_ret_pct = round(pure_gain / prev_nav * 100, 4)
     inv_ret_amt = round(pure_gain, 4)
 
+    # ── Set return fields ─────────────────────────────────────────────────────
+    day.total_invested           = round(day.total_invested, 4)
     day.net_external_cash_flow   = round(net_ecf, 4)            if net_ecf            else None
     day.imported_asset_value     = round(imported_asset_value, 4) if imported_asset_value else None
     day.manual_adjustment_value  = round(manual_adj_value, 4)   if manual_adj_value    else None
@@ -721,6 +713,21 @@ def _populate_return_fields(
     day.investment_return_amount = inv_ret_amt
     day.daily_return_pct         = inv_ret_pct
 
+    if(curr_date=='2026-05-27'):
+        print(curr_date)
+        print("Cash Flow Transactions")
+        print("curr_nav", curr_nav)
+        print("prev_nav", prev_nav)
+        print("deposits", deposits)
+        print("withdrawals", withdrawals)
+        print("net_ecf", net_ecf)
+        print("imported_asset_value", imported_asset_value)
+        print("manual_adj_value", manual_adj_value)
+        print("pure_gain", pure_gain)
+        print("inv_ret_pct", inv_ret_pct)
+        print("inv_ret_amt", inv_ret_amt)
+        print("net_external_cash_flow", day.net_external_cash_flow)
+        print("daily_return_pct", day.daily_return_pct)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Stage 4 — Reconciliation
@@ -1331,6 +1338,16 @@ def _commit_rebuild(
                 f"  holdings_json[:500]={day.holdings_json[:500]}"
             )
             snap_data = _snap_day_to_db_dict(day)
+            print(
+                "[SNAP DATA]",
+                day.snapshot_date,
+                snap_data["daily_return_pct"],
+                snap_data["investment_return_pct"],
+                snap_data["net_external_cash_flow"],
+                snap_data["total_value"],
+                snap_data["cash"],
+                snap_data["holdings"],
+            )
             if existing:
                 for k, v in snap_data.items():
                     setattr(existing, k, v)
@@ -1502,9 +1519,18 @@ async def rebuild_portfolio(
 
         # ── Stage 1: single-pass replay → final state ─────────────────────────
         final_state = _PortfolioState(Decimal("0"), {}, Decimal("0"))
+        print("========================")
+        print("Replay Start")
+        print("portfolio =", portfolio_id)
+        print("initial holdings =", final_state.holdings)
+        print("id =", id(final_state.holdings))
+
         for ctx in all_txs:
             _apply_transaction(final_state, ctx)
+            print(ctx)
+            # print(ctx.id, ctx.transaction_type, ctx.symbol)            
 
+        print(final_state.holdings.keys())
         result.reconstructed_holdings_count = len(final_state.holdings)
         result.reconstructed_cash           = _f(final_state.cash_balance)
         _progress(
@@ -1586,11 +1612,6 @@ async def rebuild_portfolio(
                         sym: price_matrix.get(sym, {}).get(snap_date)
                         for sym in state_at.holdings
                     }
-                    print("=" * 80)
-                    print("SNAP DATE:", snap_date)
-                    print("PRICE ROW:")
-                    for s in ("AAPL01.BK", "AMZN01.BK", "BH.BK"):
-                        print(s, "=>", price_row.get(s))
 
                     # Determine the "previous" for return calculation
                     if prev_snap_day is not None:
@@ -1603,22 +1624,6 @@ async def rebuild_portfolio(
                         prev_date = None
                         prev_nav  = None
 
-                    # ── FORENSIC PRE-BUILD ────────────────────────────────────
-                    print("=" * 80)
-                    print("PRICE ROW", snap_date)
-
-                    for s in ("AAPL01.BK", "AMZN01.BK", "BH.BK"):
-                        print(
-                            s,
-                            price_row.get(s),
-                        )
-                    print(
-                        f"[FORENSIC PRE-BUILD]  snap_date={snap_date}"
-                        f"  n_holdings={len(state_at.holdings)}"
-                        f"  holdings={sorted(state_at.holdings.keys())}"
-                        f"  id(state)={id(state_at)}"
-                    )
-                    print("CALL _build_snapshot_day", snap_date)
                     day = _build_snapshot_day(
                         snapshot_date = snap_date,
                         state         = state_at,
@@ -1627,18 +1632,7 @@ async def rebuild_portfolio(
                         prev_date     = prev_date,
                         prev_nav      = prev_nav,
                     )
-                    if snap_date == "2026-05-26":
-                        print("=" * 80)
-                        print("PRICE ROW DEBUG")
 
-                        for s in ("AAPL01.BK", "AMZN01.BK", "BH.BK"):
-                            print(
-                                s,
-                                "matrix=",
-                                price_matrix.get(s, {}).get(snap_date),
-                                "row=",
-                                price_row.get(s),
-                            )
                     # ── FORENSIC POST-BUILD ───────────────────────────────────
                     print(
                         f"[FORENSIC POST-BUILD] snap_date={day.snapshot_date}"

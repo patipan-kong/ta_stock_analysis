@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from models.database import BenchmarkPrice
 from services.core.runtime_env import allow_market_fetching
+from services.market_data.provider import get_provider
 
 log = logging.getLogger(__name__)
 
@@ -160,11 +161,12 @@ async def backfill_benchmarks(
 
     end_exclusive = (date.fromisoformat(to_date) + timedelta(days=1)).isoformat()
     results: list[dict] = []
-
+    provider = get_provider()
     for sym in symbols:
         try:
             hist = await asyncio.to_thread(
-                yf.Ticker(sym).history,
+                provider.get_history,
+                sym,
                 start=from_date,
                 end=end_exclusive,
                 interval="1d",

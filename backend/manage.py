@@ -36,6 +36,16 @@ Audit the transaction ledger (read-only):
     python manage.py validate_ledger --all
     python manage.py validate_ledger --portfolio 4 --price-check
     python manage.py validate_ledger --portfolio 4 --price-check --price-threshold 50
+
+Generate a deterministic repair plan (read-only — writes a JSON file only):
+    python manage.py generate_repair_plan --portfolio 4
+    python manage.py generate_repair_plan --portfolio 4 --output repair_plan.json
+    python manage.py generate_repair_plan --portfolio 4 --effective
+
+Apply a repair plan, then re-validate and rebuild:
+    python manage.py apply_repair --portfolio 4 --plan repair_plan_4.json
+    python manage.py validate_ledger --portfolio 4 --effective
+    python manage.py rebuild_portfolio --portfolio 4
 """
 from __future__ import annotations
 
@@ -112,6 +122,11 @@ from services.repair_plan_executor import (
     RepairPlanError,
     apply_repair_plan,
     load_repair_plan,
+)
+from services.ledger_repair_plan import (
+    GenerationSummary,
+    generate_repair_plan,
+    write_repair_plan,
 )
 
 
@@ -2387,6 +2402,14 @@ def _print_apply_repair_result(r: RepairApplyResult) -> None:
         print()
         print(f"  Confidence before    : {r.confidence_before:.1f}%")
         print(f"  Confidence after     : {r.confidence_after:.1f}%")
+        if r.dry_run and not r.rollback:
+            print()
+            print(
+                "  NOTE: 'after' is a preview computed from an uncommitted overlay "
+                "and was rolled back. validate_ledger --effective will still show "
+                "the pre-repair findings until you re-run apply_repair without "
+                "--dry-run."
+            )
 
     print()
     if r.rollback:
@@ -2467,6 +2490,104 @@ async def _cmd_apply_repair(args: argparse.Namespace) -> int:
         return 1
     if result.rollback:
         return 2
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Generate repair plans: generate_repair_plan
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_generation_summary(summary: GenerationSummary) -> None:
+    """Print the console report described in the Phase 6.7E spec."""
+    print(f"\n{_hr()}")
+    print(f"Portfolio: {summary.portfolio_id}")
+    print(_hr())
+
+    print("\nFindings:")
+    if summary.findings_by_severity:
+        for sev in ("CRITICAL", "ERROR", "WARNING"):
+            n = summary.findings_by_severity.get(sev, 0)
+            if n:
+                print(f"    {sev:<9}: {n}")
+    else:
+        print("    (none)")
+
+    print("\nGenerated repairs:")
+    if summary.generated_by_type:
+        for repair_type, n in sorted(summary.generated_by_type.items()):
+            print(f"    {repair_type:<9}: {n}")
+    else:
+        print("    (none)")
+
+    if summary.already_active:
+        print(f"\nAlready active (skipped): {summary.already_active}")
+
+    print("\nSkipped:")
+    if summary.skipped_by_check_id:
+        for check_id, n in sorted(summary.skipped_by_check_id.items()):
+            print(f"    {check_id:<22}: {n}")
+    else:
+        print("    (none)")
+
+
+async def _cmd_generate_repair_plan(args: argparse.Namespace) -> int:
+    """Generate a deterministic repair plan JSON from validator findings.
+
+    Read-only — never modifies the database. Only writes the output JSON file.
+    """
+    portfolio_id: int = args.portfolio
+    output_path:  str = args.output or f"repair_plan_{portfolio_id}.json"
+    do_effective: bool = getattr(args, "effective", False)
+
+    db = SessionLocal()
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        p = db.query(Portfolio).filter_by(id=portfolio_id, workspace_id=ws_id).first()
+        if p is None:
+            print(f"ERROR: Portfolio {portfolio_id} not found.", file=sys.stderr)
+            return 1
+
+        active_repairs = load_active_repairs(db, portfolio_id)
+
+        if do_effective:
+            report = await validate_portfolio_ledger(
+                db           = db,
+                portfolio_id = portfolio_id,
+                workspace_id = ws_id,
+                repairs      = active_repairs,
+                mode         = "effective",
+            )
+        else:
+            report = await validate_portfolio_ledger(
+                db           = db,
+                portfolio_id = portfolio_id,
+                workspace_id = ws_id,
+            )
+
+        plan, summary = generate_repair_plan(
+            report         = report,
+            portfolio_id   = portfolio_id,
+            active_repairs = active_repairs,
+        )
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+    _print_generation_summary(summary)
+
+    if plan is None:
+        print("\nNo repairable findings — nothing to write.")
+        return 2
+
+    write_repair_plan(plan, output_path)
+    print(f"\nOutput: {output_path}")
     return 0
 
 
@@ -2972,6 +3093,66 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── generate_repair_plan ──────────────────────────────────────────────────
+    generate = sub.add_parser(
+        "generate_repair_plan",
+        help="Generate a deterministic repair plan JSON from validator findings",
+        description=textwrap.dedent("""\
+            Runs validate_ledger and turns the 100%%-deterministic findings into
+            a repair plan JSON suitable for apply_repair.
+
+            Read-only with respect to the database.  Only writes the output
+            JSON file — never inserts LedgerRepair rows itself.
+
+            Auto-repaired checks
+            ---------------------
+              DUP_INITIAL_POSITION  — EXCLUDE every duplicate, keep the earliest
+              DUP_TX_FINGERPRINT    — EXCLUDE every duplicate, keep the first
+
+            All other findings (SYMBOL_ALIAS, IMPOSSIBLE_PRICE,
+            SELL_WITHOUT_HOLDING, NEG_SHARE_BALANCE, NEG_CASH_BALANCE,
+            QCORR_WITHOUT_HOLDING, HOLDINGS_MISMATCH, CASH_MISMATCH,
+            SNAPSHOT_CASH_MISMATCH, …) are reported but never auto-repaired —
+            they require human review.
+
+            Transactions already covered by an active EXCLUDE repair are
+            skipped, so re-running this command is idempotent.
+
+            Workflow
+            --------
+              validate_ledger -> generate_repair_plan -> human review ->
+              apply_repair -> validate_ledger --effective -> rebuild_portfolio
+
+            Exit codes
+            ----------
+              0  Success — plan written
+              1  Unexpected error
+              2  No repairable findings — nothing written
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    generate.add_argument(
+        "--portfolio", "-p",
+        type=int,
+        required=True,
+        metavar="ID",
+        help="Portfolio ID to generate a repair plan for",
+    )
+    generate.add_argument(
+        "--output", "-o",
+        metavar="PATH",
+        help="Output path for the repair plan JSON (default: repair_plan_<portfolio>.json)",
+    )
+    generate.add_argument(
+        "--effective",
+        action="store_true",
+        help=(
+            "Generate against the effective ledger (active repairs applied "
+            "before scanning for findings) instead of the raw ledger."
+        ),
+    )
+
     return parser
 
 
@@ -3006,6 +3187,9 @@ def main() -> None:
         sys.exit(exit_code)
     elif args.command == "apply_repair":
         exit_code = asyncio.run(_cmd_apply_repair(args))
+        sys.exit(exit_code)
+    elif args.command == "generate_repair_plan":
+        exit_code = asyncio.run(_cmd_generate_repair_plan(args))
         sys.exit(exit_code)
     else:
         parser.print_help()

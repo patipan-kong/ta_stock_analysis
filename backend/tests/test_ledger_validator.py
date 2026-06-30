@@ -451,7 +451,7 @@ class TestDateSkew:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestDuplicateFingerprints:
-    def test_identical_transactions_is_error(self):
+    def test_identical_transactions_is_warning(self):
         txs = _canonical([
             _tx(1, "BUY", "GULF.BK", shares=500, price=56.0, amount=28000, date_str="2024-01-15"),
             _tx(2, "BUY", "GULF.BK", shares=500, price=56.0, amount=28000, date_str="2024-01-15"),
@@ -460,7 +460,7 @@ class TestDuplicateFingerprints:
         assert len(findings) == 1
         f = findings[0]
         assert f.check_id == "DUP_TX_FINGERPRINT"
-        assert f.severity == FindingSeverity.ERROR
+        assert f.severity == FindingSeverity.WARNING
         assert set(f.transaction_ids) == {1, 2}
 
     def test_same_symbol_different_price_is_pass(self):
