@@ -25,23 +25,29 @@ Design notes
 • Window detection uses Transaction.created_at (physical insert time), NOT
   transaction_date — matching portfolio_snapshots.py exactly.
 
-• net_external_cash_flow is derived from ACTUAL cash balance change, not from
-  summing DEPOSIT/WITHDRAW transaction records:
-    net_ecf = (curr_cash − prev_cash) + BUY_cash_out − SELL_cash_in
-  This formula is algebraically equivalent to (DEPOSIT − WITHDRAW) when the
-  portfolio's cash_balance is correctly updated by every transaction.  When a
-  DEPOSIT or INITIAL_CASH was recorded in the Transaction table as a retroactive
-  bookkeeping entry but the underlying cash_balance was never actually changed,
-  the formula correctly returns zero for that period instead of producing a
-  phantom non-performance adjustment.
+• Formulas are delegated to services.portfolio_metrics.compute_period_metrics()
+  (ADR-004 — exactly one implementation of portfolio return calculations,
+  shared across every snapshot-producing engine):
 
-• INITIAL_POSITION imported_asset_value is excluded when the symbol was already
-  present in prev_snap.holdings_json with equal or more shares.  Such imports are
-  retroactive documentation entries for positions already embedded in the previous
-  NAV; including them would double-subtract the equity from the return calculation.
+  - net_external_cash_flow is ledger-derived (sum of DEPOSIT/INITIAL_CASH minus
+    WITHDRAW — Implementation A, ADR-002), NOT the cash-balance-delta formula
+    this engine previously used. See docs/PORTFOLIO_CALCULATION_RULES.md
+    Section 4 for the architecture review that settled this: a cash-balance-
+    delta formula treats Portfolio.cash_balance as authoritative, but
+    Principle 1 (Transaction ledger is the single source of truth) requires
+    the ledger to win, with cash_balance as a checked/derived artifact
+    (ledger_validator.py CHECK 8 already operates on this premise).
 
-• For imported_asset_value of genuinely new imports, tx.price_per_share is used
-  (no live price fetch).  In the live pipeline, the live market price is preferred.
+  - imported_asset_value has no duplicate-import dedup heuristic. Detecting
+    and correcting duplicate INITIAL_POSITION rows is a ledger-quality
+    concern, owned by ledger_validator.py / ledger_repair_plan.py (Section 6
+    of the frozen rules doc), not snapshot math.
+
+• For imported_asset_value / manual_adjustment_value, tx.price_per_share is
+  used (no live price fetch) — this engine never passes a price_lookup to
+  compute_period_metrics(), so every valuation falls back to the
+  transaction's own recorded price. In the live pipeline (portfolio_snapshots.py),
+  the live market price is preferred.
 
 • All writes for a portfolio (or all portfolios in --all mode) are accumulated
   inside the caller's session.  The caller commits or rolls back.
@@ -50,7 +56,6 @@ Design notes
 """
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -58,6 +63,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from models.database import Portfolio, PortfolioSnapshot, Transaction
+from services.portfolio_metrics import compute_period_metrics
 from services.transaction_canonicalizer import canonicalize_transactions
 
 _log = logging.getLogger(__name__)
@@ -119,11 +125,6 @@ def _values_equal(a, b) -> bool:
     return abs(float(a) - float(b)) <= _TOLERANCE
 
 
-def _round_or_none(value: float, decimals: int = 4) -> float | None:
-    """Round a float; return None when value is zero-ish to match snapshot behaviour."""
-    return round(value, decimals) if value else None
-
-
 # ── Core computation ──────────────────────────────────────────────────────────
 
 def _compute_return_fields(
@@ -146,27 +147,10 @@ def _compute_return_fields(
     baseline snapshot, since those transactions are already captured inside
     the baseline NAV and must not be double-counted.
 
-    net_ecf attribution rule
-    ────────────────────────
-    net_ecf is derived from the portfolio's ACTUAL cash balance change rather
-    than by summing DEPOSIT/WITHDRAW records:
-
-        net_ecf = (curr_cash − prev_cash) + BUY_cash_out − SELL_cash_in
-
-    Algebraically this equals (DEPOSIT − WITHDRAW) when every transaction is
-    correctly reflected in portfolio.cash_balance.  When a DEPOSIT or
-    INITIAL_CASH exists in the Transaction table as a retroactive bookkeeping
-    entry (the cash_balance was never actually updated), cash_delta = 0 and
-    the formula correctly returns zero — preventing a phantom non-performance
-    adjustment that would distort the period return.
-
-    INITIAL_POSITION attribution rule
-    ──────────────────────────────────
-    An INITIAL_POSITION is excluded from imported_asset_value when the symbol
-    was already present in prev_snap.holdings_json with equal or more shares.
-    Such a transaction is a retroactive documentation entry for equity already
-    embedded in the previous NAV; including it would double-subtract the
-    position's value from the period return.
+    Formulas are delegated to services.portfolio_metrics.compute_period_metrics()
+    (ADR-004). net_external_cash_flow is ledger-derived, not a cash-balance-delta
+    reconciliation (ADR-002 — see module docstring). imported_asset_value has no
+    duplicate-import dedup heuristic (Section 6 of the frozen rules doc).
     """
     if prev_snap is None or not prev_snap.total_value or prev_snap.total_value <= 0:
         return {f: None for f in _RETURN_FIELDS}
@@ -174,143 +158,34 @@ def _compute_return_fields(
     today_end    = datetime.strptime(curr_snap.snapshot_date, "%Y-%m-%d") + timedelta(days=1)
     prev_day_end = datetime.strptime(prev_snap.snapshot_date, "%Y-%m-%d") + timedelta(days=1)
 
-    # ── BUY / SELL transactions (needed for net_ecf and period decomposition) ──
-    sell_txs = list(canonicalize_transactions(
+    window_txs = canonicalize_transactions(
         db.query(Transaction).filter(
             Transaction.portfolio_id == portfolio_id,
-            Transaction.transaction_type == "SELL",
+            Transaction.transaction_type.in_(list(
+                _CASH_INFLOW_TYPES | _CASH_OUTFLOW_TYPES | _ASSET_IMPORT_TYPES
+                | _MANUAL_ADJ_TYPES | {"SELL", "BUY", "DIVIDEND"}
+            )),
             Transaction.created_at >= prev_day_end,
             Transaction.created_at <  today_end,
         ).all()
-    ))
-
-    buy_txs = list(canonicalize_transactions(
-        db.query(Transaction).filter(
-            Transaction.portfolio_id == portfolio_id,
-            Transaction.transaction_type == "BUY",
-            Transaction.created_at >= prev_day_end,
-            Transaction.created_at <  today_end,
-        ).all()
-    ))
-
-    # ── Net external cash flow from actual cash balance change ────────────────
-    # Formula: net_ecf = (curr_cash − prev_cash) + BUY_cash_out − SELL_cash_in
-    # BUY reduces cash by total_amount; SELL increases cash by total_amount.
-    # Subtracting these offsets isolates the external cash contribution:
-    #   cash_delta = DEPOSIT − WITHDRAW − BUY_cash_out + SELL_cash_in
-    #   → DEPOSIT − WITHDRAW = cash_delta + BUY_cash_out − SELL_cash_in
-    # If a DEPOSIT/INITIAL_CASH was recorded but the cash_balance was never
-    # actually updated (retroactive bookkeeping), the formula returns zero.
-    curr_cash = curr_snap.cash_balance or 0.0
-    prev_cash = prev_snap.cash_balance or 0.0
-    buy_cash_out  = sum(float(ctx.total_amount) for ctx in buy_txs)
-    sell_cash_in  = sum(float(ctx.total_amount) for ctx in sell_txs)
-    net_ecf = (curr_cash - prev_cash) + buy_cash_out - sell_cash_in
-
-    # ── Symbols already tracked in the previous snapshot ─────────────────────
-    # Used to detect INITIAL_POSITION transactions that are retroactive entries.
-    prev_holdings: dict[str, float] = {}
-    if prev_snap.holdings_json:
-        try:
-            for h in json.loads(prev_snap.holdings_json):
-                sym = h.get("symbol")
-                if sym:
-                    prev_holdings[sym] = float(h.get("shares") or 0.0)
-        except (ValueError, TypeError):
-            pass
-
-    # ── Asset imports (INITIAL_POSITION) ──────────────────────────────────────
-    # Use ctx.price_per_share as the best-available approximation for the
-    # market value at import time.  The live pipeline uses the current day's
-    # price; here we cannot fetch it without a network call.
-    # Skip any import for a symbol that already appears in prev_snap with
-    # equal or more shares — those are retroactive entries, not new capital.
-    # Use ctx.raw_symbol for holdings_json lookup: those keys were stored using
-    # the raw symbol at write time.
-    import_txs = list(canonicalize_transactions(
-        db.query(Transaction).filter(
-            Transaction.portfolio_id == portfolio_id,
-            Transaction.transaction_type.in_(list(_ASSET_IMPORT_TYPES)),
-            Transaction.created_at >= prev_day_end,
-            Transaction.created_at <  today_end,
-        ).all()
-    ))
-
-    imported_asset_value = 0.0
-    for ctx in import_txs:
-        tx_shares   = float(ctx.shares)
-        prev_shares = prev_holdings.get(ctx.raw_symbol or "", 0.0)
-        if tx_shares <= prev_shares:
-            _log.debug(
-                "[IMPORT SKIP] portfolio=%d %s %.4f shares already in prev snapshot (had %.4f)",
-                portfolio_id, ctx.raw_symbol, tx_shares, prev_shares,
-            )
-            continue
-        imported_asset_value += tx_shares * float(ctx.price_per_share)
-
-    # ── Manual quantity corrections (QUANTITY_CORRECTION) ─────────────────────
-    adj_txs = list(canonicalize_transactions(
-        db.query(Transaction).filter(
-            Transaction.portfolio_id == portfolio_id,
-            Transaction.transaction_type.in_(list(_MANUAL_ADJ_TYPES)),
-            Transaction.created_at >= prev_day_end,
-            Transaction.created_at <  today_end,
-        ).all()
-    ))
-
-    manual_adj_value = sum(
-        float(ctx.qty_correction_delta) * float(ctx.price_per_share)
-        for ctx in adj_txs
     )
 
-    # ── Return calculation ─────────────────────────────────────────────────────
-    prev_nav = prev_snap.total_value
-    curr_nav = curr_snap.total_value
-
-    pure_market_gain = (
-        curr_nav
-        - prev_nav
-        - net_ecf
-        - imported_asset_value
-        - manual_adj_value
+    metrics = compute_period_metrics(
+        curr_nav=curr_snap.total_value,
+        prev_nav=prev_snap.total_value,
+        period_transactions=window_txs,
     )
-    investment_return_pct    = round(pure_market_gain / prev_nav * 100, 4)
-    investment_return_amount = round(pure_market_gain, 4)
-    daily_return_pct         = investment_return_pct
-
-    # ── Period realized P/L + SELL fees ───────────────────────────────────────
-    period_realized_pnl = 0.0
-    period_fees_paid    = 0.0
-    for ctx in sell_txs:
-        if ctx.realized_pnl is not None:
-            period_realized_pnl += ctx.realized_pnl
-        period_fees_paid += float(ctx.fees) + float(ctx.taxes)
-
-    # ── Dividend income ────────────────────────────────────────────────────────
-    div_txs = list(canonicalize_transactions(
-        db.query(Transaction).filter(
-            Transaction.portfolio_id == portfolio_id,
-            Transaction.transaction_type == "DIVIDEND",
-            Transaction.created_at >= prev_day_end,
-            Transaction.created_at <  today_end,
-        ).all()
-    ))
-    period_dividend_income = sum(float(ctx.total_amount) for ctx in div_txs)
-
-    # ── BUY fees ──────────────────────────────────────────────────────────────
-    for ctx in buy_txs:
-        period_fees_paid += float(ctx.fees) + float(ctx.taxes)
 
     return {
-        "net_external_cash_flow":   _round_or_none(net_ecf),
-        "imported_asset_value":     _round_or_none(imported_asset_value),
-        "manual_adjustment_value":  _round_or_none(manual_adj_value),
-        "investment_return_pct":    investment_return_pct,
-        "investment_return_amount": investment_return_amount,
-        "daily_return_pct":         daily_return_pct,
-        "period_realized_pnl":      _round_or_none(period_realized_pnl),
-        "period_dividend_income":   _round_or_none(period_dividend_income),
-        "period_fees_paid":         _round_or_none(period_fees_paid),
+        "net_external_cash_flow":   metrics.net_external_cash_flow,
+        "imported_asset_value":     metrics.imported_asset_value,
+        "manual_adjustment_value":  metrics.manual_adjustment_value,
+        "investment_return_pct":    metrics.investment_return_pct,
+        "investment_return_amount": metrics.investment_return_amount,
+        "daily_return_pct":         metrics.daily_return_pct,
+        "period_realized_pnl":      metrics.period_realized_pnl,
+        "period_dividend_income":   metrics.period_dividend_income,
+        "period_fees_paid":         metrics.period_fees_paid,
     }
 
 

@@ -707,8 +707,11 @@ def test_nav_fields_never_modified():
 
 # ── Test 22: Forensic scenario — phantom DEPOSIT + INITIAL_POSITION ────────────
 
-def test_phantom_deposit_and_initial_position_excluded():
-    """Retroactive bookkeeping DEPOSIT and INITIAL_POSITION must not distort return.
+def test_phantom_deposit_and_initial_position_surface_as_anomalous_return():
+    """Ledger-recorded-but-not-reflected-in-state entries must NOT be silently
+    absorbed by the metrics engine — they must surface as an anomalous return,
+    per ADR-002 ("Portfolio Metrics never compensate for ledger corruption;
+    validation belongs to Ledger Validator; repair belongs to Ledger Repair").
 
     Mirrors the real-data forensic investigation for Snapshot 39 (portfolio 2,
     2026-05-25):
@@ -719,9 +722,19 @@ def test_phantom_deposit_and_initial_position_excluded():
           tx#28 — INITIAL_POSITION SCB.BK 1000 shares: recorded in DB, but
                   SCB.BK was already in prev holdings with 2300 ≥ 1000 shares
 
-    Both are retroactive bookkeeping entries.  Neither changed the portfolio's
-    actual state.  The correct period return is the pure market gain:
-        6,085 / 836,436.69 × 100 ≈ +0.7275 %
+    Before this engine was migrated to the shared portfolio_metrics module, it
+    used a cash-balance-delta net_ecf formula plus a snapshot-level dedup
+    heuristic, both of which silently absorbed these phantom ledger entries and
+    recovered the "clean" pure market gain (+0.7275%). Architecture review
+    (docs/PORTFOLIO_CALCULATION_RULES.md Section 4, Q1-Q3) found that masking
+    is the wrong failure mode for an accounting system: a DEPOSIT recorded with
+    no real cash movement, or a duplicate INITIAL_POSITION, is a ledger-quality
+    defect (CASH_MISMATCH-adjacent) that ledger_validator.py / ledger_repair_plan.py
+    should catch and fix BEFORE any snapshot engine runs — not something the
+    return formula should paper over. The now-canonical ledger-derived formula
+    (Implementation A, ADR-002) treats both ledger entries at face value, which
+    correctly produces a large, obviously-wrong return — failing loud instead
+    of silently laundering the discrepancy into a "clean" number.
     """
     db = make_session()
     ws, p = _seed(db)
@@ -777,13 +790,20 @@ def test_phantom_deposit_and_initial_position_excluded():
     assert result.snapshots_scanned == 2
     diff = result.diffs[1]  # curr snapshot
 
-    expected_return = round(market_gain / prev_nav * 100, 4)  # ≈ +0.7275 %
+    # Ledger-derived net_ecf takes the recorded DEPOSIT at face value (22,071.69),
+    # and imported_asset_value takes the recorded INITIAL_POSITION at face value
+    # (1000 × 144.64669 = 144,646.69) since there is no dedup heuristic anymore.
+    deposit_amount = 22_071.69
+    import_value   = 1000.0 * 144.64669
+    pure_gain = (curr_nav - prev_nav) - deposit_amount - import_value
+    expected_return = round(pure_gain / prev_nav * 100, 4)  # ≈ -19.2045 %
+
     assert diff.new_values["investment_return_pct"] == pytest.approx(expected_return, abs=1e-3), (
-        f"Expected +{expected_return}% (forensic result) but got "
+        f"Expected {expected_return}% (ledger-derived, fails loud) but got "
         f"{diff.new_values['investment_return_pct']}%"
     )
-    assert diff.new_values["net_external_cash_flow"] is None, \
-        "Phantom DEPOSIT must not appear in net_external_cash_flow"
-    assert diff.new_values["imported_asset_value"] is None, \
-        "Phantom INITIAL_POSITION for already-tracked symbol must not appear in imported_asset_value"
-    assert diff.new_values["investment_return_amount"] == pytest.approx(market_gain, abs=0.01)
+    assert diff.new_values["net_external_cash_flow"] == pytest.approx(deposit_amount, abs=0.01), \
+        "Ledger-derived net_ecf takes the recorded DEPOSIT at face value"
+    assert diff.new_values["imported_asset_value"] == pytest.approx(import_value, abs=0.01), \
+        "No dedup heuristic — recorded INITIAL_POSITION is taken at face value"
+    assert diff.new_values["investment_return_amount"] == pytest.approx(pure_gain, abs=0.01)
