@@ -31,7 +31,9 @@ import pandas as pd
 
 from models.database import MarketDataCache, SessionLocal
 from services.core.runtime_env import allow_market_fetching
-from services.market_data.yahoo import YahooProvider, _is_rate_limit
+from services.market_data.base import MarketDataProvider
+from services.market_data.provider import get_provider
+from services.market_data.yahoo import _is_rate_limit
 from services.symbol_resolver import resolve_yfinance_symbol as _resolve_yf, is_dr as _is_dr
 
 _log = logging.getLogger(__name__)
@@ -40,7 +42,9 @@ _log = logging.getLogger(__name__)
 # These thin wrappers exist for backward compatibility with existing callers.
 
 # ── Provider singleton ─────────────────────────────────────────────────────────
-_provider: YahooProvider = YahooProvider()
+# Selection: PRICE_PROVIDER env var — "yahoo" (default, crash-safe) or "yfinance"
+# (legacy rollback). See services/market_data/provider.py.
+_provider: MarketDataProvider = get_provider()
 
 # ── TTL table (seconds) ────────────────────────────────────────────────────────
 _TTL_QUOTE       = 5  * 60        # 5 min  – live prices
@@ -261,13 +265,21 @@ def _record_yf_error(e: Exception) -> None:
 # ── Public API (same signatures as the original data_fetcher.py) ───────────────
 
 def fetch_history(symbol: str, period: str = "6mo", interval: str = "1d") -> Optional[pd.DataFrame]:
+    print("fetch_history()", symbol)
     cache_type = f"history:{period}:{interval}"
     ttl        = _history_ttl(period, interval)
 
     cached = _get_cached(symbol, cache_type)
     if cached:
-        return _payload_to_df(cached)
+        print("cache hit")
+        print("cache key:", symbol, cache_type)
+        df_cached = _payload_to_df(cached)
+        if df_cached is not None and not df_cached.empty:
+            print("first Close:", df_cached["Close"].iloc[0])
+            print("last Close:", df_cached["Close"].iloc[-1])
+        return df_cached
 
+    print("cache miss")
     if not allow_market_fetching():
         _log.info("[VPS BLOCKED FETCH] fetch_history symbol=%s — returning stale cache", symbol)
         stale = _get_stale(symbol, cache_type)

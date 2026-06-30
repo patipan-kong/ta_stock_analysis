@@ -2,8 +2,9 @@
 """Market data price sync script — Phase S.3.
 
 Fetches daily closing prices for all active symbols (portfolio items +
-watchlist + fixed benchmarks) via YahooFinanceProvider and upserts them
-into the benchmark_prices table.
+watchlist + fixed benchmarks) via the configured market data provider
+(PRICE_PROVIDER env var — see services/market_data/provider.py) and
+upserts them into the benchmark_prices table.
 
 Designed to run as a GitHub Actions job so the VPS application never needs
 to make live yfinance calls.  Can also be run locally for backfills.
@@ -45,7 +46,7 @@ load_dotenv(os.path.join(_BACKEND_DIR, ".env"))
 
 from models.database import BenchmarkPrice, PortfolioItem, SessionLocal, Watchlist
 from services.data_fetcher import normalize_dr_symbol
-from services.market_data.provider import YahooFinanceProvider
+from services.market_data.provider import get_provider
 
 _log = logging.getLogger(__name__)
 
@@ -216,7 +217,7 @@ def main() -> int:
         return 1
 
     db = SessionLocal()
-    provider = YahooFinanceProvider()
+    provider = get_provider()
     counts: dict[str, int] = {"ok": 0, "error": 0, "no_data": 0}
 
     try:

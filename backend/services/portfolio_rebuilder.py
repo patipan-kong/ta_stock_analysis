@@ -470,37 +470,56 @@ async def _build_price_matrix(
     if not symbols or not dates:
         return {}
 
-    # Choose the fetch period to cover the full date range
-    min_dt    = datetime.strptime(min(dates), "%Y-%m-%d")
-    delta_days = (datetime.utcnow() - min_dt).days
-    if delta_days > 5 * 365:
-        period = "max"
-    elif delta_days > 3 * 365:
-        period = "10y"
-    else:
-        period = "5y"
+    # Always use "5y" so the fetch key matches the pre-warmed cache.
+    # DR certificates (e.g. AAPL01.BK) have SET listing history since ~2020;
+    # requesting "10y" or "max" on a .BK ticker that lacks the full period
+    # causes yfinance to silently fall back to the underlying US ticker and
+    # return USD prices instead of THB DR prices.
+    period = "5y"
 
     result: dict[str, dict[str, float | None]] = {}
 
-    for sym in symbols:
+    for i, sym in enumerate(symbols):
         # DR certificates trade on SET at ~1/10 the US underlying price in THB.
         # get_yfinance_symbol() resolves them to the US ticker (AAPL01.BK → AAPL),
         # which returns USD prices and inflates NAV by ~10×.  Use the .BK form
         # directly so yfinance returns the actual SET DR market price.
+        # print(f"{i+1}/{len(symbols)}  {sym}")
+        # print(f"\n========== START {sym} ==========")
         if is_dr(sym):
             yf_sym = sym if sym.endswith(".BK") else sym + ".BK"
         else:
             yf_sym = get_yfinance_symbol(sym)
+
         try:
             df: Optional[pd.DataFrame] = await asyncio.to_thread(
                 fetch_history, yf_sym, period, "1d"
             )
+            
+            # print("=" * 80)
+            # print("period :", period)
+            # print("ORIGINAL SYMBOL :", sym)
+            # print("YFINANCE SYMBOL :", yf_sym)
+            # print("cache key :", f"history:{period}:1d")
+            # print(f"========== END {sym} ==========")
+            if df is not None and not df.empty:
+                print(df["Close"].head())
+                tail = df["Close"].tail()
         except Exception as exc:
+            print(f"========== EXCEPTION {sym}: {exc}")
             _log.warning("price_matrix fetch failed symbol=%s yf=%s: %s", sym, yf_sym, exc)
-            df = None
+            df = None        
+
+        if df is None:
+            print("DATAFRAME : None")
+        else:
+           x = df.head()
+           print(x.shape)
+           print(df.tail())
+           print(df["Close"].iloc[0])
+           print(df["Close"].iloc[-1])
 
         date_price: dict[str, float | None] = {}
-
         if df is not None and not df.empty:
             df_sorted   = df.sort_index()
             df_dates    = df_sorted.index.strftime("%Y-%m-%d").tolist()
@@ -515,11 +534,14 @@ async def _build_price_matrix(
                 date_price[snap_date] = df_closes[idx] if idx >= 0 else None
         else:
             date_price = {d: None for d in dates}
-
+        
         result[sym] = date_price
+        
         if progress_cb:
             progress_cb(sym)
 
+    # print("RETURNING PRICE MATRIX")
+    # print(result.keys())
     return result
 
 
@@ -551,7 +573,20 @@ def _build_snapshot_day(
     for sym, h in state.holdings.items():
         shares   = float(h.shares)
         avg_cost = float(h.avg_cost)
+        # print("SNAPSHOT PRICE", snapshot_date, sym, price_row.get(sym))
+
         price    = price_row.get(sym)
+
+        if sym in ("AAPL01.BK", "AMZN01.BK", "BH.BK") and snapshot_date == "2026-05-26":
+            print(
+            "[SNAPSHOT]",
+            snapshot_date,
+            sym,
+            "price=", price,
+            "shares=", shares,
+            "avg_cost=", avg_cost,
+            )
+
         mv       = shares * price if price is not None else None
         cost     = shares * avg_cost
         upnl     = (mv - cost) if mv is not None else None
@@ -1281,15 +1316,31 @@ def _commit_rebuild(
                     _COVERAGE_THRESHOLD * 100,
                 )
 
-            snap_data = _snap_day_to_db_dict(day)
+            # ── FORENSIC COMMIT PRE-WRITE ─────────────────────────────────
             existing  = (
                 db.query(PortfolioSnapshot)
                 .filter_by(portfolio_id=portfolio_id, snapshot_date=day.snapshot_date)
                 .first()
             )
+            print(
+                f"[FORENSIC COMMIT PRE]  snap_date={day.snapshot_date}"
+                f"  {'existing.id=' + str(existing.id) if existing else 'INSERT'}"
+                f"  total_value={day.total_value}"
+                f"  cash={day.cash_balance}"
+                f"  holdings_count={day.holdings_count}"
+                f"  holdings_json[:500]={day.holdings_json[:500]}"
+            )
+            snap_data = _snap_day_to_db_dict(day)
             if existing:
                 for k, v in snap_data.items():
                     setattr(existing, k, v)
+                # ── FORENSIC COMMIT POST-SETATTR ──────────────────────────
+                print(
+                    f"[FORENSIC COMMIT POST] snap_date={existing.snapshot_date}"
+                    f"  total_value={existing.total_value}"
+                    f"  cash={existing.cash_balance}"
+                    f"  holdings_json[:500]={str(existing.holdings_json)[:500]}"
+                )
             else:
                 db.add(PortfolioSnapshot(
                     workspace_id  = workspace_id,
@@ -1506,11 +1557,13 @@ async def rebuild_portfolio(
                 _progress(
                     f"  → fetching historical prices for {len(all_symbols)} symbol(s)..."
                 )
+                print(sorted(all_symbols))
                 price_matrix = await _build_price_matrix(
                     symbols     = sorted(all_symbols),
                     dates       = rebuild_dates,
                     progress_cb = lambda sym: _progress(f"    price: {sym}"),
                 )
+                print(">>> BUILD PRICE MATRIX FINISHED <<<")
 
                 # Replay transactions to get portfolio state at each snapshot date
                 _progress("  → replaying transactions for each snapshot date...")
@@ -1518,8 +1571,9 @@ async def rebuild_portfolio(
 
                 # Build _SnapshotDay objects with NAV + return fields
                 prev_snap_day: _SnapshotDay | None = None
-
+                print("===== BEFORE LOOP =====")
                 for snap_date in rebuild_dates:
+                    print("LOOP", snap_date)
                     state_at = state_by_date.get(snap_date)
                     if state_at is None:
                         _log.warning(
@@ -1532,6 +1586,11 @@ async def rebuild_portfolio(
                         sym: price_matrix.get(sym, {}).get(snap_date)
                         for sym in state_at.holdings
                     }
+                    print("=" * 80)
+                    print("SNAP DATE:", snap_date)
+                    print("PRICE ROW:")
+                    for s in ("AAPL01.BK", "AMZN01.BK", "BH.BK"):
+                        print(s, "=>", price_row.get(s))
 
                     # Determine the "previous" for return calculation
                     if prev_snap_day is not None:
@@ -1544,6 +1603,22 @@ async def rebuild_portfolio(
                         prev_date = None
                         prev_nav  = None
 
+                    # ── FORENSIC PRE-BUILD ────────────────────────────────────
+                    print("=" * 80)
+                    print("PRICE ROW", snap_date)
+
+                    for s in ("AAPL01.BK", "AMZN01.BK", "BH.BK"):
+                        print(
+                            s,
+                            price_row.get(s),
+                        )
+                    print(
+                        f"[FORENSIC PRE-BUILD]  snap_date={snap_date}"
+                        f"  n_holdings={len(state_at.holdings)}"
+                        f"  holdings={sorted(state_at.holdings.keys())}"
+                        f"  id(state)={id(state_at)}"
+                    )
+                    print("CALL _build_snapshot_day", snap_date)
                     day = _build_snapshot_day(
                         snapshot_date = snap_date,
                         state         = state_at,
@@ -1552,6 +1627,26 @@ async def rebuild_portfolio(
                         prev_date     = prev_date,
                         prev_nav      = prev_nav,
                     )
+                    if snap_date == "2026-05-26":
+                        print("=" * 80)
+                        print("PRICE ROW DEBUG")
+
+                        for s in ("AAPL01.BK", "AMZN01.BK", "BH.BK"):
+                            print(
+                                s,
+                                "matrix=",
+                                price_matrix.get(s, {}).get(snap_date),
+                                "row=",
+                                price_row.get(s),
+                            )
+                    # ── FORENSIC POST-BUILD ───────────────────────────────────
+                    print(
+                        f"[FORENSIC POST-BUILD] snap_date={day.snapshot_date}"
+                        f"  holdings_count={day.holdings_count}"
+                        f"  id(day)={id(day)}"
+                        f"  holdings_json[:500]={day.holdings_json[:500]}"
+                    )
+
                     snapshot_days.append(day)
                     prev_snap_day = day
                     # Once we have our first reconstructed snapshot, drop the DB baseline

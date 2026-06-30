@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 yfinance
+requests
 pandas_ta
 pandas
 sqlalchemy
