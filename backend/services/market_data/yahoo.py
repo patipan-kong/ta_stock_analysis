@@ -88,22 +88,20 @@ class YahooProvider(MarketDataProvider):
                 ticker = yf.Ticker(symbol)
                 df = _yf_retry(ticker.history, period="5d")
                 current_price: float | None = None
-                change_percent: float | None = None
+                prev: float | None = None
                 if df is not None and not df.empty:
                     current_price = float(df["Close"].iloc[-1])
                     if len(df) >= 2:
                         prev = float(df["Close"].iloc[-2])
-                        if prev and prev != 0:
-                            change_percent = round((current_price - prev) / prev * 100, 2)
                 last_updated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                 return {
                     "current_price": round(current_price, 4) if current_price is not None else None,
-                    "change_percent": change_percent,
+                    "previous_close": prev,
                     "last_updated": last_updated,
                 }
             except Exception as e:
                 _log.error("YahooProvider.get_quote(%s): %s", symbol, e)
-                return {"current_price": None, "change_percent": None, "last_updated": None}
+                return {"current_price": None, "previous_close": None, "last_updated": None}
 
     def get_history(
         self, symbol: str, period: str = "6mo", interval: str = "1d"
