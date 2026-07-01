@@ -80,7 +80,7 @@
           "caching": 0.15
         }
       }
-    },        
+    },  
     {
       "id": "gpt-4o-mini",
       "label": "GPT-4o Mini",
@@ -95,16 +95,16 @@
       }
     },
     {
-      "id": "gpt-5.2",
-      "label": "GPT-5.2",
-      "apiModel": "gpt-5.2",
+      "id": "gpt-5.4",
+      "label": "GPT-5.4",
+      "apiModel": "gpt-5.4",
       "provider": "openai",
       "memo":"คู่หูจัดการportfolio: เหมาะทำ production challenger , daily optimization",
       "cost": {
         "token_1m": {
-          "input": 1.75,
-          "output": 14,
-          "caching": 0.175
+          "input": 2.50,
+          "output": 15,
+          "caching": 0.25
         }
       }
     },

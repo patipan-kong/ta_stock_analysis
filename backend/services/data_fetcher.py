@@ -274,21 +274,16 @@ def _record_yf_error(e: Exception) -> None:
 # ── Public API (same signatures as the original data_fetcher.py) ───────────────
 
 def fetch_history(symbol: str, period: str = "6mo", interval: str = "1d") -> Optional[pd.DataFrame]:
-    print("fetch_history()", symbol)
+    #print("fetch_history()", symbol)
     cache_type = f"history:{period}:{interval}"
     ttl        = _history_ttl(period, interval)
 
     cached = _get_cached(symbol, cache_type)
     if cached:
-        print("cache hit")
-        print("cache key:", symbol, cache_type)
         df_cached = _payload_to_df(cached)
         if df_cached is not None and not df_cached.empty:
-            print("first Close:", df_cached["Close"].iloc[0])
-            print("last Close:", df_cached["Close"].iloc[-1])
-        return df_cached
+            return df_cached
 
-    print("cache miss")
     if not allow_market_fetching():
         _log.info("[VPS BLOCKED FETCH] fetch_history symbol=%s — returning stale cache", symbol)
         stale = _get_stale(symbol, cache_type)

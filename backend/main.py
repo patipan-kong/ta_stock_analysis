@@ -1304,9 +1304,22 @@ async def _run_analysis_job(job_id: str, ws: int, stale_syms: list[str], s: dict
 
     queue: asyncio.Queue = asyncio.Queue()
 
-    async def _worker(sym: str) -> None:
-        result = await _analyze_one_concurrent(ws, sym, s, src)
-        await queue.put(result)
+    import traceback
+    async def _worker(sym: str):
+        print("WORKER START", sym)
+
+        try:
+            result = await _analyze_one_concurrent(ws, sym, s, src)
+            print("WORKER DONE", sym)
+        except Exception:
+            traceback.print_exc()
+            result = {
+                "symbol": sym,
+                "error": True,
+            }
+        finally:
+            print("QUEUE PUT", sym)
+            await queue.put(result)
 
     for sym in stale_syms:
         asyncio.create_task(_worker(sym))
@@ -1359,6 +1372,7 @@ async def _analyze_one_concurrent(ws: int, sym: str, s: dict, src: dict) -> dict
                 return _build_fallback_result(sym, tech, fund, news_r, scores, su, elapsed_ms, "AI timeout")
 
             total_latency_ms = round((_time.perf_counter() - t0) * 1000)
+            # print("ANALYZE", sym, total_latency_ms)
             _log.debug("[analyze_concurrent] %s done in %d ms", sym, total_latency_ms)
 
             _sm = summary
@@ -1370,7 +1384,7 @@ async def _analyze_one_concurrent(ws: int, sym: str, s: dict, src: dict) -> dict
             )
             if isinstance(_sm, dict) and "error" not in _sm:
                 summary = {**_sm, "analyzed_at": datetime.utcnow().isoformat() + "Z", "from_cache": False}
-
+            print(sym, "RETURN")
             return {
                 "symbol": sym,
                 "technical": tech,
@@ -1402,18 +1416,32 @@ async def _fetch_agents(
     news_r = _get_agent_cache(db, symbol, "news")        if sources.get("use_news", True) else None
 
     to_run: list[tuple[str, object]] = []
-    if sources.get("use_ta",   True) and tech   is None: to_run.append(("technical",   analyze_technical))
-    if sources.get("use_fa",   True) and fund   is None: to_run.append(("fundamental", analyze_fundamental))
-    if sources.get("use_news", True) and news_r is None: to_run.append(("news",        analyze_news))
+    
+    if sources.get("use_ta",   True) and tech   is None: to_run.append(("technical",   analyze_technical))        
+    if sources.get("use_fa",   True) and fund   is None: to_run.append(("fundamental", analyze_fundamental))        
+    if sources.get("use_news", True) and news_r is None: to_run.append(("news",        analyze_news))    
 
+    import time as _time
     if to_run:
+        t = _time.perf_counter()
         fresh = await asyncio.gather(*[asyncio.to_thread(fn, symbol) for _, fn in to_run])
+        print(
+            symbol,
+            "asyncio.to_thread(fn, symbol)",
+            round(_time.perf_counter() - t, 3),
+        )
+        t = _time.perf_counter()
         for (name, _), result in zip(to_run, fresh):
             _set_agent_cache(db, symbol, name, result)
             if name == "technical":   tech   = result
             elif name == "fundamental": fund = result
             elif name == "news":      news_r = result
 
+        print(
+            symbol,
+            "_set_agent_cache(db, symbol, name, result)",
+            round(_time.perf_counter() - t, 3),
+        )
     if fund and "error" not in fund and not fund.get("sector"):
         resolved_sector = _get_sector(symbol, None)
         if resolved_sector != "Other":

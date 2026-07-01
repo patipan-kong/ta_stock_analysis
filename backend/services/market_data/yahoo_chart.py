@@ -183,10 +183,15 @@ class YahooChartProvider(MarketDataProvider):
 
     def get_quote(self, symbol: str) -> dict:
         with _SEMAPHORE:
+            t0 = time.perf_counter()
             result = _fetch_chart_result(symbol, range_="5d", interval="1d")
-            print("===== RAW YAHOO =====")
-            print(symbol)
-            print(result)
+            elapsed = time.perf_counter() - t0
+            print(
+                symbol,
+                "5d",
+                "1d",
+                round(elapsed, 3),
+            )
         if result is None:
             return {"current_price": None, "previous_close": None, "last_updated": None}
 
