@@ -8,8 +8,8 @@ Yahoo Chart API client — see yahoo_chart.py docstring for why this exists).
     from services.market_data.provider import MarketDataProvider, get_provider
 
 Provider contract (all methods):
-    get_quote(symbol)              -> {current_price, change_percent, last_updated}
-    get_quotes(symbols)            -> {symbol: {current_price, change_percent, last_updated}}
+    get_quote(symbol)              -> {current_price, previous_close, last_updated}
+    get_quotes(symbols)            -> {symbol: {current_price, previous_close, last_updated}}
     get_history(symbol, period, interval) -> pd.DataFrame | None
     get_history_batch(symbols, period, interval) -> {symbol: pd.DataFrame}
     get_fundamentals(symbol)       -> dict

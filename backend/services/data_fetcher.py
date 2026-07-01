@@ -202,6 +202,15 @@ def _get_stale(symbol: str, cache_type: str) -> Optional[dict]:
 
 # ── DataFrame serialisation ────────────────────────────────────────────────────
 
+def _source_quote_payload(payload: dict) -> dict:
+    """Return source quote fields only, dropping stale derived cache fields."""
+    return {
+        k: v
+        for k, v in payload.items()
+        if not k.startswith("_") and k != "change_percent"
+    }
+
+
 def _df_to_payload(df: pd.DataFrame) -> dict:
     try:
         return {"json_split": df.to_json(orient="split", date_format="iso", default_handler=str)}
@@ -307,13 +316,13 @@ def fetch_info(symbol: str) -> dict:
 
     cached = _get_cached(symbol, cache_type)
     if cached:
-        return {k: v for k, v in cached.items() if not k.startswith("_")}
+        return _source_quote_payload(cached)
 
     if not allow_market_fetching():
         _log.info("[VPS BLOCKED FETCH] fetch_info symbol=%s — returning stale cache", symbol)
         stale = _get_stale(symbol, cache_type)
         if stale:
-            return {k: v for k, v in stale.items() if not k.startswith("_")}
+            return _source_quote_payload(stale)
         return {}
 
     _inc("yahoo_requests")
@@ -333,25 +342,46 @@ def fetch_info(symbol: str) -> dict:
         return {}
 
 
+def calculate_change_percent(
+    current_price: float | None,
+    previous_close: float | None,
+) -> float | None:
+    if (
+        current_price is None
+        or previous_close is None
+        or previous_close == 0
+    ):
+        return None
+
+    return round(
+        (current_price - previous_close)
+        / previous_close
+        * 100,
+        2,
+    )
+
+
 def fetch_price_info(symbol: str) -> dict:
-    """Return {current_price, change_percent, last_updated} for a symbol."""
+    """Return {current_price, previous_close, last_updated} for a symbol."""
     cache_type = "quote"
+    
+    DEBUG_BYPASS_CACHE = False
+    if not DEBUG_BYPASS_CACHE:
+        cached = _get_cached(symbol, cache_type)
+        if cached:
+            return {k: v for k, v in cached.items() if not k.startswith("_")}
 
-    cached = _get_cached(symbol, cache_type)
-    if cached:
-        return {k: v for k, v in cached.items() if not k.startswith("_")}
-
-    if not allow_market_fetching():
-        _log.info("[VPS BLOCKED FETCH] fetch_price_info symbol=%s — returning stale cache", symbol)
-        stale = _get_stale(symbol, cache_type)
-        if stale:
-            return {k: v for k, v in stale.items() if not k.startswith("_")}
-        return {"current_price": None, "change_percent": None, "last_updated": None, "_vps_cache_miss": True}
+        if not allow_market_fetching():
+            _log.info("[VPS BLOCKED FETCH] fetch_price_info symbol=%s — returning stale cache", symbol)
+            stale = _get_stale(symbol, cache_type)
+            if stale:
+                return {k: v for k, v in stale.items() if not k.startswith("_")}
+            return {"current_price": None, "previous_close": None, "last_updated": None, "_vps_cache_miss": True}
 
     _inc("yahoo_requests")
     t0 = time.monotonic()
     try:
-        result = _provider.get_quote(symbol)
+        result = _source_quote_payload(_provider.get_quote(symbol))
         _record_yf_call(t0)
         _log.info("[LOCAL FETCH] yahoo_fetch symbol=%s type=quote", symbol)
         if result.get("current_price") is not None:
@@ -361,8 +391,8 @@ def fetch_price_info(symbol: str) -> dict:
         _record_yf_error(exc)
         stale = _get_stale(symbol, cache_type)
         if stale:
-            return {k: v for k, v in stale.items() if not k.startswith("_")}
-        return {"current_price": None, "change_percent": None, "last_updated": None}
+            return _source_quote_payload(stale)
+        return {"current_price": None, "previous_close": None, "last_updated": None}
 
 
 def fetch_news(symbol: str) -> list[dict]:

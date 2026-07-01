@@ -97,6 +97,7 @@ export interface PortfolioItem {
   shares: number;
   avg_cost: number;
   current_price: number | null;
+  previous_close: number | null;
   change_percent: number | null;
   last_updated: string | null;
   latest_signal: "ACCUMULATE" | "BUY" | "WATCH" | "HOLD" | "REDUCE" | "SELL" | null;
@@ -328,6 +329,7 @@ export const getHoldings = (portfolioId: number) =>
 export interface PriceRefreshItem {
   symbol: string;
   current_price: number | null;
+  previous_close: number | null;
   change_percent: number | null;
   last_updated: string | null;
   upside_pct?: number | null;

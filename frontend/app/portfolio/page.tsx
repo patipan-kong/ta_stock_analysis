@@ -125,7 +125,7 @@ export default function PortfolioPage() {
     return prev.map((item) => {
       const p = prices.find((x) => x.symbol === item.symbol);
       return p
-        ? { ...item, current_price: p.current_price, change_percent: p.change_percent,
+        ? { ...item, current_price: p.current_price, previous_close: p.previous_close, change_percent: p.change_percent,
             last_updated: p.last_updated, upside_pct: p.upside_pct ?? item.upside_pct }
         : item;
     });

@@ -236,14 +236,14 @@ def test_429_then_200_retries_and_succeeds():
 
 # ── get_quote ────────────────────────────────────────────────────────────────────
 
-def test_get_quote_computes_change_percent():
+def test_get_quote_returns_previous_close():
     payload = _make_payload(_BASE_TS, _BASE_CLOSES, _BASE_CLOSES, _BASE_CLOSES, _BASE_CLOSES, [1000] * 5,
                              meta_overrides={"regularMarketPrice": 11.0, "previousClose": 10.8})
     with _patched_get() as mock_get:
         mock_get.return_value = _MockResponse(200, payload)
         quote = YahooChartProvider().get_quote("AAPL")
     assert quote["current_price"] == 11.0
-    assert quote["change_percent"] == round((11.0 - 10.8) / 10.8 * 100, 2)
+    assert quote["previous_close"] == 10.8
     assert quote["last_updated"] is not None
 
 
@@ -251,7 +251,7 @@ def test_get_quote_failure_returns_none_fields():
     with _patched_get() as mock_get:
         mock_get.return_value = _MockResponse(404, None)
         quote = YahooChartProvider().get_quote("NOTASYMBOL.XX")
-    assert quote == {"current_price": None, "change_percent": None, "last_updated": None}
+    assert quote == {"current_price": None, "previous_close": None, "last_updated": None}
 
 
 # ── get_history_batch ────────────────────────────────────────────────────────────

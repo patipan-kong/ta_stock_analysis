@@ -422,10 +422,9 @@ def seed(
             # Quote cache
             last_price = hist_rows[-1]["Close"] if hist_rows else info.get("currentPrice", 0)
             prev_price = hist_rows[-2]["Close"] if len(hist_rows) >= 2 else last_price
-            chg_pct    = (last_price - prev_price) / prev_price * 100 if prev_price > 0 else 0.0
             quote = {
                 "current_price":   last_price,
-                "change_percent":  round(chg_pct, 2),
+                "previous_close":  prev_price,
                 "last_updated":    datetime.utcnow().isoformat() + "Z",
             }
             _upsert_cache(db, sym, "quote", quote, 1)  # 1h TTL

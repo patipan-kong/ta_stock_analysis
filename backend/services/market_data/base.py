@@ -12,7 +12,7 @@ class MarketDataProvider(ABC):
 
     @abstractmethod
     def get_quote(self, symbol: str) -> dict:
-        """Return current price info dict: {current_price, change_percent, last_updated}."""
+        """Return current price info dict: {current_price, previous_close, last_updated}."""
         ...
 
     @abstractmethod
@@ -34,7 +34,7 @@ class MarketDataProvider(ABC):
     def get_quotes(self, symbols: list[str]) -> dict[str, dict]:
         """Batch-fetch current quotes for multiple symbols.
 
-        Returns {symbol: {current_price, change_percent, last_updated}}.
+        Returns {symbol: {current_price, previous_close, last_updated}}.
         Default implementation calls get_quote() sequentially.
         Override for batch efficiency.
         """

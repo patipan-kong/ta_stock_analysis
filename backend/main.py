@@ -39,7 +39,7 @@ from services.optimizer.strategy_profiles import (
 from agents.chart_data import fetch_chart_data
 from services.data_fetcher import (
     fetch_price_info, fetch_info, normalize_dr_symbol, is_dr_symbol,
-    get_cache_stats,
+    get_cache_stats, calculate_change_percent,
 )
 from services.scorer import compute_scores
 from services.ai_client import call_ai
@@ -542,6 +542,17 @@ def _risk_level(ta_score: int | None, fa_score: int | None) -> str | None:
     return "Critical"
 
 
+def _quote_response(price: dict) -> dict:
+    """Attach presentation-only day change without writing it to quote cache."""
+    return {
+        **price,
+        "change_percent": calculate_change_percent(
+            price.get("current_price"),
+            price.get("previous_close"),
+        ),
+    }
+
+
 def _latest_day_consensus(symbols: list[str], ws: int, db: Session) -> dict[str, dict]:
     """Return {symbol: {signal, confidence}} using only today's (latest day) analyses."""
     if not symbols:
@@ -767,7 +778,7 @@ class HoldingCreate(BaseModel):
 async def list_holdings(portfolio_id: int, db: Session = Depends(get_db)) -> list[dict]:
     """Return holdings from DB only — no yfinance calls.
 
-    Price fields (current_price, change_percent, last_updated, upside_pct) are
+    Price fields (current_price, previous_close, change_percent, last_updated, upside_pct) are
     returned as null and filled in by a follow-up call to /prices.
     This makes the endpoint respond in < 500 ms regardless of portfolio size.
     """
@@ -781,7 +792,7 @@ async def list_holdings(portfolio_id: int, db: Session = Depends(get_db)) -> lis
     symbols = [item.symbol for item in items]
 
     # Null prices — filled by /prices endpoint after initial render
-    null_prices = [{"current_price": None, "change_percent": None, "last_updated": None}
+    null_prices = [{"current_price": None, "previous_close": None, "change_percent": None, "last_updated": None}
                    for _ in items]
 
     cached = {
@@ -866,7 +877,7 @@ async def get_portfolio_prices(portfolio_id: int, db: Session = Depends(get_db))
             if target_price and upside_price and upside_price > 0
             else None
         )
-        result.append({"symbol": sym, **price, "upside_pct": upside_pct})
+        result.append({"symbol": sym, **_quote_response(price), "upside_pct": upside_pct})
 
     return result
 
@@ -1000,7 +1011,7 @@ async def add_holding(portfolio_id: int, body: HoldingCreate, db: Session = Depe
         "symbol": item.symbol,
         "shares": item.shares,
         "avg_cost": item.avg_cost,
-        **price,
+        **_quote_response(price),
         "sector": item.sector,
         "latest_signal": None,
         "signal_confidence": None,
