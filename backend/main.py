@@ -1306,11 +1306,11 @@ async def _run_analysis_job(job_id: str, ws: int, stale_syms: list[str], s: dict
 
     import traceback
     async def _worker(sym: str):
-        print("WORKER START", sym)
+        # print("WORKER START", sym)
 
         try:
             result = await _analyze_one_concurrent(ws, sym, s, src)
-            print("WORKER DONE", sym)
+            # print("WORKER DONE", sym)
         except Exception:
             traceback.print_exc()
             result = {
@@ -1318,7 +1318,7 @@ async def _run_analysis_job(job_id: str, ws: int, stale_syms: list[str], s: dict
                 "error": True,
             }
         finally:
-            print("QUEUE PUT", sym)
+            # print("QUEUE PUT", sym)
             await queue.put(result)
 
     for sym in stale_syms:
@@ -1384,7 +1384,7 @@ async def _analyze_one_concurrent(ws: int, sym: str, s: dict, src: dict) -> dict
             )
             if isinstance(_sm, dict) and "error" not in _sm:
                 summary = {**_sm, "analyzed_at": datetime.utcnow().isoformat() + "Z", "from_cache": False}
-            print(sym, "RETURN")
+            # print(sym, "RETURN")
             return {
                 "symbol": sym,
                 "technical": tech,
@@ -1425,11 +1425,11 @@ async def _fetch_agents(
     if to_run:
         t = _time.perf_counter()
         fresh = await asyncio.gather(*[asyncio.to_thread(fn, symbol) for _, fn in to_run])
-        print(
-            symbol,
-            "asyncio.to_thread(fn, symbol)",
-            round(_time.perf_counter() - t, 3),
-        )
+        # print(
+        #     symbol,
+        #     "asyncio.to_thread(fn, symbol)",
+        #     round(_time.perf_counter() - t, 3),
+        # )
         t = _time.perf_counter()
         for (name, _), result in zip(to_run, fresh):
             _set_agent_cache(db, symbol, name, result)
@@ -1437,11 +1437,11 @@ async def _fetch_agents(
             elif name == "fundamental": fund = result
             elif name == "news":      news_r = result
 
-        print(
-            symbol,
-            "_set_agent_cache(db, symbol, name, result)",
-            round(_time.perf_counter() - t, 3),
-        )
+        # print(
+        #     symbol,
+        #     "_set_agent_cache(db, symbol, name, result)",
+        #     round(_time.perf_counter() - t, 3),
+        # )
     if fund and "error" not in fund and not fund.get("sector"):
         resolved_sector = _get_sector(symbol, None)
         if resolved_sector != "Other":
