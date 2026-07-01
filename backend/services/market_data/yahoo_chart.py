@@ -184,19 +184,20 @@ class YahooChartProvider(MarketDataProvider):
     def get_quote(self, symbol: str) -> dict:
         with _SEMAPHORE:
             result = _fetch_chart_result(symbol, range_="5d", interval="1d")
+            print("===== RAW YAHOO =====")
+            print(symbol)
+            print(result)
         if result is None:
-            return {"current_price": None, "change_percent": None, "last_updated": None}
+            return {"current_price": None, "previous_close": None, "last_updated": None}
 
         meta = result.get("meta") or {}
         current_price = meta.get("regularMarketPrice")
-        prev_close = meta.get("previousClose") or meta.get("chartPreviousClose")
-        change_percent = None
-        if current_price is not None and prev_close:
-            change_percent = round((current_price - prev_close) / prev_close * 100, 2)
-
+        closes = result["indicators"]["quote"][0]["close"]
+        prev_close = closes[-2] if len(closes) >= 2 else None
+        
         return {
             "current_price": round(current_price, 4) if current_price is not None else None,
-            "change_percent": change_percent,
+            "previous_close": prev_close,
             "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
 
