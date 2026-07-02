@@ -55,9 +55,11 @@ def set_cached(portfolio_id: int, group: str, result: dict) -> None:
 
 
 def invalidate_cache(portfolio_id: int) -> None:
-    """Remove all cached analytics results for a portfolio."""
-    for group in ("portfolio", "benchmark", "signal", "allocation", "full"):
-        _CACHE.pop(_cache_key(portfolio_id, group), None)
+    """Remove all cached analytics results for a portfolio, across every group
+    and parameterised key variant (e.g. per-benchmark "full" entries)."""
+    prefix = f"{portfolio_id}:"
+    for key in [k for k in _CACHE if k.startswith(prefix)]:
+        _CACHE.pop(key, None)
 
 
 def invalidate_all() -> None:

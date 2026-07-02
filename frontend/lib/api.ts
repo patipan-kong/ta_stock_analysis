@@ -1073,47 +1073,6 @@ export const updatePortfolioPersona = (portfolioId: number, persona: StrategyPer
     body: JSON.stringify({ persona }),
   });
 
-export interface AnalysisLatencyStat {
-  provider: string;
-  model: string;
-  avg_latency_ms: number;
-  min_latency_ms: number;
-  max_latency_ms: number;
-  p95_latency_ms: number;
-  call_count: number;
-  last_used: string | null;
-}
-
-export interface OptimizerLatencyStat {
-  provider: string;
-  model: string;
-  layer: string;
-  avg_latency_ms: number;
-  call_count: number;
-}
-
-export interface LatencyStats {
-  analysis: AnalysisLatencyStat[];
-  optimizer: OptimizerLatencyStat[];
-}
-
-export interface ModelCostStat {
-  model: string;
-  provider: string;
-  total_input_tokens: number;
-  total_output_tokens: number;
-  estimated_cost_usd: number;
-  estimated_cost_thb?: number;
-  call_count: number;
-}
-
-export interface CostEstimate {
-  fx?: { usd_to_thb: number };
-  by_model: ModelCostStat[];
-  total_estimated_usd: number;
-  total_estimated_thb?: number;
-}
-
 function _dateQS(fromDate?: string, toDate?: string): string {
   const p = new URLSearchParams();
   if (fromDate) p.set("from_date", fromDate);
@@ -1122,11 +1081,90 @@ function _dateQS(fromDate?: string, toDate?: string): string {
   return qs ? `?${qs}` : "";
 }
 
-export const getLatencyStats = (fromDate?: string, toDate?: string) =>
-  apiFetch<LatencyStats>(`/stats/latency${_dateQS(fromDate, toDate)}`);
+// ─── AI Analytics dashboard ───────────────────────────────────────────────────
 
-export const getCostEstimate = (fromDate?: string, toDate?: string) =>
-  apiFetch<CostEstimate>(`/stats/cost-estimate${_dateQS(fromDate, toDate)}`);
+export interface AiModelLeaderboardRow {
+  provider: string;
+  model: string;
+  call_count: number;
+  avg_latency_ms: number | null;
+  p95_latency_ms: number | null;
+  avg_cost_usd: number;
+  total_cost_usd: number;
+  avg_total_tokens: number;
+  fallback_rate: number | null;
+  success_rate: number | null;
+  json_parse_success_rate: number | null;
+  last_used: string | null;
+}
+
+export interface AiLayerMatrixCell {
+  provider: string;
+  model: string;
+  layer: string;
+  operation: string;
+  call_count: number;
+  avg_latency_ms: number | null;
+  avg_cost_usd: number;
+  avg_total_tokens: number;
+}
+
+export interface AiDailyUsageRow {
+  day: string;
+  provider: string;
+  model: string;
+  layer: string;
+  operation: string;
+  call_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  avg_latency_ms: number | null;
+  p95_latency_ms: number | null;
+}
+
+export interface AiRecentCall {
+  id: number;
+  created_at: string | null;
+  provider: string;
+  model: string;
+  operation: string;
+  layer: string | null;
+  latency_ms: number | null;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  status: string;
+}
+
+export interface AiReliabilitySummary {
+  fallback_rate: number | null;
+  success_rate: number | null;
+  json_parse_success_rate: number | null;
+  api_error_rate: number | null;
+  timeout_rate: number | null;
+  max_token_stop_rate: number | null;
+}
+
+export interface AiAnalytics {
+  fx: { usd_to_thb: number };
+  leaderboard: AiModelLeaderboardRow[];
+  layer_matrix: AiLayerMatrixCell[];
+  daily: AiDailyUsageRow[];
+  recent: AiRecentCall[];
+  reliability: AiReliabilitySummary;
+  totals: { call_count: number; total_cost_usd: number; total_cost_thb: number; total_tokens: number };
+}
+
+export const getAiAnalytics = (fromDate?: string, toDate?: string, recentLimit = 200) => {
+  const p = new URLSearchParams();
+  if (fromDate) p.set("from_date", fromDate);
+  if (toDate) p.set("to_date", toDate);
+  p.set("recent_limit", String(recentLimit));
+  return apiFetch<AiAnalytics>(`/stats/ai-analytics?${p.toString()}`);
+};
 
 export interface BackfillSectorsResult {
   watchlist_updated: number;

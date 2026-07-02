@@ -131,8 +131,31 @@ def _anthropic_create(client, model: str, max_tokens: int, prompt: str):
     return client.messages.create(
         model=model,
         max_tokens=max_tokens,
+        # These calls all extract structured JSON from a single deterministic
+        # instruction — they don't need visible reasoning. On Sonnet 5, thinking
+        # runs adaptively by default when this param is omitted, and thinking
+        # tokens are drawn from the same max_tokens budget as the JSON output;
+        # on a tight budget the model can burn the whole allowance on thinking
+        # and leave stop_reason=max_tokens with the text block empty or truncated.
+        # Disabling thinking gives 100% of max_tokens to the JSON response.
+        thinking={"type": "disabled"},
         messages=[{"role": "user", "content": prompt}],
     )
+
+
+def _extract_anthropic_text(message) -> str:
+    """Normalize an Anthropic response's content blocks into plain text.
+
+    Thinking is disabled on every call (see _anthropic_create), but this stays
+    defensive — concatenate only "text" blocks and skip anything else (thinking,
+    redacted_thinking, tool_use, or future block types) so the adapter degrades
+    gracefully instead of raising or capturing reasoning.
+    """
+    parts = []
+    for block in getattr(message, "content", None) or []:
+        if getattr(block, "type", None) == "text":
+            parts.append(getattr(block, "text", "") or "")
+    return "".join(parts)
 
 
 def call_ai(
@@ -162,13 +185,18 @@ def call_ai(
         start = time.perf_counter()
         message = _anthropic_create(client, model, max_tokens, prompt)
         latency_ms = round((time.perf_counter() - start) * 1000)
+        # TEMP DEBUG — remove after Sonnet 5 JSON investigation
+        print("DEBUG stop_reason:", message.stop_reason)
+        print("DEBUG model:", message.model)
+        print("DEBUG usage:", message.usage)
+        print("DEBUG content:", message.content)
         usage = getattr(message, "usage", None)
         in_tokens = int(getattr(usage, "input_tokens", 0) or 0)
         out_tokens = int(getattr(usage, "output_tokens", 0) or 0)
         in_cost, out_cost, total_cost = _compute_cost_usd(in_tokens, out_tokens, in_per_1m, out_per_1m)
         _record_usage(provider, model, in_tokens, out_tokens, in_cost, out_cost, total_cost, usage_operation, usage_layer, latency_ms)
         return {
-            "text": message.content[0].text,
+            "text": _extract_anthropic_text(message),
             "latency_ms": latency_ms,
             "input_tokens": in_tokens,
             "output_tokens": out_tokens,

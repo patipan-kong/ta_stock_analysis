@@ -3099,6 +3099,180 @@ async def get_cost_estimate(
     }
 
 
+def _filtered_usage_query(db: Session, from_date: str | None, to_date: str | None):
+    query = db.query(UserUsage)
+    if from_date:
+        query = query.filter(UserUsage.created_at >= datetime.fromisoformat(from_date))
+    if to_date:
+        query = query.filter(UserUsage.created_at < datetime.fromisoformat(to_date) + timedelta(days=1))
+    return query
+
+
+@app.get("/stats/ai-analytics")
+async def get_ai_analytics(
+    db: Session = Depends(get_db),
+    from_date: str | None = None,
+    to_date: str | None = None,
+    recent_limit: int = 100,
+) -> dict:
+    """Unified telemetry for the AI Analytics dashboard: per-model leaderboard, layer
+    heatmap, daily cost/latency/token breakdown, and a recent-calls log — all aggregated
+    read-only from UserUsage. Reliability fields that aren't tracked yet (success/error,
+    JSON parse, timeouts, max-token-stops) are returned as null; fallback_rate is real,
+    derived from layer == "fallback"."""
+    rows = _filtered_usage_query(db, from_date, to_date).order_by(UserUsage.created_at.asc()).all()
+
+    def _p95(vals: list[int]) -> int:
+        if not vals:
+            return 0
+        sv = sorted(vals)
+        return sv[min(int(len(sv) * 0.95), len(sv) - 1)]
+
+    def _avg(vals: list[int]) -> int | None:
+        return round(sum(vals) / len(vals)) if vals else None
+
+    model_groups: dict[tuple, dict] = {}
+    layer_groups: dict[tuple, dict] = {}
+    daily_groups: dict[tuple, dict] = {}
+    optimize_total = 0
+    optimize_fallback = 0
+
+    for row in rows:
+        mk = (row.provider, row.model)
+        mg = model_groups.setdefault(mk, {
+            "provider": row.provider, "model": row.model,
+            "call_count": 0, "latencies": [], "cost_total": 0.0,
+            "tokens_total": 0, "last_used": None,
+            "fallback_calls": 0, "optimize_calls": 0,
+        })
+        mg["call_count"] += 1
+        if row.latency_ms is not None:
+            mg["latencies"].append(row.latency_ms)
+        mg["cost_total"] += row.total_cost_usd
+        mg["tokens_total"] += row.total_tokens
+        if row.created_at and (mg["last_used"] is None or row.created_at.isoformat() > mg["last_used"]):
+            mg["last_used"] = row.created_at.isoformat() + "Z"
+        if row.operation == "optimize":
+            mg["optimize_calls"] += 1
+            optimize_total += 1
+            if row.layer == "fallback":
+                mg["fallback_calls"] += 1
+                optimize_fallback += 1
+
+        lk = (row.provider, row.model, row.layer or "-", row.operation)
+        lg = layer_groups.setdefault(lk, {
+            "provider": row.provider, "model": row.model, "layer": row.layer or "-",
+            "operation": row.operation, "call_count": 0, "latencies": [],
+            "cost_total": 0.0, "tokens_total": 0,
+        })
+        lg["call_count"] += 1
+        if row.latency_ms is not None:
+            lg["latencies"].append(row.latency_ms)
+        lg["cost_total"] += row.total_cost_usd
+        lg["tokens_total"] += row.total_tokens
+
+        day = row.created_at.date().isoformat() if row.created_at else "unknown"
+        dk = (day, row.provider, row.model, row.layer or "-", row.operation)
+        dg = daily_groups.setdefault(dk, {
+            "day": day, "provider": row.provider, "model": row.model,
+            "layer": row.layer or "-", "operation": row.operation,
+            "call_count": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+            "cost_usd": 0.0, "latencies": [],
+        })
+        dg["call_count"] += 1
+        dg["input_tokens"] += row.input_tokens
+        dg["output_tokens"] += row.output_tokens
+        dg["total_tokens"] += row.total_tokens
+        dg["cost_usd"] += row.total_cost_usd
+        if row.latency_ms is not None:
+            dg["latencies"].append(row.latency_ms)
+
+    leaderboard = [
+        {
+            "provider": provider, "model": model, "call_count": g["call_count"],
+            "avg_latency_ms": _avg(g["latencies"]),
+            "p95_latency_ms": _p95(g["latencies"]) if g["latencies"] else None,
+            "avg_cost_usd": round(g["cost_total"] / g["call_count"], 6),
+            "total_cost_usd": round(g["cost_total"], 6),
+            "avg_total_tokens": round(g["tokens_total"] / g["call_count"]),
+            "fallback_rate": round(g["fallback_calls"] / g["optimize_calls"], 4) if g["optimize_calls"] else None,
+            "success_rate": None,
+            "json_parse_success_rate": None,
+            "last_used": g["last_used"],
+        }
+        for (provider, model), g in sorted(model_groups.items(), key=lambda x: -x[1]["call_count"])
+    ]
+
+    layer_matrix = [
+        {
+            "provider": provider, "model": model, "layer": layer, "operation": operation,
+            "call_count": g["call_count"],
+            "avg_latency_ms": _avg(g["latencies"]),
+            "avg_cost_usd": round(g["cost_total"] / g["call_count"], 6),
+            "avg_total_tokens": round(g["tokens_total"] / g["call_count"]),
+        }
+        for (provider, model, layer, operation), g in layer_groups.items()
+    ]
+
+    daily = sorted(
+        [
+            {
+                "day": g["day"], "provider": g["provider"], "model": g["model"],
+                "layer": g["layer"], "operation": g["operation"], "call_count": g["call_count"],
+                "input_tokens": g["input_tokens"], "output_tokens": g["output_tokens"],
+                "total_tokens": g["total_tokens"], "cost_usd": round(g["cost_usd"], 6),
+                "avg_latency_ms": _avg(g["latencies"]),
+                "p95_latency_ms": _p95(g["latencies"]) if g["latencies"] else None,
+            }
+            for g in daily_groups.values()
+        ],
+        key=lambda x: x["day"],
+    )
+
+    recent_rows = (
+        _filtered_usage_query(db, from_date, to_date)
+        .order_by(UserUsage.created_at.desc())
+        .limit(max(1, min(recent_limit, 500)))
+        .all()
+    )
+    recent = [
+        {
+            "id": r.id,
+            "created_at": (r.created_at.isoformat() + "Z") if r.created_at else None,
+            "provider": r.provider, "model": r.model, "operation": r.operation,
+            "layer": r.layer, "latency_ms": r.latency_ms,
+            "input_tokens": r.input_tokens, "output_tokens": r.output_tokens,
+            "total_tokens": r.total_tokens, "cost_usd": round(r.total_cost_usd, 6),
+            "status": "success",  # UserUsage only ever records completed calls today
+        }
+        for r in recent_rows
+    ]
+
+    total_cost = round(sum(r.total_cost_usd for r in rows), 6)
+
+    return {
+        "fx": {"usd_to_thb": _USD_TO_THB},
+        "leaderboard": leaderboard,
+        "layer_matrix": layer_matrix,
+        "daily": daily,
+        "recent": recent,
+        "reliability": {
+            "fallback_rate": round(optimize_fallback / optimize_total, 4) if optimize_total else None,
+            "success_rate": None,
+            "json_parse_success_rate": None,
+            "api_error_rate": None,
+            "timeout_rate": None,
+            "max_token_stop_rate": None,
+        },
+        "totals": {
+            "call_count": len(rows),
+            "total_cost_usd": total_cost,
+            "total_cost_thb": round(total_cost * _USD_TO_THB, 4),
+            "total_tokens": sum(r.total_tokens for r in rows),
+        },
+    }
+
+
 @app.get("/settings/ai-models")
 async def get_ai_settings_endpoint(db: Session = Depends(get_db)) -> dict:
     return _get_ai_settings(db, _ws_id(db))
@@ -4662,7 +4836,10 @@ async def get_performance_stats(
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     # ── Cache check ────────────────────────────────────────────────────────────
-    cached = _analytics_get_cached(portfolio_id, "full")
+    # Keyed on every param that affects the computed result — a stale entry from
+    # a different benchmark/include-flag combo must never be served back.
+    cache_group = f"full:{benchmark}:{include_equity_curve}:{include_rolling_returns}:{include_sector_evolution}"
+    cached = _analytics_get_cached(portfolio_id, cache_group)
     if cached:
         return cached
 
@@ -4722,7 +4899,7 @@ async def get_performance_stats(
     if include_sector_evolution:
         result["sector_evolution"] = build_sector_evolution(snapshots)
 
-    _analytics_set_cached(portfolio_id, "full", result)
+    _analytics_set_cached(portfolio_id, cache_group, result)
     return result
 
 

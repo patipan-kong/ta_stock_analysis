@@ -28,9 +28,8 @@ const NAV_MAIN: { label: string; href: string; match: string[] }[] = [
 ];
 
 const NAV_ADMIN = [
-  { label: "ตั้งค่า",            href: "/settings" },
-  { label: "สถิติการใช้งาน",     href: "/stats" },
-  { label: "รายงานค่าใช้จ่าย AI", href: "/model-cost-report" },
+  { label: "ตั้งค่า",     href: "/settings" },
+  { label: "AI Analytics", href: "/ai-analytics" },
 ];
 
 function isActive(match: string[], pathname: string) {

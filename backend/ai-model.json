@@ -51,7 +51,21 @@
         "token_1m": {
           "input": 3,
           "output": 15,
-          "caching": 0.1
+          "caching": 0.3
+        }
+      }      
+    },  
+    {
+      "id": "claude-sonnet-5",
+      "apiModel": "claude-sonnet-5",
+      "label": "Claude 5 Sonnet",
+      "provider": "anthropic",      
+        "memo":"สมองหลัก: คุมฟีเจอร์ Optimizer เหมาะทำ Strategist",
+      "cost": {
+        "token_1m": {
+          "input": 2,
+          "output": 10,
+          "caching": 0.2
         }
       }      
     },  
@@ -105,6 +119,20 @@
           "input": 2.50,
           "output": 15,
           "caching": 0.25
+        }
+      }
+    },
+    {
+      "id": "gpt-5.5",
+      "label": "GPT-5.5",
+      "apiModel": "gpt-5.5",
+      "provider": "openai",
+      "memo":"คู่หูจัดการportfolio: เหมาะทำ production challenger , daily optimization",
+      "cost": {
+        "token_1m": {
+          "input": 5,
+          "output": 30,
+          "caching": 0.5
         }
       }
     },

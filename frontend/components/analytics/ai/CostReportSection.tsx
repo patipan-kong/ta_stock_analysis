@@ -21,7 +21,7 @@ function fmtMonth(yyyyMm: string): string {
   });
 }
 
-export default function ModelCostReportPage() {
+export default function CostReportSection() {
   const now = useMemo(() => new Date(), []);
   const [year, setYear] = useState<number>(now.getFullYear());
   const [month, setMonth] = useState<number>(now.getMonth() + 1);
@@ -52,14 +52,7 @@ export default function ModelCostReportPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Model Cost Report</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Estimated token usage and spend from your own AI calls (Analyze + Optimizer layers)
-        </p>
-      </div>
-
-      <div className="bg-white border rounded-xl p-4 shadow-sm flex flex-wrap items-end gap-3">
+      <div className="bg-gray-50 border rounded-xl p-4 flex flex-wrap items-end gap-3">
         <div>
           <label className="block text-xs text-gray-500 mb-1">Year</label>
           <input
@@ -113,9 +106,9 @@ export default function ModelCostReportPage() {
       {!loading && !error && report && (
         <>
           <div className="bg-white border rounded-xl p-5 shadow-sm">
-            <h2 className="text-lg font-semibold text-gray-900">
+            <h3 className="text-lg font-semibold text-gray-900">
               {activeTab === "analyze" ? "Analyze Summary" : "Optimizer Summary"} - {fmtMonth(report.month)}
-            </h2>
+            </h3>
             <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="bg-gray-50 rounded-lg p-4 border">
                 <p className="text-xs text-gray-500">Month Total (USD)</p>
@@ -139,7 +132,7 @@ export default function ModelCostReportPage() {
           {activeTab === "analyze" ? (
             <>
               <section className="bg-white border rounded-xl p-5 shadow-sm overflow-auto">
-                <h3 className="font-semibold text-gray-900 mb-3">Daily Analyze Usage</h3>
+                <h4 className="font-semibold text-gray-900 mb-3">Daily Analyze Usage</h4>
                 <table className="w-full text-sm min-w-[820px]">
                   <thead>
                     <tr className="text-left text-gray-500 border-b">
@@ -176,7 +169,7 @@ export default function ModelCostReportPage() {
               </section>
 
               <section className="bg-white border rounded-xl p-5 shadow-sm overflow-auto">
-                <h3 className="font-semibold text-gray-900 mb-3">Analyze Monthly by Model</h3>
+                <h4 className="font-semibold text-gray-900 mb-3">Analyze Monthly by Model</h4>
                 <table className="w-full text-sm min-w-[760px]">
                   <thead>
                     <tr className="text-left text-gray-500 border-b">
@@ -213,7 +206,7 @@ export default function ModelCostReportPage() {
           ) : (
             <>
               <section className="bg-white border rounded-xl p-5 shadow-sm overflow-auto">
-                <h3 className="font-semibold text-gray-900 mb-3">Daily Optimizer Usage (By Layer)</h3>
+                <h4 className="font-semibold text-gray-900 mb-3">Daily Optimizer Usage (By Layer)</h4>
                 <table className="w-full text-sm min-w-[860px]">
                   <thead>
                     <tr className="text-left text-gray-500 border-b">
@@ -252,7 +245,7 @@ export default function ModelCostReportPage() {
               </section>
 
               <section className="bg-white border rounded-xl p-5 shadow-sm overflow-auto">
-                <h3 className="font-semibold text-gray-900 mb-3">Optimizer Monthly by Model + Layer</h3>
+                <h4 className="font-semibold text-gray-900 mb-3">Optimizer Monthly by Model + Layer</h4>
                 <table className="w-full text-sm min-w-[840px]">
                   <thead>
                     <tr className="text-left text-gray-500 border-b">

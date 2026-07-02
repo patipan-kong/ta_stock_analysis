@@ -34,6 +34,13 @@ export type DateRangeKey = "1M" | "3M" | "6M" | "YTD" | "1Y" | "ALL";
 
 export const DATE_RANGE_OPTIONS: DateRangeKey[] = ["1M", "3M", "6M", "YTD", "1Y", "ALL"];
 
+export const BENCHMARK_OPTIONS = [
+  { label: "SET + QQQ",   value: "^SET.BK,QQQ" },
+  { label: "SET Index",   value: "^SET.BK" },
+  { label: "QQQ (NASDAQ-100)", value: "QQQ" },
+  { label: "SPY (S&P 500)", value: "SPY" },
+];
+
 // ─── Monthly returns → heatmap matrix ────────────────────────────────────────
 
 export const MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];

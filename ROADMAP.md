@@ -104,6 +104,17 @@ Confidence Calibration History
 
 ----
 
+Stability Validation
+(1-3 วัน)
+
+↓
+
+Asset Registry Epic
+(Symbol Search, Master Data)
+↓
+Finish Phase 2
+(Rolling Metrics, Attribution)
+
 ## Phase 3 — Architecture Refactor
 
 เปลี่ยนจากระบบที่ "ใช้งานได้" เป็นระบบที่ "ขยายได้"

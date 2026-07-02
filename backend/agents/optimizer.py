@@ -230,7 +230,7 @@ def _normalize_allocations(allocs: list, pc_map: dict[str, float] | None = None)
             "action": str(a.get("action") or a.get("sig") or "HOLD").upper(),
             "allocation_change_percent": change_pct,
             "estimated_amount": 0,  # filled in by caller once total_value is known
-            "reason": str(a.get("reason") or ""),
+            "reason": str(a.get("reason") or a.get("r") or ""),
         })
     return [a for a in result if a["symbol"]]
 
@@ -948,29 +948,47 @@ score guide: 0-25=no action needed, 26-45=minor optimization, 46-70=moderate opp
 no_action_reason enum (use null if status=REBALANCE):
   WELL_BALANCED | LOW_CONFIDENCE | HIGH_DISAGREEMENT | CONSTRAINT_BLOCKED | MARKET_UNCERTAINTY | INSUFFICIENT_EDGE
 
-If any watchlist symbol with BUY/ACCUMULATE signal was evaluated but rejected due to sector limits,
-cash constraints, or portfolio count cap — list it in blocked_opportunities with the specific reason.
-
 Build a complete capital allocation plan. Challenge or confirm the Strategist's swaps.
-Use all 6 signals (ACCUMULATE|BUY|WATCH|HOLD|REDUCE|SELL) for every position.
 
-Weights are FLAT PERCENTAGES (e.g. 10.0 means 10% of portfolio). Do NOT output monetary amounts.
-The backend will compute change amounts from target_weight minus current_weight automatically.
+OUTPUT CONTRACT — this JSON is read by software, not a person; a separate step writes the human-readable
+report later. Do not spend output tokens on prose. Follow this priority order if you are running low on
+output budget: (1) allocations for existing holdings and BUY/ACCUMULATE/REDUCE/SELL decisions, (2) risk/
+constraint-violation notes, (3) portfolio_assessment, (4) blocked_opportunities, (5) watchlist WATCH rows,
+(6) any optional explanation. Never drop an allocation row to make room for longer text.
 
-Return JSON only. No markdown fences.
+ALLOCATIONS ARRAY:
+- Include every existing portfolio holding exactly once, with its action (ACCUMULATE|BUY|HOLD|REDUCE|SELL|WATCH).
+- Include a watchlist symbol only if you assign it BUY or ACCUMULATE, OR it is one of your top few WATCH-worthy
+  candidates with a specific reason (max 5 WATCH rows total). Do not add a row for every watchlist symbol —
+  omit ones with no actionable signal completely.
+- Weights are FLAT PERCENTAGES (10.0 = 10% of portfolio), not monetary amounts.
+- Omit current weight — the backend already has it; send only the target.
+- "r" = one reason, under 20 words. State each idea once — do not repeat it in "r", disagreements, and
+  portfolio_assessment.
+
+If a watchlist symbol with BUY/ACCUMULATE signal was evaluated but rejected (sector limit, cash constraint,
+portfolio count cap), list it in blocked_opportunities — but only the highest-priority rejections, max 5.
+Keep each "reason" under 10 words (e.g. "sector_limit_exceeded").
+
+disagreements[]: only material disagreements with Layer 1 (wrong signal, missed breach, constraint conflict).
+Skip informational observations. Max 5 entries, each under 20 words.
+
+portfolio_assessment: 2-3 sentences max — a decision summary, not an essay.
+
+Return JSON only. No markdown fences, no prose outside the JSON.
 
 {{
   "status": "REBALANCE|NO_ACTION",
   "rebalance_opportunity_score": 50,
   "no_action_reason": "WELL_BALANCED|LOW_CONFIDENCE|HIGH_DISAGREEMENT|CONSTRAINT_BLOCKED|MARKET_UNCERTAINTY|INSUFFICIENT_EDGE|null",
-  "no_action_summary": "short human-readable explanation when NO_ACTION, null otherwise",
+  "no_action_summary": "<20 words, null if REBALANCE",
   "blocked_opportunities": [{{"symbol":"X","signal":"BUY","reason":"sector_limit_exceeded|insufficient_cash|portfolio_count_cap"}}],
   "agrees_with_layer1": true,
-  "disagreements": ["detailed reason if any"],
-  "portfolio_assessment": "1-2 sentences",
+  "disagreements": ["<20 words each"],
+  "portfolio_assessment": "2-3 sentences",
   "cash_balance_target": 0.0,
   "allocations": [
-    {{"symbol":"X","current_weight":0.0,"target_weight":0.0,"action":"BUY|ACCUMULATE|HOLD|REDUCE|SELL|WATCH","reason":"concise"}}
+    {{"s":"X","tw":0.0,"sig":"BUY|ACCUMULATE|HOLD|REDUCE|SELL|WATCH","r":"<20 words"}}
   ]
 }}"""
 
@@ -1056,6 +1074,10 @@ Check for (use exact resolved severity thresholds — derived from active policy
 - MEDIUM   : sector {int(resolved_sector_cap * 0.6)}–{int(resolved_sector_cap * 0.8)}% of limit OR conflicting allocation math
 - LOW      : minor concentration risk, suboptimal but acceptable
 
+Only flag positions that actually cross a threshold above — do not add a LOW-severity row for every position that
+is merely fine. Max 8 risk_flags, "issue" under 15 words each. "auditor_notes" is a 1-2 sentence verdict — do not
+restate the risk_flags issue text there.
+
 Return JSON only. No markdown fences.
 
 {{
@@ -1095,19 +1117,24 @@ HARD RULES — you MUST follow all of these:
 5. target_weight values are FLAT PERCENTAGES (10.0 = 10% of portfolio), NOT monetary amounts
 6. Every existing portfolio holding must appear in allocations with an explicit action
 
+OUTPUT CONTRACT — this JSON is read by software; do not spend output tokens on prose. Watchlist symbols you are
+not recommending (no BUY/ACCUMULATE) do NOT need an allocations row — omit them, except up to 5 WATCH rows for
+your top-ranked candidates. "r"/"reason" is one line, under 20 words. blocked_opportunities and risk_flags: only
+the highest-priority items, max 5 each. Never drop an existing-holding allocation row to make room for text.
+
 Return ONLY valid JSON without markdown fences:
 {{
   "status": "REBALANCE|NO_ACTION",
   "rebalance_opportunity_score": 50,
   "no_action_reason": "WELL_BALANCED|LOW_CONFIDENCE|HIGH_DISAGREEMENT|CONSTRAINT_BLOCKED|MARKET_UNCERTAINTY|INSUFFICIENT_EDGE|null",
-  "no_action_summary": "short explanation if NO_ACTION, null otherwise",
+  "no_action_summary": "<20 words, null if REBALANCE",
   "blocked_opportunities": [{{"symbol":"X","signal":"BUY","reason":"sector_limit_exceeded|insufficient_cash|portfolio_count_cap"}}],
   "portfolio_assessment": "1-2 sentence summary of the plan",
   "cash_balance_target": 5.0,
   "allocations": [
-    {{"symbol":"X","current_weight":0.0,"target_weight":0.0,"action":"BUY|ACCUMULATE|HOLD|REDUCE|SELL|WATCH","reason":"concise"}}
+    {{"s":"X","tw":0.0,"sig":"BUY|ACCUMULATE|HOLD|REDUCE|SELL|WATCH","r":"<20 words"}}
   ],
-  "risk_flags": [],
+  "risk_flags": [{{"symbol":"...","issue":"<15 words","severity":"LOW|MEDIUM|HIGH|CRITICAL"}}],
   "final_risk_level": "low|medium|high|critical",
   "auditor_notes": "brief compliance note"
 }}"""
@@ -1291,7 +1318,7 @@ def _retry_l1_with_schema(
         minimal_prompt,
         l1_cfg["provider"],
         l1_cfg["model"],
-        max_tokens=800,
+        max_tokens=2048,
         use_schema=True,
         usage_operation="optimize",
         usage_layer="layer1_retry",
@@ -1474,7 +1501,7 @@ def run_layered_optimizer(
             )
             logger.info(f"L1 prompt chars: {len(l1_prompt)}")
             l1_raw = call_ai(
-                l1_prompt, l1_cfg["provider"], l1_cfg["model"], max_tokens=2048,
+                l1_prompt, l1_cfg["provider"], l1_cfg["model"], max_tokens=4096,
                 use_schema=True,
                 usage_operation="optimize", usage_layer="layer1",
             )

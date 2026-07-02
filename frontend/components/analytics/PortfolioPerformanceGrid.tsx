@@ -1,66 +1,27 @@
 "use client";
 
-import type {
-  PortfolioAnalyticsMetrics,
-  BenchmarkAnalyticsMetrics,
-  AllocationAnalyticsMetrics,
-} from "@/lib/api";
+import type { PortfolioAnalyticsMetrics, AllocationAnalyticsMetrics } from "@/lib/api";
 import { fmtPct, fmtNum, pnlColorClass } from "@/lib/analytics-transformers";
+import { KPICard, SkeletonCard } from "./KPICard";
 
-interface KPICardProps {
-  label: string;
-  value: string;
-  valueClass?: string;
-  sub?: string;
-  tooltip?: string;
-  highlight?: "positive" | "negative" | "neutral";
-  compact?: boolean;
-}
-
-function KPICard({ label, value, valueClass, sub, tooltip, compact }: KPICardProps) {
-  return (
-    <div
-      className="bg-white border border-gray-200 rounded-xl p-4 hover:border-gray-300 transition-colors"
-      title={tooltip}
-    >
-      <p className="text-xs text-gray-500 mb-1 font-medium">{label}</p>
-      <p className={`${compact ? "text-xs font-semibold leading-snug" : "text-lg font-bold"} tabular-nums ${valueClass ?? "text-gray-900"}`}>{value}</p>
-      {sub && <p className="text-xs text-gray-400 mt-0.5">{sub}</p>}
-    </div>
-  );
-}
-
-function SkeletonCard() {
-  return (
-    <div className="bg-white border border-gray-200 rounded-xl p-4 animate-pulse">
-      <div className="h-3 bg-gray-100 rounded w-20 mb-2" />
-      <div className="h-6 bg-gray-200 rounded w-24" />
-    </div>
-  );
-}
-
-interface KPIGridProps {
+interface PortfolioPerformanceGridProps {
   portfolioMetrics: PortfolioAnalyticsMetrics | null;
-  benchmarkMetrics: BenchmarkAnalyticsMetrics | null;
   allocationMetrics: AllocationAnalyticsMetrics | null;
   loading?: boolean;
 }
 
-export default function KPIGrid({
+export default function PortfolioPerformanceGrid({
   portfolioMetrics: pm,
-  benchmarkMetrics: bm,
   allocationMetrics: am,
   loading,
-}: KPIGridProps) {
+}: PortfolioPerformanceGridProps) {
   if (loading) {
     return (
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
-        {Array.from({ length: 10 }).map((_, i) => <SkeletonCard key={i} />)}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3">
+        {Array.from({ length: 7 }).map((_, i) => <SkeletonCard key={i} />)}
       </div>
     );
   }
-
-  const primaryBm = bm?.benchmarks?.[0] ?? null;
 
   const MIN_DAYS_FOR_ANN = 30;
   const spanDays = pm?.date_range?.from && pm?.date_range?.to
@@ -78,16 +39,13 @@ export default function KPIGrid({
   const vol         = pm?.volatility_pct ?? null;
   const sharpe      = pm?.sharpe_ratio ?? null;
   const winMonth    = pm?.monthly_win_rate?.win_rate ?? null;
-  const alpha       = primaryBm?.alpha ?? null;
-  const beta        = primaryBm?.beta ?? null;
-  const infoRatio   = primaryBm?.information_ratio ?? null;
   const cashPct     = am?.cash_utilization?.avg_cash_pct ?? null;
 
   const ddDays = pm?.max_drawdown?.duration_days;
   const ddSub  = ddDays != null ? `${ddDays}d recovery` : undefined;
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3">
       <KPICard
         label="Total Return"
         value={fmtPct(totalReturn)}
@@ -139,35 +97,6 @@ export default function KPIGrid({
         }
         sub={pm?.monthly_win_rate ? `${pm.monthly_win_rate.wins}W / ${pm.monthly_win_rate.losses}L` : undefined}
         tooltip="Percentage of calendar months with positive returns"
-      />
-      <KPICard
-        label="Alpha"
-        value={alpha != null ? fmtPct(alpha) : "—"}
-        valueClass={pnlColorClass(alpha)}
-        sub={primaryBm ? `vs ${primaryBm.symbol}` : undefined}
-        tooltip="Excess return above the benchmark (annualized, from OLS regression)"
-      />
-      <KPICard
-        label="Beta"
-        value={beta != null ? fmtNum(beta) : "—"}
-        valueClass={
-          beta == null  ? "text-gray-500"
-          : beta > 1.2  ? "text-amber-700"
-          : beta < 0.5  ? "text-blue-700"
-          : "text-gray-800"
-        }
-        tooltip="Sensitivity to benchmark moves. 1.0 = moves in lockstep"
-      />
-      <KPICard
-        label="Info Ratio"
-        value={infoRatio != null ? fmtNum(infoRatio) : "—"}
-        valueClass={
-          infoRatio == null  ? "text-gray-500"
-          : infoRatio >= 0.5 ? "text-green-700"
-          : infoRatio >= 0   ? "text-gray-800"
-          : "text-red-600"
-        }
-        tooltip="Active return / tracking error. Measures quality of alpha generation"
       />
       <KPICard
         label="Cash (avg)"

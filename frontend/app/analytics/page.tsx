@@ -14,6 +14,7 @@ import type {
   PerformanceComparisonResult,
 } from "@/lib/api";
 import {
+  DATE_RANGE_OPTIONS,
   filterByDateRange,
   rebaseToHundred,
   extractDrawdownSeries,
@@ -21,7 +22,8 @@ import {
 import type { DateRangeKey } from "@/lib/analytics-transformers";
 
 import AnalyticsFilters from "@/components/analytics/AnalyticsFilters";
-import KPIGrid from "@/components/analytics/KPIGrid";
+import PortfolioPerformanceGrid from "@/components/analytics/PortfolioPerformanceGrid";
+import BenchmarkComparisonGrid from "@/components/analytics/BenchmarkComparisonGrid";
 import MonthlyHeatmap from "@/components/analytics/MonthlyHeatmap";
 
 // Recharts components — lazy loaded to avoid SSR
@@ -195,67 +197,33 @@ export default function AnalyticsPage() {
       {/* ── Filters ────────────────────────────────────────────────────────── */}
       <AnalyticsFilters
         portfolioName={portfolioName}
-        dateRange={dateRange}
-        onDateRangeChange={setDateRange}
-        benchmark={benchmark}
-        onBenchmarkChange={(b) => setBenchmark(b)}
         snapshotCount={pm?.snapshot_count}
         dateFrom={pm?.date_range?.from}
         dateTo={pm?.date_range?.to}
       />
 
-      {/* ── KPI grid ───────────────────────────────────────────────────────── */}
-      <KPIGrid
-        portfolioMetrics={pm}
-        benchmarkMetrics={stats?.benchmark_metrics ?? null}
-        allocationMetrics={stats?.allocation_metrics ?? null}
-        loading={loading}
-      />
+      {/* ── Portfolio performance (absolute — does not depend on benchmark) ──── */}
+      <Section
+        title="Portfolio Performance"
+        subtitle="Describes the portfolio on its own — these figures do not change when you switch benchmarks below"
+      >
+        <PortfolioPerformanceGrid
+          portfolioMetrics={pm}
+          allocationMetrics={stats?.allocation_metrics ?? null}
+          loading={loading}
+        />
+      </Section>
 
       {/* ── Empty state ────────────────────────────────────────────────────── */}
       {!loading && !hasData && (
         <EmptyState message="No snapshot history found for this portfolio." />
       )}
 
-      {/* ── Equity curve ──────────────────────────────────────────────────── */}
-      {(loading || hasData) && (
-        <Section
-          title="Equity Curve"
-          subtitle="Portfolio vs benchmark — normalized to 100 at the selected start. Benchmarks shown as dashed lines."
-        >
-          {loading ? (
-            <div className="h-72 animate-pulse bg-gray-100 rounded-xl" />
-          ) : (
-            <EquityCurveChart
-              data={equityData}
-              series={comparison?.series ?? []}
-            />
-          )}
-        </Section>
-      )}
-
-      {/* ── Drawdown ──────────────────────────────────────────────────────── */}
-      {(loading || hasData) && (
-        <Section
-          title="Drawdown"
-          subtitle="Peak-to-trough decline from historical high-water mark"
-        >
-          {loading ? (
-            <div className="h-36 animate-pulse bg-gray-100 rounded-xl" />
-          ) : (
-            <DrawdownChart
-              data={drawdownData}
-              maxDrawdown={pm?.max_drawdown?.max_drawdown_pct}
-            />
-          )}
-        </Section>
-      )}
-
-      {/* ── Monthly returns ─────────────────────────────────────────────────── */}
+      {/* Monthly returns */}
       {(loading || hasData) && (
         <Section
           title="Monthly Returns"
-          subtitle="Calendar heatmap — compounded within year for annual total"
+          subtitle="Calendar heatmap - compounded within year for annual total"
         >
           {loading ? (
             <div className="h-48 animate-pulse bg-gray-100 rounded-xl" />
@@ -264,6 +232,84 @@ export default function AnalyticsPage() {
               monthlyReturns={pm?.monthly_win_rate?.monthly_returns ?? []}
             />
           )}
+        </Section>
+      )}
+
+      {/* ── Benchmark comparison (relative — updates when benchmark changes) ── */}
+      {(loading || hasData) && (
+        <Section
+          title="Benchmark Comparison"
+          subtitle="How the portfolio performed relative to the selected benchmark"
+        >
+          <BenchmarkComparisonGrid
+            benchmarkMetrics={stats?.benchmark_metrics ?? null}
+            benchmark={benchmark}
+            onBenchmarkChange={setBenchmark}
+            loading={loading}
+          />
+        </Section>
+      )}
+
+      {/* Performance charts */}
+      {(loading || hasData) && (
+        <Section
+          title="Performance Charts"
+          subtitle="Drawdown and normalized equity curve for the selected time range"
+        >
+          <div className="space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <span className="text-xs text-gray-500 font-medium">Time Range</span>
+              <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5 w-fit">
+                {DATE_RANGE_OPTIONS.map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => setDateRange(r)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                      dateRange === r
+                        ? "bg-white text-blue-700 shadow-sm"
+                        : "text-gray-500 hover:text-gray-700"
+                    }`}
+                  >
+                    {r}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-3">
+                <h3 className="text-xs font-semibold text-gray-700">Drawdown</h3>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Peak-to-trough decline from historical high-water mark
+                </p>
+              </div>
+              {loading ? (
+                <div className="h-36 animate-pulse bg-gray-100 rounded-xl" />
+              ) : (
+                <DrawdownChart
+                  data={drawdownData}
+                  maxDrawdown={pm?.max_drawdown?.max_drawdown_pct}
+                />
+              )}
+            </div>
+
+            <div className="pt-5 border-t border-gray-100">
+              <div className="mb-3">
+                <h3 className="text-xs font-semibold text-gray-700">Equity Curve</h3>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Portfolio vs benchmark - normalized to 100 at the selected start. Benchmarks shown as dashed lines.
+                </p>
+              </div>
+              {loading ? (
+                <div className="h-72 animate-pulse bg-gray-100 rounded-xl" />
+              ) : (
+                <EquityCurveChart
+                  data={equityData}
+                  series={comparison?.series ?? []}
+                />
+              )}
+            </div>
+          </div>
         </Section>
       )}
 
@@ -295,121 +341,7 @@ export default function AnalyticsPage() {
         </Section>
       )}
 
-      {/* ── Benchmark detail ────────────────────────────────────────────────── */}
-      {!loading && (stats?.benchmark_metrics?.benchmarks?.length ?? 0) > 0 && stats && (() => {
-        const benches = stats.benchmark_metrics.benchmarks;
-        const allErrors = benches.every((b) => !!b.error);
-        return (
-          <Section
-            title="Benchmark Comparison Detail"
-            subtitle="Alpha/Beta/R² from OLS regression of daily returns against each benchmark"
-          >
-            {allErrors && (
-              <div className="mb-4 flex items-start gap-3 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
-                <span className="text-amber-500 mt-0.5">⚠</span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-amber-800">ไม่มีข้อมูล benchmark ประวัติ</p>
-                  <p className="text-xs text-amber-600 mt-0.5">
-                    ต้องดึงข้อมูลราคาย้อนหลังก่อน — กด Backfill เพื่อโหลดจาก yfinance
-                  </p>
-                  {backfillMsg && (
-                    <p className="text-xs text-amber-700 mt-1 font-medium">{backfillMsg}</p>
-                  )}
-                </div>
-                <button
-                  onClick={handleBackfill}
-                  disabled={backfilling}
-                  className="shrink-0 text-xs font-medium px-3 py-1.5 rounded-md bg-amber-100 text-amber-800 hover:bg-amber-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {backfilling ? "Loading…" : "Backfill"}
-                </button>
-              </div>
-            )}
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs text-gray-500 border-b">
-                    {["Benchmark", "Alpha", "Beta", "R²", "Correlation", "Tracking Err", "Info Ratio", "Days"].map((h) => (
-                      <th key={h} className="py-2 pr-4 font-medium">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {benches.map((b) => {
-                    if (b.error) {
-                      const msg = b.error === "insufficient_benchmark_data"
-                        ? "ยังไม่มีข้อมูลราคา benchmark — กด Backfill"
-                        : b.error === "insufficient_aligned_data"
-                        ? `จุดข้อมูลที่ตรงกันน้อยเกินไป (${b.aligned_days ?? 0}d)`
-                        : b.error;
-                      return (
-                        <tr key={b.symbol} className="border-b last:border-0">
-                          <td className="py-2.5 pr-4">
-                            <span className="font-semibold text-blue-700">{b.symbol}</span>
-                          </td>
-                          <td colSpan={7} className="py-2.5 text-xs text-amber-600 italic">{msg}</td>
-                        </tr>
-                      );
-                    }
-                    const fmtR = (v: number | null, d = 2) =>
-                      v != null ? v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) : "—";
-                    const isUnreliable = b.statistical_confidence === "UNRELIABLE";
-                    const isLow = b.statistical_confidence === "LOW";
-                    const dimClass = isUnreliable ? "opacity-40" : isLow ? "opacity-60" : "";
-                    const hasLowSample = b.warnings?.includes("LOW_SAMPLE_SIZE");
-                    const hasUnreliableRegression = b.warnings?.includes("UNRELIABLE_REGRESSION");
-                    const hasSuspectAlpha = b.warnings?.includes("SUSPECT_ALPHA");
-                    return (
-                      <tr key={b.symbol} className="border-b last:border-0 hover:bg-gray-50">
-                        <td className="py-2.5 pr-4">
-                          <span className="font-semibold text-blue-700">{b.symbol}</span>
-                          <div className="flex flex-wrap gap-1 mt-1">
-                            {hasLowSample && (
-                              <span className="text-xs px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded font-medium">
-                                Low sample ({b.aligned_days}d)
-                              </span>
-                            )}
-                            {hasUnreliableRegression && (
-                              <span className="text-xs px-1.5 py-0.5 bg-red-100 text-red-600 rounded font-medium">
-                                Unreliable regression
-                              </span>
-                            )}
-                            {hasSuspectAlpha && !hasUnreliableRegression && (
-                              <span className="text-xs px-1.5 py-0.5 bg-orange-100 text-orange-600 rounded font-medium">
-                                Suspect alpha
-                              </span>
-                            )}
-                            {!hasLowSample && !hasUnreliableRegression && !hasSuspectAlpha && (
-                              <span className="text-xs text-gray-400">{b.aligned_days}d · {b.data_quality ?? "—"}</span>
-                            )}
-                          </div>
-                        </td>
-                        <td className={`py-2.5 pr-4 font-medium tabular-nums ${dimClass} ${b.alpha == null ? "text-gray-400" : b.alpha >= 0 ? "text-green-700" : "text-red-600"}`}>
-                          {b.alpha != null ? `${b.alpha >= 0 ? "+" : ""}${b.alpha.toFixed(2)}%` : "—"}
-                        </td>
-                        <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>{fmtR(b.beta)}</td>
-                        <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>{fmtR(b.r_squared)}</td>
-                        <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>{fmtR(b.correlation)}</td>
-                        <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>
-                          {b.tracking_error_pct != null ? `${b.tracking_error_pct.toFixed(2)}%` : "—"}
-                        </td>
-                        <td className={`py-2.5 pr-4 text-gray-700 tabular-nums ${dimClass}`}>{fmtR(b.information_ratio)}</td>
-                        <td className="py-2.5 text-gray-500">{b.aligned_days}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            {benches.some((b) => !b.error && (b.warnings?.length ?? 0) > 0) && (
-              <p className="mt-3 text-xs text-gray-400">
-                Dimmed metrics have limited statistical reliability. Regression requires ≥ 60 aligned trading days for stable estimates;
-                results from shorter periods should be treated as indicative only.
-              </p>
-            )}
-          </Section>
-        );
-      })()}
+      
 
       {/* ── Data freshness footer ───────────────────────────────────────────── */}
       {stats && (
