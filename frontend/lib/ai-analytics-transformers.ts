@@ -192,6 +192,42 @@ export function fallbackHealth(rate: number | null | undefined): HealthLevel {
   return "problem";
 }
 
+// ─── System Health — shared thresholds for every health card ────────────────
+// Single home for level logic so every System Health card (AI providers,
+// optimizer pipeline, policy engine, market data, portfolio engine,
+// background jobs) reads the same green/amber/red/gray model.
+
+export function ageHealth(minutes: number | null | undefined): HealthLevel {
+  if (minutes == null) return "unknown";
+  if (minutes < 30) return "healthy";
+  if (minutes < 240) return "warning"; // < 4 hours
+  return "problem";
+}
+
+export function booleanHealth(ok: boolean | null | undefined): HealthLevel {
+  if (ok == null) return "unknown";
+  return ok ? "healthy" : "problem";
+}
+
+export function invertedBooleanHealth(bad: boolean | null | undefined): HealthLevel {
+  if (bad == null) return "unknown";
+  return bad ? "problem" : "healthy";
+}
+
+export function schedulerRunHealth(status: string | null | undefined): HealthLevel {
+  if (status === "completed") return "healthy";
+  if (status === "running") return "healthy";
+  if (status === "partial_failure") return "warning";
+  if (status === "failed") return "problem";
+  return "unknown";
+}
+
+export function policyEngineHealth(status: string | null | undefined): HealthLevel {
+  if (status === "ACTIVE") return "healthy";
+  if (status === "DISABLED_FALLBACK") return "problem";
+  return "unknown";
+}
+
 // ─── Formatters ─────────────────────────────────────────────────────────────────
 
 export function fmtMs(v: number | null | undefined): string {
@@ -212,6 +248,21 @@ export function fmtInt(n: number | null | undefined): string {
 export function fmtPct01(n: number | null | undefined): string {
   if (n == null) return "N/A";
   return `${(n * 100).toFixed(1)}%`;
+}
+
+export function fmtAgeMinutes(minutes: number | null | undefined): string {
+  if (minutes == null) return "Unknown";
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${Math.round(minutes)} min ago`;
+  if (minutes < 60 * 24) return `${(minutes / 60).toFixed(1)} hr ago`;
+  return `${(minutes / 60 / 24).toFixed(1)} days ago`;
+}
+
+export function fmtTimestamp(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString("en-US", {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
 }
 
 export function bucketLabel(bucket: string, granularity: Granularity): string {

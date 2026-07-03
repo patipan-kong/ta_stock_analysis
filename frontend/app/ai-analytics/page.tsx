@@ -2,13 +2,14 @@
 
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import { getAiAnalytics, type AiAnalytics } from "@/lib/api";
+import { getAiAnalytics, getSystemHealth, type AiAnalytics, type SystemHealth } from "@/lib/api";
 import { KPICard } from "@/components/analytics/KPICard";
 import { fmtMs, fmtUsd, fmtInt, fmtPct01, fallbackHealth } from "@/lib/ai-analytics-transformers";
 
 import ModelLeaderboard from "@/components/analytics/ai/ModelLeaderboard";
 import LayerHeatmap from "@/components/analytics/ai/LayerHeatmap";
 import ReliabilitySection from "@/components/analytics/ai/ReliabilitySection";
+import SystemHealthSection from "@/components/analytics/ai/SystemHealthSection";
 import CostReportSection from "@/components/analytics/ai/CostReportSection";
 import RecentActivityTable from "@/components/analytics/ai/RecentActivityTable";
 
@@ -50,6 +51,7 @@ function Section({
 }
 
 const JUMP_LINKS = [
+  { id: "system-health", label: "System Health" },
   { id: "leaderboard", label: "Leaderboard" },
   { id: "heatmap", label: "Layer Heatmap" },
   { id: "cost", label: "Cost" },
@@ -81,6 +83,7 @@ export default function AiAnalyticsPage() {
   const [error, setError] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+  const [health, setHealth] = useState<SystemHealth | null>(null);
 
   function load(from: string, to: string) {
     setLoading(true);
@@ -92,6 +95,8 @@ export default function AiAnalyticsPage() {
 
   useEffect(() => {
     load("", "");
+    // System Health is a live operational snapshot, not affected by the date filter above.
+    getSystemHealth().then(setHealth).catch(() => setHealth(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -186,6 +191,15 @@ export default function AiAnalyticsPage() {
           }
         />
       </div>
+
+      {/* ── Section 0: System Health ───────────────────────────────────────── */}
+      <Section
+        id="system-health"
+        title="System Health"
+        subtitle="At-a-glance operational health for every AI subsystem — degraded modes and fallbacks never hide silently"
+      >
+        {health ? <SystemHealthSection health={health} /> : <div className="h-40 animate-pulse bg-gray-100 rounded-xl" />}
+      </Section>
 
       {/* ── Section 1: Leaderboard ─────────────────────────────────────────── */}
       <Section id="leaderboard" title="AI Model Leaderboard" subtitle="Best performing models — sortable by speed, cost, tokens, and reliability">

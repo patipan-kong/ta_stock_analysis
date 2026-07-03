@@ -485,11 +485,18 @@ def apply_stabilization(
         stabilized_status = original_status  # pass through as REBALANCE
 
     # ── 6. Mark within-tolerance allocations (for frontend badge) ────────────
+    # Only meaningful when the overall run is still REBALANCE (a mixed bag —
+    # some positions need action, others don't). HOLD rows don't need the
+    # badge (they render as "N positions held unchanged" already); every
+    # other action, including WATCH, gets tagged so the table and the
+    # Portfolio Drift card never disagree about the same position.
+    drift_by_symbol = {d.symbol: d.allocation_drift for d in drift_analysis}
     if stabilized_status == "REBALANCE":
         for a in target_allocations:
             sym = a.get("symbol")
-            if sym in suppressed_syms and (a.get("action") or "HOLD").upper() not in ("HOLD", "WATCH", "SELL"):
+            if sym in suppressed_syms and (a.get("action") or "HOLD").upper() != "HOLD":
                 a["within_drift_tolerance"] = True
+                a["allocation_drift_pct"] = drift_by_symbol.get(sym)
 
     # ── 7. Patch result fields when status overridden ────────────────────────
     result = dict(result)

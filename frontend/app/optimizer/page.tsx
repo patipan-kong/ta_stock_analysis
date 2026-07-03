@@ -17,12 +17,14 @@ import MarketRegimeCard from "@/components/MarketRegimeCard";
 import ActivePolicyEnvelopeCard from "@/components/ActivePolicyEnvelopeCard";
 import AttributionPanel from "@/components/AttributionPanel";
 import OperationsTimeline from "@/components/operations-center/quant/OperationsTimeline";
-import OptimizerActionSummary from "@/components/optimizer/OptimizerActionSummary";
+import ExecutionPlanCard from "@/components/optimizer/ExecutionPlanCard";
+import { isDeferred, NO_ACTION_REASON_LABELS } from "@/lib/executionPlan";
 import PersonaMatchCard from "@/components/PersonaMatchCard";
+import { ReasonCell, type ReasonFact } from "@/components/ReasonCell";
 import type {
-  OptimizerResult, OptimizerHistoryItem, TargetAllocation, AllocationAction, ActionSummary,
+  OptimizerResult, OptimizerHistoryItem, TargetAllocation, AllocationAction,
   WatchlistRanking, Layer2Result, Layer3Result, OptimizerConsensus, RiskFlag, SectorWarning,
-  BlockedOpportunity, NoActionReason, SwapSuggestion, ConsensusType,
+  BlockedOpportunity, SwapSuggestion, ConsensusType,
   StrategyPersona, StrategyProfile, PortfolioDNA, MarketRegime,
   ActivePolicy, ExecutionDecision, ExecutionDecisionType, OverrideCategoryType,
   DecisionMemoryEntry, ShadowPerformanceSummary, ExecutionRisk, OperationsCenterStatus,
@@ -246,25 +248,6 @@ function Spinner({ size = "sm" }: { size?: "sm" | "lg" }) {
   return <span className={`inline-block rounded-full animate-spin ${cls}`} />;
 }
 
-// ─── Action badge ─────────────────────────────────────────────────────────────
-
-const ACTION_CLS: Record<AllocationAction, string> = {
-  BUY:        "bg-green-600 text-white",
-  ACCUMULATE: "bg-teal-600 text-white",
-  HOLD:       "bg-gray-400 text-white",
-  WATCH:      "bg-blue-500 text-white",
-  REDUCE:     "bg-amber-500 text-white",
-  SELL:       "bg-red-600 text-white",
-};
-
-function ActionBadge({ action }: { action: AllocationAction }) {
-  return (
-    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${ACTION_CLS[action] ?? "bg-gray-300 text-gray-700"}`}>
-      {action}
-    </span>
-  );
-}
-
 // ─── Execution warning badge ──────────────────────────────────────────────────
 
 const EXEC_RISK_CLS: Record<ExecutionRisk, string> = {
@@ -306,6 +289,56 @@ function ExecutionWarningBadges({
       )}
     </span>
   );
+}
+
+// ─── Reason context/facts builders (feed the shared ReasonCell) ──────────────
+// Both tables switch to table-fixed at lg+ with narrow widths pinned on every
+// other column, so Reason is the one column left unsized — it absorbs all
+// remaining table width instead of sitting at a fixed max-width.
+//
+// `context` (collapsed line 2) and `facts` (expanded detail) are derived here
+// from fields the backend already attaches by symbol lookup (ta_score, fa_score,
+// pe_ratio, roe, timing_score — see _apply_score_context in agents/optimizer.py)
+// rather than asked of the AI, per the "generate expanded detail from existing
+// deterministic fields, not longer AI prose" rule.
+
+function allocationReasonContext(a: TargetAllocation): string | undefined {
+  if (a.action === "REDUCE") return `Trim to ${a.target_weight.toFixed(1)}%`;
+  const chips: string[] = [];
+  if (a.timing_score != null) chips.push(`TS${Math.round(a.timing_score)}`);
+  if (a.fa_score != null) chips.push(`FA${Math.round(a.fa_score)}`);
+  if (a.pe_ratio != null) chips.push(`PE${a.pe_ratio.toFixed(1)}`);
+  return chips.length > 0 ? chips.join(" • ") : a.sector;
+}
+
+function allocationReasonFacts(a: TargetAllocation): ReasonFact[] {
+  const facts: ReasonFact[] = [];
+  if (a.timing_score != null) facts.push({ label: "Timing Score", value: a.timing_score.toFixed(0) });
+  if (a.fa_score != null) facts.push({ label: "Fundamental Score", value: a.fa_score.toFixed(0) });
+  if (a.ta_score != null) facts.push({ label: "Technical Score", value: a.ta_score.toFixed(0) });
+  if (a.pe_ratio != null) facts.push({ label: "P/E", value: a.pe_ratio.toFixed(2) });
+  if (a.roe != null) facts.push({ label: "ROE", value: `${a.roe.toFixed(1)}%` });
+  if (a.sector) facts.push({ label: "Sector", value: a.sector });
+  return facts;
+}
+
+function swapReasonContext(s: SwapSuggestion): string | undefined {
+  const chips: string[] = [];
+  if (s.timing_score != null) chips.push(`TS${Math.round(s.timing_score)}`);
+  if (s.fa_score != null) chips.push(`FA${Math.round(s.fa_score)}`);
+  if (s.pe_ratio != null) chips.push(`PE${s.pe_ratio.toFixed(1)}`);
+  return chips.length > 0 ? chips.join(" • ") : s.sector;
+}
+
+function swapReasonFacts(s: SwapSuggestion): ReasonFact[] {
+  const facts: ReasonFact[] = [];
+  if (s.timing_score != null) facts.push({ label: "Timing Score", value: s.timing_score.toFixed(0) });
+  if (s.fa_score != null) facts.push({ label: "Fundamental Score", value: s.fa_score.toFixed(0) });
+  if (s.ta_score != null) facts.push({ label: "Technical Score", value: s.ta_score.toFixed(0) });
+  if (s.pe_ratio != null) facts.push({ label: "P/E", value: s.pe_ratio.toFixed(2) });
+  if (s.roe != null) facts.push({ label: "ROE", value: `${s.roe.toFixed(1)}%` });
+  if (s.sector) facts.push({ label: "Sector", value: s.sector });
+  return facts;
 }
 
 // ─── Allocation Table ─────────────────────────────────────────────────────────
@@ -356,15 +389,15 @@ function AllocationTable({
     <div className="space-y-3">
       {title && <p className="text-xs font-medium text-gray-500">{title}</p>}
       <div className="overflow-x-auto">
-        <table className="min-w-full text-xs">
+        <table className="min-w-full text-xs lg:table-fixed">
           <thead>
             <tr className="border-b text-left text-gray-400">
-              <th className="pb-1.5 pr-3">Symbol</th>
-              <th className="pb-1.5 pr-3">Action</th>
-              <th className="pb-1.5 pr-3 text-right">Current%</th>
-              <th className="pb-1.5 pr-3 text-right">Target%</th>
-              <th className="pb-1.5 pr-3 text-right">Change%</th>
-              {totalValue && totalValue > 0 && <th className="pb-1.5 pr-3 text-right">Est. Amount</th>}
+              <th className="pb-1.5 pr-3 lg:w-32">Symbol</th>
+              <th className="pb-1.5 pr-3 lg:w-24">AI Signal</th>
+              <th className="pb-1.5 pr-2 text-right lg:w-12">Current%</th>
+              <th className="pb-1.5 pr-2 text-right lg:w-12">Target%</th>
+              <th className="pb-1.5 pr-2 text-right lg:w-14">Change%</th>
+              {totalValue && totalValue > 0 && <th className="pb-1.5 pr-2 text-right lg:w-24">Cash Impact</th>}
               <th className="pb-1.5">Reason</th>
             </tr>
           </thead>
@@ -382,7 +415,10 @@ function AllocationTable({
               const a = row.item;
               const chg = a.allocation_change_percent;
               const chgCls = chg > 0 ? "text-green-600 font-semibold" : chg < 0 ? "text-red-500 font-semibold" : "text-gray-400";
-              const amt = a.estimated_amount || (totalValue ? Math.round(totalValue * Math.abs(chg) / 100) : 0);
+              // Signed cash flow: positive = cash required (BUY/ACCUMULATE), negative = cash
+              // released (REDUCE/SELL). Already computed once by the optimizer from
+              // allocation_change_percent × total_value — reused as-is, not recalculated.
+              const amt = a.estimated_amount;
               return (
                 <tr key={a.symbol} className="border-b hover:bg-gray-50">
                   <td className="py-1.5 pr-3">
@@ -401,22 +437,48 @@ function AllocationTable({
                       )}
                     </div>
                   </td>
-                  <td className="py-1.5 pr-3"><ActionBadge action={a.action as AllocationAction} /></td>
-                  <td className="py-1.5 pr-3 text-right text-gray-500">{a.current_weight.toFixed(1)}%</td>
-                  <td className="py-1.5 pr-3 text-right font-medium">{a.target_weight.toFixed(1)}%</td>
-                  <td className={`py-1.5 pr-3 text-right ${chgCls}`}>
+                  <td className="py-1.5 pr-3">
+                    <div className="flex flex-col gap-0.5 items-start">
+                      <SignalBadge signal={a.action} />
+                      {a.within_drift_tolerance && (
+                        <span
+                          className="text-[10px] font-medium px-1.5 py-0.5 rounded border bg-gray-50 text-gray-500 border-gray-200"
+                          title={
+                            a.allocation_drift_pct != null
+                              ? `${a.allocation_drift_pct.toFixed(1)}% drift — within tolerance, deferrable`
+                              : "Within drift tolerance — deferrable"
+                          }
+                        >
+                          Within tolerance
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="py-1.5 pr-2 text-right text-gray-500">{a.current_weight.toFixed(1)}%</td>
+                  <td className="py-1.5 pr-2 text-right font-medium">{a.target_weight.toFixed(1)}%</td>
+                  <td className={`py-1.5 pr-2 text-right ${chgCls}`}>
                     {chg >= 0 ? "+" : ""}{chg.toFixed(1)}%
                   </td>
                   {totalValue && totalValue > 0 && (
-                    <td className="py-1.5 pr-3 text-right text-gray-600">
-                      {amt > 0 ? `฿${amt.toLocaleString("th-TH")}` : "—"}
+                    <td className="py-1.5 pr-2 text-right">
+                      {isDeferred(a) ? (
+                        <span className="text-gray-400 italic text-xs">No action today</span>
+                      ) : amt === 0 ? (
+                        <span className={chgCls}>—</span>
+                      ) : amt > 0 ? (
+                        <span className={chgCls}>฿{amt.toLocaleString("th-TH")} <span className="text-gray-400 font-normal">required</span></span>
+                      ) : (
+                        <span className={chgCls}>฿{Math.abs(amt).toLocaleString("th-TH")} <span className="text-gray-400 font-normal">released</span></span>
+                      )}
                     </td>
                   )}
-                  <td className="py-1.5 text-gray-500 max-w-xs truncate" title={a.noise_suppressed ? a.noise_reason : a.reason}>
-                    {a.noise_suppressed
-                      ? <span className="text-amber-600 italic">{a.noise_reason}</span>
-                      : a.reason}
-                  </td>
+                  <ReasonCell
+                    reason={a.noise_suppressed ? a.noise_reason : a.reason}
+                    context={a.noise_suppressed ? undefined : allocationReasonContext(a)}
+                    facts={a.noise_suppressed ? [] : allocationReasonFacts(a)}
+                    italic={!!a.noise_suppressed}
+                    action={a.action}
+                  />
                 </tr>
               );
             })}
@@ -502,13 +564,13 @@ function SwapTable({ swaps }: { swaps: SwapSuggestion[] }) {
   }
   return (
     <div className="overflow-x-auto">
-      <table className="min-w-full text-xs">
+      <table className="min-w-full text-xs lg:table-fixed">
         <thead>
           <tr className="border-b text-left text-gray-400">
-            <th className="pb-1.5 pr-3">Type</th>
-            <th className="pb-1.5 pr-3">Sell</th>
-            <th className="pb-1.5 pr-3">Buy</th>
-            <th className="pb-1.5 pr-3 text-right">Score Δ</th>
+            <th className="pb-1.5 pr-3 lg:w-20">Type</th>
+            <th className="pb-1.5 pr-3 lg:w-24">Sell</th>
+            <th className="pb-1.5 pr-3 lg:w-24">Buy</th>
+            <th className="pb-1.5 pr-3 text-right lg:w-16">Score Δ</th>
             <th className="pb-1.5">Reason</th>
           </tr>
         </thead>
@@ -540,7 +602,7 @@ function SwapTable({ swaps }: { swaps: SwapSuggestion[] }) {
                 <td className={`py-1.5 pr-3 text-right font-semibold ${delta >= 0 ? "text-green-600" : "text-red-500"}`}>
                   {delta >= 0 ? "+" : ""}{delta.toFixed(1)}
                 </td>
-                <td className="py-1.5 text-gray-500 max-w-xs truncate" title={s.reason}>{s.reason}</td>
+                <ReasonCell reason={s.reason} context={swapReasonContext(s)} facts={swapReasonFacts(s)} action={s.type} />
               </tr>
             );
           })}
@@ -585,16 +647,7 @@ function RiskFlagPill({ flag }: { flag: RiskFlag }) {
 
 
 // ─── NO_ACTION display helpers ────────────────────────────────────────────────
-
-const NO_ACTION_REASON_LABELS: Record<NoActionReason, string> = {
-  WELL_BALANCED:       "Well Balanced",
-  LOW_CONFIDENCE:      "Low Confidence",
-  HIGH_DISAGREEMENT:   "High Disagreement",
-  CONSTRAINT_BLOCKED:  "Constraint Blocked",
-  MARKET_UNCERTAINTY:  "Market Uncertainty",
-  INSUFFICIENT_EDGE:   "Insufficient Edge",
-  COOLDOWN_ACTIVE:     "Cooldown Active",
-};
+// NO_ACTION_REASON_LABELS moved to lib/executionPlan.ts (shared with ExecutionPlanCard).
 
 const BLOCKED_REASON_LABELS: Record<string, string> = {
   sector_limit_exceeded: "Sector limit exceeded",
@@ -686,11 +739,7 @@ function NoActionCard({ result }: { result: OptimizerResult }) {
                   >
                     {sym}{b.symbol.endsWith(".BK") && <span className="text-xs text-gray-400 ml-0.5">.BK</span>}
                   </Link>
-                  {b.signal && (
-                    <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full shrink-0 ${ACTION_CLS[b.signal as AllocationAction] ?? "bg-gray-200 text-gray-700"}`}>
-                      {b.signal}
-                    </span>
-                  )}
+                  {b.signal && <SignalBadge signal={b.signal} />}
                   <span className="text-xs text-gray-500 shrink-0">—</span>
                   <span className="text-xs text-gray-600">{reasonLabel}</span>
                 </div>
@@ -766,7 +815,9 @@ function StabilizationCard({
             <h3 className={`font-bold text-base ${cfg.text}`}>{cfg.label}</h3>
             <StabilizationStatusBadge status={status} />
           </div>
-          <p className="text-xs text-gray-400 mt-0.5">Based on current optimizer targets</p>
+          <p className="text-xs text-gray-400 mt-0.5">
+            How far each position has drifted from its optimizer target, and whether that's enough to justify trading today.
+          </p>
           {meta.reason && (
             <p className={`text-sm mt-1 leading-relaxed ${cfg.text} opacity-80`}>{meta.reason}</p>
           )}
@@ -1357,6 +1408,12 @@ function ConsensusSection({ consensus }: { consensus: OptimizerConsensus }) {
 
 // ─── Portfolio Metrics Bar ────────────────────────────────────────────────────
 
+// Sums the same `estimated_amount` field already rendered per-row in the
+// rebalance table (backend-computed, signed) — pure aggregation of data
+// already on hand, not a new calculation. Rows deferred by either governance
+// layer (noise filter or drift-tolerance — see `isDeferred` in AllocationTable)
+// are excluded so this reflects cash needed for trades actually happening
+// today, not the full theoretical rebalance.
 function PortfolioMetricsBar({ result }: { result: OptimizerResult }) {
   const cash = result.cash_balance ?? 0;
   const total = result.total_value ?? 0;
@@ -1842,6 +1899,9 @@ function extractAccumulationSymbols(result: OptimizerResult): string[] {
   return out;
 }
 
+// Deliberately styled apart from the blue "follow the AI recommendation" path
+// (ExecutionPlanCard, DecisionActionPanel): dashed violet border + "Optional"
+// badge signal this is a separate sandbox, not the next required step.
 function SendToWorkspaceButton({
   result,
   onSend,
@@ -1853,23 +1913,34 @@ function SendToWorkspaceButton({
   const hasSymbols = symbols.length > 0;
 
   return (
-    <section className="bg-blue-50 border border-blue-200 rounded-xl p-4 shadow-sm space-y-3">
+    <section className="bg-violet-50/40 border border-dashed border-violet-200 rounded-xl p-4 space-y-3">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <p className="text-sm font-semibold text-blue-900">Analyze in Decision Workspace</p>
-          <p className="text-xs text-blue-600 mt-0.5">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-sm font-semibold text-violet-900">🧪 Decision Workspace</p>
+            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-violet-100 border border-violet-300 text-violet-700 uppercase tracking-wide">
+              Optional
+            </span>
+          </div>
+          <p className="text-xs text-violet-700/80 mt-1 max-w-xl">
+            A separate what-if sandbox for exploring alternative ideas — it does not
+            modify or replace the recommendation above. Use it only if you want to
+            challenge or compare against this Execution Plan.
+          </p>
+          <p className="text-xs text-violet-600/70 mt-1">
             {hasSymbols
-              ? `${symbols.length} accumulation candidate${symbols.length !== 1 ? "s" : ""} (BUY / ACCUMULATE) ready for committee review`
-              : "No accumulation candidates — only reductions suggested"}
+              ? `${symbols.length} accumulation candidate${symbols.length !== 1 ? "s" : ""} (BUY / ACCUMULATE) available to seed the sandbox`
+              : "No accumulation candidates — only reductions were suggested"}
+            {" "}— allocations there are recalculated from scratch, not copied from this recommendation.
           </p>
         </div>
         <button
           onClick={() => onSend(symbols)}
           disabled={!hasSymbols}
-          className="shrink-0 flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold
-                     text-white transition hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="shrink-0 flex items-center gap-1.5 rounded-lg border border-violet-300 bg-white px-4 py-2 text-xs font-semibold
+                     text-violet-700 transition hover:bg-violet-100 disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          Analyze Selected Ideas →
+          Run What-if Analysis →
         </button>
       </div>
       {hasSymbols && (
@@ -1877,15 +1948,52 @@ function SendToWorkspaceButton({
           {symbols.map((sym) => (
             <span
               key={sym}
-              className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded bg-blue-100 border border-blue-200 text-blue-800"
+              className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded bg-white border border-violet-200 text-violet-700"
             >
               {sym.replace(".BK", "")}
-              {sym.endsWith(".BK") && <span className="text-blue-400">.BK</span>}
+              {sym.endsWith(".BK") && <span className="text-violet-400">.BK</span>}
             </span>
           ))}
         </div>
       )}
     </section>
+  );
+}
+
+// ─── Section Label (lightweight IA grouping, no visual chrome) ───────────────
+
+function SectionLabel({ id, children }: { id?: string; children: ReactNode }) {
+  return (
+    <p id={id} className="text-xs font-semibold text-gray-400 uppercase tracking-widest pt-2 scroll-mt-20">
+      {children}
+    </p>
+  );
+}
+
+// ─── Jump Navigation (anchor pills, mirrors ai-analytics pattern) ─────────────
+
+const JUMP_LINKS = [
+  { id: "analysis",             label: "Analysis" },
+  { id: "ai-recommendation",    label: "AI Recommendation" },
+  { id: "execution",            label: "Execution" },
+  { id: "supporting-analytics", label: "Supporting Analytics" },
+];
+
+function OptimizerJumpNav() {
+  return (
+    <div className="sticky top-0 z-10 -mx-1 px-1 py-2 bg-gray-50/95 backdrop-blur rounded-b-lg mb-2">
+      <div className="flex flex-wrap gap-1.5">
+        {JUMP_LINKS.map((l) => (
+          <a
+            key={l.id}
+            href={`#${l.id}`}
+            className="text-xs font-medium px-2.5 py-1 rounded-full border bg-white border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors"
+          >
+            {l.label}
+          </a>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1975,9 +2083,14 @@ function CommitteeDecisionCard({
               <p className="text-sm text-red-600 mt-0.5">No clear consensus between layers.</p>
             </>
           ) : (
-            <h3 className="font-bold text-lg text-gray-900">
-              Following: <span className={cfg?.badgeText ?? "text-gray-800"}>{followLabel}</span>
-            </h3>
+            <>
+              <h3 className="font-bold text-lg text-gray-900">
+                Following: <span className={cfg?.badgeText ?? "text-gray-800"}>{followLabel}</span>
+              </h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                The AI's final call after reconciling Strategist, Challenger, and Risk Auditor.
+              </p>
+            </>
           )}
         </div>
         {cfg && (
@@ -2022,7 +2135,7 @@ function CommitteeDecisionCard({
           <div className="flex flex-wrap gap-2">
             {keyActions.map((a) => (
               <div key={a.symbol} className="flex items-center gap-1.5">
-                <ActionBadge action={a.action as AllocationAction} />
+                <SignalBadge signal={a.action} />
                 <Link
                   href={`/stock/${encodeURIComponent(a.symbol)}`}
                   className="text-sm font-medium text-gray-700 hover:text-blue-600 hover:underline"
@@ -2108,10 +2221,11 @@ function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance,
         )}
       </div>
 
-      {/* 1. Portfolio Details */}
+      {/* ── Analysis ─────────────────────────────────────────────────────── */}
+      <SectionLabel id="analysis">Analysis</SectionLabel>
+
       {(result.total_value !== undefined) && <PortfolioMetricsBar result={result} />}
 
-      {/* 2. Portfolio DNA + Persona Match */}
       {result.current_portfolio_dna && result.target_persona && profiles.length > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <PortfolioDNACard
@@ -2123,10 +2237,8 @@ function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance,
         </div>
       )}
 
-      {/* 3. Action Summary */}
-      {result.action_summary && (
-        <OptimizerActionSummary summary={result.action_summary as ActionSummary} />
-      )}
+      {/* ── AI Recommendation ────────────────────────────────────────────── */}
+      <SectionLabel id="ai-recommendation">AI Recommendation</SectionLabel>
 
       {!result.stabilization && result.status === "NO_ACTION" && <NoActionCard result={result} />}
 
@@ -2147,16 +2259,12 @@ function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance,
         </section>
       )}
 
-      {/* 5. Strategist */}
       {result.layer1_result && <Layer1Section layer={result.layer1_result} totalValue={totalValue} />}
 
-      {/* 6. Challenger */}
       {result.layer2_result && <Layer2Section layer={result.layer2_result} totalValue={totalValue} />}
 
-      {/* 7. Risk Auditor */}
       {result.layer3_result && <Layer3Section layer={result.layer3_result} />}
 
-      {/* 8. Committee Decision (simplified) + full detail collapsible */}
       {result.consensus && (
         <div className="space-y-3">
           <CommitteeDecisionCard
@@ -2172,19 +2280,16 @@ function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance,
         </div>
       )}
 
-      {/* 9. Portfolio Drift — consequence of committee recommendation */}
-      {result.stabilization && (
-        <StabilizationCard
-          meta={result.stabilization}
-          onForceRebalance={onForceRebalance ?? (() => {})}
-          forceRunning={forceRunning ?? false}
-        />
-      )}
+      {/* ── Execution ────────────────────────────────────────────────────── */}
+      <SectionLabel id="execution">Execution</SectionLabel>
 
-      {/* 10. Handoff to Decision Workspace */}
-      <SendToWorkspaceButton result={result} onSend={onSendToWorkspace} />
+      {/* Primary output: what to trade today — a view derived from the
+          recommendation above (action_summary classification joined with
+          target_allocations amounts), not a separately stored "execution
+          plan". The canonical recommendation is never mutated. */}
+      <ExecutionPlanCard result={result} />
 
-      {/* 11. Execution Actions */}
+      {/* Act on the plan — record approve/reject/override */}
       {result.recommendation_snapshot_id && portfolioId && (
         <DecisionActionPanel
           snapshotId={result.recommendation_snapshot_id}
@@ -2192,11 +2297,30 @@ function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance,
         />
       )}
 
-      {/* 12. Supporting Analytics — collapsed by default (UX.3A.5) */}
+      {/* Execution Analysis — explains the plan (the "why", not the "what").
+          Portfolio Drift is one card within this, not the umbrella title. */}
+      {result.stabilization && (
+        <div className="space-y-3 pt-1">
+          <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Execution Analysis</p>
+          <div id="portfolio-drift" className="scroll-mt-20">
+            <StabilizationCard
+              meta={result.stabilization}
+              onForceRebalance={onForceRebalance ?? (() => {})}
+              forceRunning={forceRunning ?? false}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Separate path, visually broken out from the plan above — see
+          SendToWorkspaceButton comment for why it's styled apart. */}
+      <div className="pt-2 border-t border-dashed border-gray-200">
+        <SendToWorkspaceButton result={result} onSend={onSendToWorkspace} />
+      </div>
+
+      {/* ── Supporting Analytics — collapsed by default (UX.3A.5) ──────────── */}
       <div className="space-y-3">
-        <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest pt-2">
-          Supporting Analytics
-        </p>
+        <SectionLabel id="supporting-analytics">Supporting Analytics</SectionLabel>
 
         {/* Market Regime — collapsed by default (UX.3A.3) */}
         {result.market_regime && (
@@ -2209,17 +2333,24 @@ function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance,
         )}
 
         {/* Active Policy Envelope */}
-        {result.active_policy && (
+        {result.active_policy ? (
           <CollapsibleSection
             title="Active Policy Envelope"
-            summary="Sector limits and position constraints"
+            summary="🟢 Active — sector limits and position constraints"
           >
             <ActivePolicyEnvelopeCard
               policy={result.active_policy as ActivePolicy}
               effectiveEnvelope={result.effective_envelope}
             />
           </CollapsibleSection>
-        )}
+        ) : result.policy_engine_status === "DISABLED_FALLBACK" ? (
+          <div className="text-xs px-3 py-2 rounded border text-red-700 bg-red-50 border-red-200">
+            🔴 Policy Engine Disabled (Fallback) — this run used legacy regime-only
+            constraints. Persona weighting, confidence-adjusted limits, and policy
+            alignment scoring were skipped. Check backend logs for
+            <span className="font-mono"> [POLICY_ENGINE]</span> errors.
+          </div>
+        ) : null}
 
         {/* Sector Impact */}
         {result.sector_warnings && result.sector_warnings.length > 0 && (
@@ -2609,6 +2740,10 @@ export default function OptimizerPage() {
 
       {/* Controls */}
       <div className="bg-white border rounded-xl p-4 shadow-sm space-y-4">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-800">Control Panel</h2>
+          <p className="text-xs text-gray-500 mt-0.5">Select a portfolio and strategy persona, then run a new analysis.</p>
+        </div>
         <div className="flex flex-wrap gap-2">
           <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
             {optimizerLastAnalysisBadgeTh(latestAnalysisAt)}
@@ -2684,6 +2819,8 @@ export default function OptimizerPage() {
               <p className="text-xs text-gray-400 text-center">This may take 60–180 seconds</p>
             </div>
           )}
+
+          {!running && result && <OptimizerJumpNav />}
 
           {!running && (
             <div className={`rounded-xl transition-colors ${isViewingDeepLinkedHistory ? "ring-1 ring-blue-200 bg-blue-50/30" : ""}`}>

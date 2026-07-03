@@ -53,6 +53,7 @@ from services.portfolio_transactions import (
 )
 from services.portfolio_snapshots import generate_daily_snapshot, SnapshotCoverageError
 from services.snapshot_scheduler import setup_scheduler, shutdown_scheduler
+from services.analytics.system_health import compute_system_health, compute_ai_reliability
 from services.core.runtime_env import get_system_status, is_vps_env, allow_market_fetching
 from services.analytics.quant_engine import (
     build_portfolio_metrics, build_benchmark_metrics,
@@ -2053,6 +2054,12 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     holdings = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == body.portfolio_id).all()
     watchlist_items = db.query(Watchlist).filter(Watchlist.workspace_id == ws).all()
 
+    # TEMP DEBUG — cash data-flow trace (2026-07-03), remove after cash_pct bug confirmed
+    _log.info(
+        "[CASH_TRACE stage=1_DB_FETCH] portfolio_id=%s cash_balance=%.2f holdings_count=%d",
+        body.portfolio_id, portfolio.cash_balance or 0.0, len(holdings),
+    )
+
     if not holdings:
         raise HTTPException(status_code=400, detail="Portfolio has no holdings to optimize")
     if not watchlist_items:
@@ -2261,6 +2268,9 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     policy_ctx: dict | None = None
     try:
         from services.optimizer.policy_engine import compute_policy, envelope_to_dict as _env_to_dict
+        from agents.optimizer import _compute_portfolio_weights
+        # compute_policy needs holdings enriched with weight_pct (market-value based)
+        pd_with_weights = _compute_portfolio_weights(portfolio_data)
         _policy_env = compute_policy(
             persona_ctx, regime_ctx, pd_with_weights,
             consensus=None, max_sector_pct=max_sector_pct,
@@ -2268,7 +2278,10 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         )
         policy_ctx = _env_to_dict(_policy_env)
     except Exception as _pe:
-        _log.warning("analyze_optimizer: policy engine failed — continuing without policy context: %s", _pe)
+        _log.error(
+            "[POLICY_ENGINE] compute_policy failed — falling back to regime-only mode: %s", _pe,
+            exc_info=True,
+        )
 
     result = await asyncio.to_thread(
         run_layered_optimizer, portfolio_data, watchlist_data, portfolio.name,
@@ -2295,6 +2308,8 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         }
     result["portfolio_name"] = portfolio.name
     result["analyzed_at"] = datetime.utcnow().isoformat() + "Z"
+    # Health indicator: makes a silently-degraded policy engine visible in AI Analytics
+    result["policy_engine_status"] = "ACTIVE" if policy_ctx else "DISABLED_FALLBACK"
     result.setdefault("portfolio_count", portfolio_count)
     result.setdefault("max_reached", max_reached)
     if execution_ctx:
@@ -2617,6 +2632,18 @@ async def get_optimizer_history_detail(history_id: int, db: Session = Depends(ge
         ).first()
         if snap:
             payload["recommendation_snapshot_id"] = snap.id
+    # Noise filter + action_summary are response-time views, applied after
+    # result_json is committed — stored rows carry neither. Recompute them here
+    # (display-only, row untouched) so history views render the same Execution
+    # Plan as live runs. Filter thresholds are current-day, not run-day.
+    if "action_summary" not in payload:
+        try:
+            from services.noise_filter import apply_noise_filter
+            from services.optimizer_action_summary import build_action_summary
+            apply_noise_filter(payload)
+            payload["action_summary"] = build_action_summary(payload.get("target_allocations", []))
+        except Exception as _as_exc:
+            _log.warning("get_optimizer_history_detail: action_summary backfill failed — continuing: %s", _as_exc)
     return payload
 
 
@@ -3134,8 +3161,6 @@ async def get_ai_analytics(
     model_groups: dict[tuple, dict] = {}
     layer_groups: dict[tuple, dict] = {}
     daily_groups: dict[tuple, dict] = {}
-    optimize_total = 0
-    optimize_fallback = 0
 
     for row in rows:
         mk = (row.provider, row.model)
@@ -3154,10 +3179,8 @@ async def get_ai_analytics(
             mg["last_used"] = row.created_at.isoformat() + "Z"
         if row.operation == "optimize":
             mg["optimize_calls"] += 1
-            optimize_total += 1
             if row.layer == "fallback":
                 mg["fallback_calls"] += 1
-                optimize_fallback += 1
 
         lk = (row.provider, row.model, row.layer or "-", row.operation)
         lg = layer_groups.setdefault(lk, {
@@ -3256,14 +3279,7 @@ async def get_ai_analytics(
         "layer_matrix": layer_matrix,
         "daily": daily,
         "recent": recent,
-        "reliability": {
-            "fallback_rate": round(optimize_fallback / optimize_total, 4) if optimize_total else None,
-            "success_rate": None,
-            "json_parse_success_rate": None,
-            "api_error_rate": None,
-            "timeout_rate": None,
-            "max_token_stop_rate": None,
-        },
+        "reliability": compute_ai_reliability(db),
         "totals": {
             "call_count": len(rows),
             "total_cost_usd": total_cost,
@@ -3271,6 +3287,17 @@ async def get_ai_analytics(
             "total_tokens": sum(r.total_tokens for r in rows),
         },
     }
+
+
+@app.get("/stats/system-health")
+async def get_system_health(db: Session = Depends(get_db)) -> dict:
+    """Read-only operational health snapshot for AI providers, the optimizer
+    pipeline, the Policy Engine, market data freshness, the portfolio/snapshot
+    engine, and background jobs. Every field is a direct read or trivial
+    aggregate of existing data (see services/analytics/system_health.py) —
+    no health-level thresholds are computed here; the frontend applies a
+    single shared healthy/warning/problem/unknown model to every card."""
+    return compute_system_health(db, _ws_id(db))
 
 
 @app.get("/settings/ai-models")

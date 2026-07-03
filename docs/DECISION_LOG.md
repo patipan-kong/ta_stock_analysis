@@ -190,3 +190,27 @@ _See [ARCH_SPEC.md](ARCH_SPEC.md) for current specs. See [ROADMAP.md](ROADMAP.md
 **Decision:** ADR-003 is scoped to portfolio-state/replay-order questions (cost basis, holdings-as-of-date, chronological sort) — the only thing `compute_period_metrics()` itself ever uses a date for (it reads neither field; callers pre-filter). Window-membership logic is unchanged and remains each engine's own responsibility: `created_at` for the two incrementally-built engines, `transaction_date` for the full rebuild.  
 **Reasoning:** Applying ADR-003 literally to window membership would reintroduce a previously-fixed, documented production bug, directly conflicting with this refactor's "business behaviour must remain unchanged" constraint. This decision was confirmed explicitly with the task requester before implementation began.  
 **Impact:** No behavior change to window membership in any engine. Regression test: `test_backdated_transaction_attributed_per_engine_own_window_field` in `test_portfolio_metrics_parity.py`, demonstrating each engine correctly uses its own window field for the same backdated transaction.
+
+---
+
+## 2026-07-03
+
+### Adaptive Policy Engine Silent Failure
+
+Problem
+
+During UX.2D/E/L refactor,
+`pd_with_weights` was removed while `compute_policy()` still depended on it.
+
+Impact
+
+- Policy Engine disabled
+- Persona ignored
+- Confidence adjustment disabled
+- Alignment scoring disabled
+
+Lessons Learned
+
+- Never silently swallow architectural failures.
+- Critical subsystems must expose health status.
+- Integration tests are mandatory for pipeline components.

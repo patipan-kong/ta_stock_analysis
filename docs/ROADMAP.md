@@ -39,9 +39,7 @@ Portfolio Engine
 วิเคราะห์คุณภาพของพอร์ต
 
 Performance Analytics
-
-Almost complete
-
+Complete
 ✅ Total Return
 ✅ Annualized Return
 ✅ Volatility
@@ -54,48 +52,37 @@ Almost complete
 ✅ Information Ratio
 ✅ Benchmark Comparison
 ✅ Cash Utilization
-
-Remaining
-
+Optional Performance Metrics
 ⏳ Sortino Ratio
 ⏳ Rolling Return
 ⏳ Rolling Sharpe
 ⏳ Rolling Volatility
+
 Attribution Analytics
-
 Partially Complete
-
 ✅ Allocation Analytics
 ✅ Human vs AI Attribution
 ✅ Regime Attribution
 ✅ Recommendation Snapshots
-
 Remaining
-
 Contribution Analysis
 Position Attribution
 Sector Attribution Timeline
+
 Execution Intelligence
-
 Started
-
 ✅ Recommendation Snapshots
-
+✅ Shadow Portfolio
+✅ Shadow Portfolio Snapshots
 Remaining
-
-Shadow Portfolio
-Shadow Portfolio Snapshots
 Paper Trading Lifecycle
 Execution Tracking
+
 AI Evaluation
-
 Started
-
 ✅ Confidence Calibration Foundation
 ✅ Signal History
-
 Remaining
-
 Signal Accuracy
 Recommendation Score
 AI vs Benchmark

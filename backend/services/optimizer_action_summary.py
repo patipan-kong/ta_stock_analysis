@@ -18,7 +18,8 @@ def build_action_summary(target_allocations: list[dict[str, Any]]) -> dict:
     NEW_POSITION action in ("BUY", "ACCUMULATE") and current_weight == 0
     HOLD        action == "HOLD"
 
-    Noise-suppressed entries and blank symbols are silently skipped.
+    Noise-suppressed entries, drift-tolerant entries (deferred by the
+    stabilization layer), and blank symbols are silently skipped.
     Pure HOLD rows with negligible change (< 0.5 pp) are also skipped to keep
     the output clean.
 
@@ -44,7 +45,7 @@ def build_action_summary(target_allocations: list[dict[str, Any]]) -> dict:
         symbol = (a.get("symbol") or "").strip()
         if not symbol:
             continue
-        if a.get("noise_suppressed"):
+        if a.get("noise_suppressed") or a.get("within_drift_tolerance"):
             continue
 
         action = (a.get("action") or "").upper()

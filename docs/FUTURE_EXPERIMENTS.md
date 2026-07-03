@@ -41,34 +41,15 @@ Disabled
 
 Auto
 
----
+-----
 
-# Token Budget
+### Optimizer Reason Format
 
-L1
+Current:
+UI derives investment thesis from AI reason using lightweight cleanup.
 
-L2
+Future:
+Update optimizer prompts so the AI emits thesis-first reasons directly.
 
-L3
-
-Summary
-
----
-
-# Benchmark
-
-Latency
-
-Cost
-
-Acceptance Rate
-
-Hit Rate
-
-Fallback Rate
-
-JSON Success Rate
-
-Average Token Usage
-
-Average Thinking Tokens (if available)
+Once historical compatibility is no longer required,
+the cleanup layer can be simplified or removed.

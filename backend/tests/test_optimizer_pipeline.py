@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from agents.optimizer import (
     _normalize_l1_swaps,
     _normalize_allocations,
+    _snap_neutral_actions,
     _consensus_engine,
     _postprocess_swaps,
 )
@@ -52,6 +53,27 @@ def test_normalize_l1_swaps_full_keys():
     assert result[0]["buy_symbol"] == "AAPL01.BK"
 
 
+def test_normalize_l1_swaps_compact_reason_key():
+    """L1 compact schema uses "r" for the reason, same convention as _normalize_allocations'
+    "r" fallback for L2 — must not be silently dropped."""
+    raw = [{"sell": "SCB.BK", "buy": "MSFT01.BK", "score_delta": 3.5, "sector": "Technology", "type": "SWAP", "r": "Technology at 45% > 30% limit"}]
+    result = _normalize_l1_swaps(raw)
+    assert result[0]["reason"] == "Technology at 45% > 30% limit"
+
+
+def test_normalize_l1_swaps_full_reason_key():
+    """Full "reason" key (used by forced-SELL entries) still takes priority over "r"."""
+    raw = [{"sell": "PTT.BK", "buy": None, "reason": "Forced exit: SELL signal.", "r": "ignored", "type": "SELL"}]
+    result = _normalize_l1_swaps(raw)
+    assert result[0]["reason"] == "Forced exit: SELL signal."
+
+
+def test_normalize_l1_swaps_missing_reason_defaults_empty():
+    raw = [{"sell": "PTT.BK", "buy": None, "score_delta": 0, "type": "SELL"}]
+    result = _normalize_l1_swaps(raw)
+    assert result[0]["reason"] == ""
+
+
 # ── _normalize_allocations ────────────────────────────────────────────────────
 
 def test_normalize_allocations_basic():
@@ -83,6 +105,69 @@ def test_normalize_allocations_drops_empty_symbol():
     raw = [{"symbol": "", "target_weight": 10.0, "action": "BUY", "reason": ""}]
     result = _normalize_allocations(raw)
     assert result == []
+
+
+# ── _snap_neutral_actions ──────────────────────────────────────────────────────
+
+def test_snap_neutral_actions_zeroes_hold_and_watch():
+    """WATCH/HOLD are investment signals, not trade instructions — a nonzero
+    target_weight on these rows (e.g. from a portfolio-level rebalance trim) must
+    not leak through as a phantom weight/cash delta."""
+    allocations = [
+        {"symbol": "AAPL", "current_weight": 10.0, "target_weight": 15.0,
+         "action": "BUY", "allocation_change_percent": 5.0, "estimated_amount": 50000},
+        {"symbol": "PTT.BK", "current_weight": 8.0, "target_weight": 7.0,
+         "action": "HOLD", "allocation_change_percent": -1.0, "estimated_amount": -10000},
+        {"symbol": "SCB.BK", "current_weight": 6.0, "target_weight": 9.5,
+         "action": "WATCH", "allocation_change_percent": 3.5, "estimated_amount": 35000},
+    ]
+    _snap_neutral_actions(allocations)
+
+    aapl = next(a for a in allocations if a["symbol"] == "AAPL")
+    assert aapl["target_weight"] == 15.0
+    assert aapl["allocation_change_percent"] == 5.0
+    assert aapl["estimated_amount"] == 50000
+
+    ptt = next(a for a in allocations if a["symbol"] == "PTT.BK")
+    assert ptt["target_weight"] == 8.0
+    assert ptt["allocation_change_percent"] == 0.0
+    assert ptt["estimated_amount"] == 0
+
+    scb = next(a for a in allocations if a["symbol"] == "SCB.BK")
+    assert scb["target_weight"] == 6.0
+    assert scb["allocation_change_percent"] == 0.0
+    assert scb["estimated_amount"] == 0
+
+
+def test_snap_neutral_actions_watchlist_watch_zeroed_to_zero():
+    """A WATCH row for a symbol the portfolio doesn't hold has current_weight=0.0 —
+    any hallucinated nonzero target_weight must snap back to zero, not to some
+    nonzero 'current' figure."""
+    allocations = [
+        {"symbol": "NVDA", "current_weight": 0.0, "target_weight": 4.0,
+         "action": "WATCH", "allocation_change_percent": 4.0, "estimated_amount": 40000},
+    ]
+    _snap_neutral_actions(allocations)
+    assert allocations[0]["target_weight"] == 0.0
+    assert allocations[0]["allocation_change_percent"] == 0.0
+    assert allocations[0]["estimated_amount"] == 0
+
+
+def test_snap_neutral_actions_ignores_actionable_rows():
+    """SELL/REDUCE/ACCUMULATE rows carry a real trade — must pass through unchanged.
+    Also verifies case-insensitivity on the action field, matching the .upper()
+    handling used elsewhere in this file."""
+    allocations = [
+        {"symbol": "KBANK.BK", "current_weight": 12.0, "target_weight": 0.0,
+         "action": "sell", "allocation_change_percent": -12.0, "estimated_amount": -120000},
+        {"symbol": "MSFT01.BK", "current_weight": 9.0, "target_weight": 6.0,
+         "action": "REDUCE", "allocation_change_percent": -3.0, "estimated_amount": -30000},
+        {"symbol": "GOOGL", "current_weight": 5.0, "target_weight": 8.0,
+         "action": "ACCUMULATE", "allocation_change_percent": 3.0, "estimated_amount": 30000},
+    ]
+    before = [dict(a) for a in allocations]
+    _snap_neutral_actions(allocations)
+    assert allocations == before
 
 
 # ── raw_allocs extraction (None vs falsy) ─────────────────────────────────────

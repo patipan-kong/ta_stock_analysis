@@ -565,6 +565,14 @@ export interface SwapSuggestion {
   score_improvement: number;
   sector: string;
   type: "SELL" | "SWAP" | "REDUCE";
+  // Reason UX — deterministic score context attached post-AI (no new calculations).
+  // Subject symbol is buy_symbol when present, else sell_symbol.
+  ta_score?: number;
+  fa_score?: number;
+  pe_ratio?: number | null;
+  roe?: number | null;
+  combined_score?: number;
+  timing_score?: number | null;
 }
 
 export type AllocationAction = "BUY" | "ACCUMULATE" | "HOLD" | "REDUCE" | "SELL" | "WATCH";
@@ -608,9 +616,23 @@ export interface TargetAllocation {
   asset_type?: AssetType;
   slippage_est_pct?: number;
   execution_capped?: boolean;
-  // Presentation-layer noise filter (micro-rebalance suppression)
+  // Presentation-layer noise filter (micro-rebalance suppression, < 1% drift)
   noise_suppressed?: boolean;
   noise_reason?: string;
+  // Stabilization layer (governance-level drift tolerance, default 3%) — see
+  // StabilizationMeta.drift_analysis for the portfolio-wide view of the same
+  // computation. Set only when the overall run is still REBALANCE (a mixed
+  // bag of some positions needing action and others not).
+  within_drift_tolerance?: boolean;
+  allocation_drift_pct?: number | null;
+  // Reason UX — deterministic score context attached post-AI (no new calculations)
+  ta_score?: number;
+  fa_score?: number;
+  pe_ratio?: number | null;
+  roe?: number | null;
+  sector?: string;
+  combined_score?: number;
+  timing_score?: number | null;
 }
 
 export interface OptimizerLayerConfig {
@@ -1016,6 +1038,8 @@ export interface OptimizerResult {
   > | null;
   // Phase 3B.4 — Active Policy Envelope
   active_policy?: ActivePolicy | null;
+  // Health indicator — surfaces silent Policy Engine degradation (falls back to regime-only)
+  policy_engine_status?: "ACTIVE" | "DISABLED_FALLBACK" | null;
   // Phase 3B.5 — Resolved constraint breakdown
   effective_envelope?: EffectiveEnvelope | null;
   // Phase 3B.7A — Decision Memory
@@ -1165,6 +1189,71 @@ export const getAiAnalytics = (fromDate?: string, toDate?: string, recentLimit =
   p.set("recent_limit", String(recentLimit));
   return apiFetch<AiAnalytics>(`/stats/ai-analytics?${p.toString()}`);
 };
+
+// ─── System Health ────────────────────────────────────────────────────────────
+
+export interface SystemHealthAiProvider {
+  provider: string;
+  configured: boolean;
+  last_success_at: string | null;
+  call_count_24h: number;
+  avg_latency_ms_24h: number | null;
+  reachable: boolean | null;
+}
+
+export interface SystemHealthOptimizerPipeline {
+  last_run_at: string | null;
+  layer1_latency_ms: number | null;
+  layer2_latency_ms: number | null;
+  layer3_latency_ms: number | null;
+  total_latency_ms: number | null;
+  layer1_error: boolean | null;
+  layer2_error: boolean | null;
+  layer3_error: boolean | null;
+  fallback_mode: boolean | null;
+  policy_engine_status: "ACTIVE" | "DISABLED_FALLBACK" | null;
+}
+
+export interface SystemHealthMarketData {
+  latest_update_at: string | null;
+  age_minutes: number | null;
+  sync_status_counts: { ok: number; error: number; stale: number };
+}
+
+export interface SystemHealthPortfolioEngine {
+  snapshot_scheduler_status: string | null;
+  snapshot_scheduler_last_run_at: string | null;
+  last_snapshot_at: string | null;
+  replay_engine_status: string | null;
+  calculation_engine_status: string | null;
+}
+
+export interface SystemHealthBackgroundJobs {
+  snapshot_scheduler: { status: string | null; last_run_at: string | null; next_run_time: string | null };
+  market_update: { last_run_at: string | null; note: string };
+  reminders: { last_run_at: string | null; note: string };
+}
+
+export interface SystemHealthOptionalMetrics {
+  requests_today: number;
+  avg_latency_ms_today: number | null;
+  avg_cost_usd_today: number | null;
+  failure_rate: number | null;
+  retry_count: number | null;
+}
+
+export interface SystemHealth {
+  generated_at: string;
+  ai_providers: SystemHealthAiProvider[];
+  optimizer_pipeline: SystemHealthOptimizerPipeline;
+  market_data: SystemHealthMarketData;
+  portfolio_engine: SystemHealthPortfolioEngine;
+  prompt_pipeline: AiReliabilitySummary;
+  background_jobs: SystemHealthBackgroundJobs;
+  optional_metrics: SystemHealthOptionalMetrics;
+}
+
+export const getSystemHealth = () => apiFetch<SystemHealth>("/stats/system-health");
 
 export interface BackfillSectorsResult {
   watchlist_updated: number;

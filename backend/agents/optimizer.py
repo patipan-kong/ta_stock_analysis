@@ -145,6 +145,37 @@ def _compact_w(items: list[dict]) -> list[dict]:
     ]
 
 
+def _build_score_context_map(pc: list[dict], wc: list[dict]) -> dict[str, dict]:
+    """symbol -> compact score dict, for attaching deterministic context to AI rows.
+
+    Portfolio holdings take priority over watchlist entries for symbols present in both
+    (fresher weight/price data). No new calculations — pc/wc are already computed by
+    _compact_p/_compact_w before this is called.
+    """
+    score_map: dict[str, dict] = {w["symbol"]: w for w in wc}
+    score_map.update({p["symbol"]: p for p in pc})
+    return score_map
+
+
+# Reason UX (progressive disclosure) — deterministic fields attached to swap/allocation
+# rows by symbol lookup, mirroring the existing per_sym_exec execution-metadata join.
+_SCORE_CONTEXT_FIELDS = ("ta_score", "fa_score", "pe_ratio", "roe", "sector", "combined_score", "timing_score")
+
+
+def _apply_score_context(row: dict, score_map: dict[str, dict] | None, symbol: str | None) -> None:
+    if not score_map or not symbol:
+        return
+    ctx = score_map.get(symbol)
+    if not ctx:
+        return
+    for field in _SCORE_CONTEXT_FIELDS:
+        if field in row:
+            continue
+        value = ctx.get(field)
+        if value is not None:
+            row[field] = value
+
+
 _L1_BUY_SIGNALS = {"BUY", "ACCUMULATE", "WATCH"}
 
 
@@ -193,28 +224,39 @@ def _postprocess_swaps(swaps: list[dict], sell_forced: list[str], locked: list[s
     return result
 
 
-def _normalize_l1_swaps(swaps: list) -> list[dict]:
+def _normalize_l1_swaps(swaps: list, score_map: dict[str, dict] | None = None) -> list[dict]:
     """Normalise L1 compact swap objects into the full swap format used downstream."""
     result = []
     for s in (swaps or []):
-        result.append({
-            "sell_symbol": s.get("sell") or s.get("sell_symbol"),
-            "buy_symbol":  s.get("buy")  or s.get("buy_symbol"),
-            "reason": s.get("reason", ""),
+        sell = s.get("sell") or s.get("sell_symbol")
+        buy = s.get("buy") or s.get("buy_symbol")
+        row = {
+            "sell_symbol": sell,
+            "buy_symbol":  buy,
+            "reason": str(s.get("reason") or s.get("r") or ""),
             "score_improvement": float(
                 s.get("score_delta") or s.get("delta") or s.get("score_improvement") or 0
             ),
             "sector": s.get("sector", "Other"),
             "type": s.get("type", "SWAP"),
-        })
+        }
+        # Reason UX — deterministic context for the expanded detail panel (subject = buy
+        # side when present, since that's the opportunity being evaluated; else sell side).
+        _apply_score_context(row, score_map, buy or sell)
+        result.append(row)
     return result
 
 
-def _normalize_allocations(allocs: list, pc_map: dict[str, float] | None = None) -> list[dict]:
+def _normalize_allocations(
+    allocs: list,
+    pc_map: dict[str, float] | None = None,
+    score_map: dict[str, dict] | None = None,
+) -> list[dict]:
     """Normalise L2 allocation objects to the internal TargetAllocation schema.
 
     pc_map: symbol → actual weight_pct from portfolio data (authoritative source for current_weight).
     allocation_change_percent and estimated_amount are computed in Python — never trusted from AI.
+    score_map: symbol → compact score dict (see _build_score_context_map), attached for Reason UX.
     """
     result = []
     for a in (allocs or []):
@@ -223,7 +265,7 @@ def _normalize_allocations(allocs: list, pc_map: dict[str, float] | None = None)
         # Use real portfolio weight if available; AI's reported current_weight is a fallback only
         current_w = (pc_map or {}).get(sym, float(a.get("current_weight") or a.get("w") or 0))
         change_pct = round(target_w - current_w, 2)
-        result.append({
+        row = {
             "symbol": sym,
             "current_weight": round(current_w, 2),
             "target_weight": round(target_w, 2),
@@ -231,8 +273,23 @@ def _normalize_allocations(allocs: list, pc_map: dict[str, float] | None = None)
             "allocation_change_percent": change_pct,
             "estimated_amount": 0,  # filled in by caller once total_value is known
             "reason": str(a.get("reason") or a.get("r") or ""),
-        })
+        }
+        _apply_score_context(row, score_map, sym)
+        result.append(row)
     return [a for a in result if a["symbol"]]
+
+
+def _snap_neutral_actions(allocations: list[dict]) -> None:
+    """HOLD/WATCH are investment-conviction signals, not capital-movement instructions.
+    Pin target_weight back to current_weight so no downstream consumer (Cash Impact
+    column, action_summary, sector-weight projection) can show a nonzero trade for a
+    row the AI didn't intend as an execution instruction. Mutates in place.
+    """
+    for a in allocations:
+        if (a.get("action") or "").upper() in ("HOLD", "WATCH"):
+            a["target_weight"] = a.get("current_weight", 0.0)
+            a["allocation_change_percent"] = 0.0
+            a["estimated_amount"] = 0
 
 
 def _rebuild_watchlist_ranking(buy_symbols: list, wc: list[dict]) -> list[dict]:
@@ -835,8 +892,9 @@ swaps: max 3 (sell or buy may be null for one-sided REDUCE or ACCUMULATE from ca
 top_buys: max 5 watchlist symbols ranked by signal quality
 sector_flags: max 3 short strings
 priority: one word only
+"r" = one reason for the swap, under 12 words (e.g. "Technology at 45% > 30% limit").
 
-{{"swaps":[{{"sell":"SYM|null","buy":"SYM|null","score_delta":0.0,"sector":"S","type":"SELL|SWAP|REDUCE"}}],"top_buys":["S"],"sector_flags":["S 45%>30%"],"priority":"growth"}}"""
+{{"swaps":[{{"sell":"SYM|null","buy":"SYM|null","score_delta":0.0,"sector":"S","type":"SELL|SWAP|REDUCE","r":"<12 words"}}],"top_buys":["S"],"sector_flags":["S 45%>30%"],"priority":"growth"}}"""
 
 
 def _layer2_prompt(
@@ -910,6 +968,16 @@ Add to disagreements[]: "TIMING_CONCERN: [SYM] poor entry timing (ts=[N], priori
 Timing does not invalidate a fundamentally attractive stock — document the concern, do not block.
 
 """
+
+    # TEMP DEBUG — cash data-flow trace (2026-07-03), remove after cash_pct bug confirmed
+    _invested_value = sum(i.get("market_value", 0) for i in pc)
+    logger.info(
+        "[CASH_TRACE stage=3_L2_PROMPT] portfolio_value=%.2f invested_value=%.2f "
+        "available_cash=%.2f cash_pct=%.4f%% policy_context_present=%s",
+        total_value, _invested_value, cash_balance,
+        (cash_balance / total_value * 100) if total_value else 0.0,
+        bool(policy_context),
+    )
 
     return f"""You are an independent portfolio reviewer.
 {policy_block}{regime_block}{strategy_block}{t1_breach_note}{execution_block}{timing_challenge_block}{role_line}The Strategist (Layer 1) proposed:
@@ -1160,6 +1228,7 @@ def _run_single_shot_fallback(
     max_reached: bool,
 ) -> dict:
     """Single-shot emergency fallback when the 3-layer pipeline fails completely."""
+    score_map = _build_score_context_map(pc, wc)
     prompt = _fallback_prompt(pc, wc, sell_forced, locked, max_stocks, max_sector_pct, total_value, cash_balance)
     raw = call_ai(
         prompt, fallback_provider, fallback_model, max_tokens=4096,
@@ -1169,7 +1238,7 @@ def _run_single_shot_fallback(
     result = safe_parse_json(raw["text"])
 
     raw_allocs = result.pop("allocations", None) or []
-    allocations = _normalize_allocations(raw_allocs, pc_map)
+    allocations = _normalize_allocations(raw_allocs, pc_map, score_map)
     for a in allocations:
         a["estimated_amount"] = round((a["allocation_change_percent"] / 100) * total_value)
 
@@ -1196,6 +1265,7 @@ def _run_single_shot_fallback(
     for a in final_allocations:
         a["allocation_change_percent"] = round(a["target_weight"] - a["current_weight"], 2)
         a["estimated_amount"] = round((a["allocation_change_percent"] / 100) * total_value)
+    _snap_neutral_actions(final_allocations)
 
     swap_suggestions = _derive_swap_suggestions(final_allocations, sell_forced, locked)
     projected_sector_weights = calculate_projected_sector_weights_from_allocations(
@@ -1309,9 +1379,9 @@ def _retry_l1_with_schema(
         f"Swap-eligible: {swap_eligible or 'none'}\n"
         f"Forced exits: {sell_forced or 'none'}\n\n"
         "Propose up to 3 swap / reduce actions and rank the top watchlist buys.\n"
-        "Required output (fill in real values):\n"
+        "Required output (fill in real values, \"r\" = reason under 12 words):\n"
         '{"swaps":[{"sell":"SYM_OR_NULL","buy":"SYM_OR_NULL","score_delta":0.0,'
-        '"sector":"Other","type":"SWAP"}],"top_buys":["SYM"],'
+        '"sector":"Other","type":"SWAP","r":"<12 words"}],"top_buys":["SYM"],'
         '"sector_flags":[],"priority":"balanced"}'
     )
     raw = call_ai(
@@ -1348,6 +1418,7 @@ def run_optimizer(
     swap_eligible = [p["symbol"] for p in portfolio_data if p.get("allow_swap", True) and p.get("signal") != "SELL"]
     pc = _compact_p(portfolio_data)
     wc = _compact_w(watchlist_data)
+    score_map = _build_score_context_map(pc, wc)
     c_pc, c_wc = _compress_for_layer1(pc, wc)
     prompt = _layer1_prompt(
         c_pc, c_wc, sell_forced, swap_eligible,
@@ -1364,7 +1435,9 @@ def run_optimizer(
     result["portfolio_count"] = portfolio_count
     result["max_reached"] = max_reached
     result["max_stocks"] = max_stocks
-    result["swap_suggestions"] = _postprocess_swaps(_normalize_l1_swaps(result.get("swaps", [])), sell_forced, locked)
+    result["swap_suggestions"] = _postprocess_swaps(
+        _normalize_l1_swaps(result.get("swaps", []), score_map), sell_forced, locked
+    )
     result["watchlist_ranking"] = _rebuild_watchlist_ranking(result.get("top_buys", []), wc)
     return result
 
@@ -1409,12 +1482,21 @@ def run_layered_optimizer(
     total_equity = sum(i.get("market_value", 0) for i in portfolio_data)
     total_value = total_equity + cash_balance
 
+    # TEMP DEBUG — cash data-flow trace (2026-07-03), remove after cash_pct bug confirmed
+    logger.info(
+        "[CASH_TRACE stage=2_OPTIMIZER_CONTEXT] portfolio_value=%.2f invested_value=%.2f "
+        "available_cash=%.2f cash_pct=%.4f%%",
+        total_value, total_equity, cash_balance,
+        (cash_balance / total_value * 100) if total_value else 0.0,
+    )
+
     # Authoritative current weights from real portfolio data (not AI-reported)
     pc_map: dict[str, float] = {p["symbol"]: p.get("weight_pct", 0.0) for p in portfolio_data}
 
     swap_eligible = [p["symbol"] for p in portfolio_data if p.get("allow_swap", True) and p.get("signal") != "SELL"]
     pc = _compact_p(portfolio_data)
     wc = _compact_w(watchlist_data)
+    score_map = _build_score_context_map(pc, wc)
     c_pc, c_wc = _compress_for_layer1(pc, wc)
 
     current_sector_weights = calculate_current_sector_weights(portfolio_data)
@@ -1513,7 +1595,7 @@ def run_layered_optimizer(
             )
             l1_result = safe_parse_json(raw_l1_text)
             l1_result["swap_suggestions"] = _postprocess_swaps(
-                _normalize_l1_swaps(l1_result.get("swaps", [])), sell_forced, locked
+                _normalize_l1_swaps(l1_result.get("swaps", []), score_map), sell_forced, locked
             )
             logger.info(
                 "[L1_DEBUG] parsed: swaps_count=%d swap_suggestions_count=%d top_buys=%s priority=%s",
@@ -1528,7 +1610,7 @@ def run_layered_optimizer(
             try:
                 l1_result = _retry_l1_with_schema(c_pc, c_wc, sell_forced, swap_eligible, l1_cfg)
                 l1_result["swap_suggestions"] = _postprocess_swaps(
-                    _normalize_l1_swaps(l1_result.get("swaps", [])), sell_forced, locked
+                    _normalize_l1_swaps(l1_result.get("swaps", []), score_map), sell_forced, locked
                 )
                 l1_parse_failed = False
                 logger.info("[L1_RETRY] recovered successfully after minimal-prompt retry")
@@ -1566,7 +1648,7 @@ def run_layered_optimizer(
             raw_allocs = l2_result.pop("allocations", None)
             if raw_allocs is None:
                 raw_allocs = l2_result.pop("target_allocations", [])
-            l2_allocs = _normalize_allocations(raw_allocs, pc_map)
+            l2_allocs = _normalize_allocations(raw_allocs, pc_map, score_map)
             for a in l2_allocs:
                 a["estimated_amount"] = round((a["allocation_change_percent"] / 100) * total_value)
             l2_result["target_allocations"] = l2_allocs
@@ -1861,6 +1943,8 @@ def run_layered_optimizer(
                     "[ACTION_RECONCILE] %s REDUCE→ACCUMULATE (delta=%.1f%% after constraint enforcement)",
                     a.get("symbol"), delta,
                 )
+
+        _snap_neutral_actions(final_allocations)
 
         # Build sector_map for governance scoring (symbol → sector)
         _sector_map_for_scoring: dict[str, str] = {
