@@ -44,11 +44,17 @@ market_value_dollars × real_price inflates NAV by 100-300×.
 Backward-compat: for DB rows written before this patch, holdings with
 inception_price == 1.0 and shares > 1000 are inferred as price_frozen.
 
+create_recommendation_shadow(db, snapshot_id, workspace_id) → dict
+  AI Evaluation M1 (P2): a THIRD use of shadow_type="STATIC_FROZEN", keyed to
+  the recommendation itself rather than to a human decision — see docstring
+  on the function below for how it differs from create_static_frozen_shadow.
+
 Public API
 ----------
 value_shadow_portfolio(db, shadow_id) → dict
 create_static_frozen_shadow(db, execution_decision_id, workspace_id) → dict
 create_active_model_shadow(db, portfolio_id, snapshot_id, workspace_id) → dict
+create_recommendation_shadow(db, snapshot_id, workspace_id) → dict
 value_all_active_shadows(db, workspace_id) → list[dict]
 repair_shadow_portfolios(db, workspace_id) → list[dict]
 reset_active_model_inception(db, workspace_id) → list[dict]
@@ -754,6 +760,112 @@ def create_active_model_shadow(
         "holdings_count": len(holdings),
         "holdings_priced": holdings_priced,
         "holdings_frozen": len(holdings) - holdings_priced,
+    }
+
+
+# ─── Recommendation-keyed counterfactual (AI Evaluation M1, P2) ──────────────
+
+def create_recommendation_shadow(
+    db: Session,
+    snapshot_id: int,
+    workspace_id: int,
+) -> dict[str, Any]:
+    """Create the recommendation-keyed STATIC_FROZEN shadow for one snapshot.
+
+    Differs from create_static_frozen_shadow: that function freezes holdings at
+    the moment a UserExecutionDecision was *recorded* (execution_decision_id
+    set). This one freezes holdings at the moment the recommendation was
+    *made* (execution_decision_id stays NULL) — every optimizer run gets a
+    counterfactual return series from day 0, regardless of whether the human
+    ever approves, rejects, or ignores it. This is what the Horizon Grading
+    Engine (services/evaluation/horizon_grader.py) reads to grade
+    recommendation quality independent of execution behavior (PHILOSOPHY §11).
+
+    Idempotent: one shadow per snapshot_id — returns the existing shadow
+    (action="exists") on a repeat call rather than creating a duplicate.
+
+    Backfill path: when snapshot.created_at is not today (the CLI backfill
+    command, run against historical snapshots), also replays the shadow's
+    full daily valuation history from PortfolioSnapshot prices so its mature
+    horizons are immediately gradable — reusing the exact replay routine
+    already used by repair_shadow_portfolios (_snapshot_price_history /
+    _rebuild_shadow_snapshots) rather than re-deriving valuation math.
+    """
+    from models.database import ShadowPortfolio, RecommendationSnapshot
+
+    existing = (
+        db.query(ShadowPortfolio)
+        .filter_by(
+            recommendation_snapshot_id=snapshot_id,
+            shadow_type="STATIC_FROZEN",
+            execution_decision_id=None,
+        )
+        .first()
+    )
+    if existing:
+        return {"shadow_id": existing.id, "action": "exists"}
+
+    snap = db.query(RecommendationSnapshot).filter_by(id=snapshot_id).first()
+    if not snap:
+        return {"error": "snapshot_not_found", "snapshot_id": snapshot_id}
+
+    allocs: list[dict] = []
+    if snap.projected_allocations_json:
+        try:
+            allocs = json.loads(snap.projected_allocations_json)
+        except Exception:
+            pass
+    if not allocs:
+        return {"error": "no_allocations", "snapshot_id": snapshot_id}
+
+    inception_date = (
+        snap.created_at.date().isoformat() if snap.created_at else date.today().isoformat()
+    )
+    total_portfolio_value = snap.total_portfolio_value or 0.0
+
+    symbols = [a.get("symbol") for a in allocs if a.get("symbol")]
+    prices = _fetch_snapshot_prices(db, symbols, on_or_before=inception_date)
+    missing = [s for s in symbols if s not in prices]
+    if missing:
+        prices.update(_fetch_cached_prices(db, missing))
+
+    holdings = _resolve_shares_from_weights(allocs, total_portfolio_value, prices)
+
+    shadow = ShadowPortfolio(
+        workspace_id=workspace_id,
+        portfolio_id=snap.portfolio_id,
+        shadow_type="STATIC_FROZEN",
+        name=f"Recommendation @ {inception_date} (snapshot {snapshot_id})",
+        inception_date=inception_date,
+        inception_value=total_portfolio_value if total_portfolio_value > 0 else None,
+        recommendation_snapshot_id=snapshot_id,
+        execution_decision_id=None,
+        inception_holdings_json=json.dumps(holdings, default=str),
+        paper_cash_balance=0.0,
+        is_active=True,
+        created_at=datetime.utcnow(),
+    )
+    db.add(shadow)
+    db.commit()
+    db.refresh(shadow)
+
+    backfilled = 0
+    if inception_date < date.today().isoformat():
+        history = _snapshot_price_history(db)
+        if history:
+            backfilled = _rebuild_shadow_snapshots(db, shadow, holdings, history)
+            db.commit()
+
+    logger.info(
+        "[SHADOW] Created recommendation shadow id=%s for snapshot_id=%s "
+        "(%d holdings, %d backfilled snapshots)",
+        shadow.id, snapshot_id, len(holdings), backfilled,
+    )
+    return {
+        "shadow_id": shadow.id,
+        "action": "created",
+        "holdings_count": len(holdings),
+        "backfilled_snapshots": backfilled,
     }
 
 

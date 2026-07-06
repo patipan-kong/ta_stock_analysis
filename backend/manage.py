@@ -46,6 +46,10 @@ Apply a repair plan, then re-validate and rebuild:
     python manage.py apply_repair --portfolio 4 --plan repair_plan_4.json
     python manage.py validate_ledger --portfolio 4 --effective
     python manage.py rebuild_portfolio --portfolio 4
+
+Backfill recommendation-quality grades for existing snapshots (AI Evaluation M1):
+    python manage.py backfill_recommendation_grades --all
+    python manage.py backfill_recommendation_grades --portfolio 4
 """
 from __future__ import annotations
 
@@ -1246,6 +1250,123 @@ def _cmd_verify_snapshots(args: argparse.Namespace) -> int:
     if total_warn:
         return 1
     return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI Evaluation M1: backfill_recommendation_grades
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _cmd_backfill_recommendation_grades(args: argparse.Namespace) -> int:
+    """One-shot backfill: recommendation shadows (P2) + mature horizon grades
+    (P3, M1) + day-0 PLAN grades (M2).
+
+    For every existing RecommendationSnapshot lacking a recommendation-keyed
+    shadow, creates one (create_recommendation_shadow() replays the shadow's
+    full historical daily valuation from PortfolioSnapshot prices when the
+    snapshot predates today — same routine repair_shadow_portfolios() already
+    uses). Then runs the EXPIRED writer, the horizon grader (mature H7-H180
+    grades), and the plan grader (PLAN grade — no maturity wait, needs only
+    the snapshot itself) so every existing snapshot is gradable immediately.
+
+    Idempotent: shadows and grades are both create-if-missing, so re-running
+    this command is always safe and a no-op for anything already backfilled.
+    """
+    from models.database import RecommendationSnapshot, Workspace
+    from services.decision_memory.shadow_tracker import create_recommendation_shadow
+    from services.evaluation.expired_writer import write_expired_decisions
+    from services.evaluation.horizon_grader import grade_due_recommendations
+    from services.evaluation.plan_grader import grade_pending_plans
+
+    db = SessionLocal()
+    t_start = time.monotonic()
+    errors = 0
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        if not args.portfolio and not args.all:
+            print("ERROR: Specify --portfolio ID or --all", file=sys.stderr)
+            return 1
+
+        q = db.query(RecommendationSnapshot).filter(RecommendationSnapshot.workspace_id == ws_id)
+        if args.portfolio:
+            q = q.filter(RecommendationSnapshot.portfolio_id == args.portfolio)
+        snapshots = q.order_by(RecommendationSnapshot.id).all()
+
+        print(f"\n{_hr()}")
+        print("Recommendation Grade Backfill")
+        print(f"Snapshots in scope : {len(snapshots)}")
+        print(_hr())
+
+        created = 0
+        existing = 0
+        for snap in snapshots:
+            try:
+                r = create_recommendation_shadow(db, snap.id, ws_id)
+            except Exception as exc:
+                print(f"  ERROR snapshot {snap.id}: {exc}", file=sys.stderr)
+                errors += 1
+                continue
+            if r.get("action") == "created":
+                created += 1
+                print(
+                    f"  snapshot {snap.id}: shadow created "
+                    f"({r.get('holdings_count')} holdings, "
+                    f"{r.get('backfilled_snapshots')} SPS backfilled)"
+                )
+            elif r.get("action") == "exists":
+                existing += 1
+            else:
+                errors += 1
+                print(f"  snapshot {snap.id}: {r.get('error')}", file=sys.stderr)
+
+        print(f"\nShadows created  : {created}")
+        print(f"Shadows existing : {existing}")
+
+        print(f"\n{_hr()}")
+        print("Grading mature horizons...")
+        expired_result = write_expired_decisions(db)
+        grade_result = grade_due_recommendations(db, portfolio_id=args.portfolio)
+
+        print(f"EXPIRED decisions written : {len(expired_result['written'])}")
+        print(f"Grades written            : {len(grade_result['graded'])}")
+        for g in grade_result["graded"]:
+            print(f"  snapshot {g['snapshot_id']}: {g['grade_kind']}  score={g['score']}")
+
+        skip_reasons: dict[str, int] = {}
+        for s in grade_result["skipped"]:
+            skip_reasons[s["reason"]] = skip_reasons.get(s["reason"], 0) + 1
+        print(f"Grades skipped            : {len(grade_result['skipped'])}")
+        for reason, count in skip_reasons.items():
+            print(f"  {reason}: {count}")
+        print(f"Shadows deactivated (final horizon reached) : {len(grade_result['deactivated'])}")
+
+        print(f"\n{_hr()}")
+        print("Grading day-0 plans...")
+        plan_result = grade_pending_plans(db, portfolio_id=args.portfolio)
+        print(f"PLAN grades written : {len(plan_result['graded'])}")
+        for g in plan_result["graded"]:
+            print(f"  snapshot {g['snapshot_id']}: score={g['score']}")
+        plan_skip_reasons: dict[str, int] = {}
+        for s in plan_result["skipped"]:
+            plan_skip_reasons[s["reason"]] = plan_skip_reasons.get(s["reason"], 0) + 1
+        print(f"PLAN grades skipped : {len(plan_result['skipped'])}")
+        for reason, count in plan_skip_reasons.items():
+            print(f"  {reason}: {count}")
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+    elapsed = time.monotonic() - t_start
+    print(f"\n{_hr()}")
+    print(f"Done in {elapsed:.2f}s")
+    return 1 if errors else 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2756,6 +2877,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print old -> new values without writing to the database",
     )
 
+    # ── backfill_recommendation_grades ────────────────────────────────────────
+    backfill_grades = sub.add_parser(
+        "backfill_recommendation_grades",
+        help="Backfill recommendation shadows + mature horizon grades (AI Evaluation M1)",
+        description=textwrap.dedent("""\
+            One-shot backfill so the AI Evaluation phase does not launch empty
+            for existing users.
+
+            For every existing RecommendationSnapshot lacking a
+            recommendation-keyed shadow (P2), creates one and replays its full
+            historical daily valuation from stored portfolio snapshot prices.
+            Then writes any due EXPIRED decisions (P4), grades every horizon
+            (7/30/90/180 days by default) that has matured (P3), and grades
+            the day-0 PLAN composite (M2 — no maturity wait required).
+
+            Idempotent -- safe to re-run; already-backfilled snapshots and
+            already-graded horizons/plans are skipped.
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    backfill_grades.add_argument(
+        "--portfolio", "-p",
+        type=int,
+        metavar="ID",
+        help="Portfolio ID to backfill",
+    )
+    backfill_grades.add_argument(
+        "--all",
+        action="store_true",
+        help="Backfill all portfolios in the workspace",
+    )
+
     # ── rebuild_portfolio ─────────────────────────────────────────────────────
     rebuild = sub.add_parser(
         "rebuild_portfolio",
@@ -3190,6 +3343,9 @@ def main() -> None:
         sys.exit(exit_code)
     elif args.command == "generate_repair_plan":
         exit_code = asyncio.run(_cmd_generate_repair_plan(args))
+        sys.exit(exit_code)
+    elif args.command == "backfill_recommendation_grades":
+        exit_code = _cmd_backfill_recommendation_grades(args)
         sys.exit(exit_code)
     else:
         parser.print_help()

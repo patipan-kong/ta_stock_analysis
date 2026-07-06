@@ -1,7 +1,7 @@
 """add ledger_repairs table
 
-Revision ID: a1b2c3d4e5f6
-Revises: z0a1b2c3d4e5
+Revision ID: b4c6d8e0f2a4
+Revises: a1b3c5d7e9f0
 Create Date: 2026-06-28
 
 Phase 6.7A: LedgerRepair Foundation.
@@ -21,12 +21,24 @@ Design notes
   transaction (PostgreSQL only).  Application-layer validation covers SQLite.
 * transaction_id is nullable for future portfolio-level repair types that do
   not target a single transaction.
+
+Graph-repair note (AI Evaluation M0, 2026-07-06): this revision originally
+shipped as id "a1b2c3d4e5f6", colliding with the pre-existing
+add_latency_columns migration, and its down_revision pointed at z0a1b2c3d4e5
+in parallel with a1b3c5d7e9f0 (an unmerged branch) — `alembic current`
+detected a graph cycle and could not run at all. The ledger_repairs table
+was already live in the dev DB (created out-of-band, missing two of its
+indexes) with alembic_version stamped at a1b3c5d7e9f0. Fixed here: renamed to
+a unique id, rebased onto the true head (a1b3c5d7e9f0), and the two missing
+indexes were added to the live DB directly before stamping this revision as
+applied (no upgrade() re-run against the already-existing table). See
+DECISION_LOG.md.
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "a1b2c3d4e5f6"
-down_revision = "z0a1b2c3d4e5"
+revision = "b4c6d8e0f2a4"
+down_revision = "a1b3c5d7e9f0"
 branch_labels = None
 depends_on = None
 

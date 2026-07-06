@@ -2529,6 +2529,61 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
             daemon=True,
         ).start()
 
+        # ── AI Evaluation M1 (P2) — recommendation-keyed counterfactual shadow ─
+        # Every recommendation gets its own frozen-at-inception shadow regardless
+        # of what the human later decides, so the Horizon Grading Engine can
+        # grade recommendation quality independent of execution behavior.
+        def _create_recommendation_shadow_bg(_snap_id: int, _workspace_id: int) -> None:
+            try:
+                from services.decision_memory.shadow_tracker import create_recommendation_shadow
+                _bg_db = SessionLocal()
+                try:
+                    r = create_recommendation_shadow(_bg_db, _snap_id, _workspace_id)
+                    _log.info(
+                        "analyze_optimizer: recommendation shadow %s for snapshot_id=%s",
+                        r.get("action") or r.get("error"), _snap_id,
+                    )
+                finally:
+                    _bg_db.close()
+            except Exception as _rec_shadow_exc:
+                _log.warning(
+                    "analyze_optimizer: recommendation shadow creation failed: %s", _rec_shadow_exc
+                )
+
+        _threading.Thread(
+            target=_create_recommendation_shadow_bg,
+            args=(_snap_id, ws),
+            daemon=True,
+        ).start()
+
+        # ── AI Evaluation M2 — day-0 PLAN grade ──────────────────────────────
+        # Graded immediately (not on the daily scheduler like horizon grades)
+        # since a plan grade needs no maturity window — it scores the plan as
+        # it exists at snapshot time. grade_pending_plans() is idempotent
+        # (skips snapshots that already have a PLAN row) and re-derives
+        # everything from this same snapshot, so this is a pure re-graded-once
+        # background write, never a duplicate.
+        def _grade_plan_bg(_portfolio_id: int) -> None:
+            try:
+                from services.evaluation.plan_grader import grade_pending_plans
+                _bg_db = SessionLocal()
+                try:
+                    r = grade_pending_plans(_bg_db, portfolio_id=_portfolio_id)
+                    _log.info(
+                        "analyze_optimizer: PLAN grading graded=%d skipped=%d for portfolio_id=%s",
+                        len(r.get("graded", [])), len(r.get("skipped", [])), _portfolio_id,
+                    )
+                finally:
+                    _bg_db.close()
+            except Exception as _plan_grade_exc:
+                _log.warning("analyze_optimizer: PLAN grading failed: %s", _plan_grade_exc)
+
+        _threading.Thread(
+            target=_grade_plan_bg,
+            args=(body.portfolio_id,),
+            daemon=True,
+        ).start()
+
     # ── Phase 3B.7 — Confidence calibration: update after every optimizer run ─
     # Runs in a background thread so it never delays the HTTP response.
     # Captures a new ConfidenceCalibrationRecord linking back to this run.
@@ -2763,6 +2818,70 @@ async def update_portfolio_settings(body: PortfolioSettingsBody, db: Session = D
     if body.max_sector_pct is not None:
         current["max_sector_pct"] = max(10, min(100, body.max_sector_pct))
     _upsert_setting(db, ws, "portfolio_settings", _json.dumps(current))
+    db.commit()
+    return current
+
+
+# AI Evaluation & Execution Intelligence — Milestone M0 (P7: config home for
+# evaluation thresholds; see docs/AI_EVALUATION_IMPLEMENTATION_PLAN.md §3).
+# Read through this settings service like every other config surface in the
+# app — services/evaluation/ must never hardcode these values (ENGINEERING_
+# PRINCIPLES.md "Configuration").
+_DEFAULT_EVALUATION_SETTINGS: dict = {
+    "horizons_days": [7, 30, 90, 180],
+    "min_n_letter_grade": 8,
+    "min_n_win_rate": 5,
+    "tie_band_pct": 0.3,
+    "expiry_days": 14,
+}
+
+
+def _get_evaluation_settings(db: Session, ws: int) -> dict:
+    row = db.query(Settings).filter(
+        Settings.workspace_id == ws,
+        Settings.key == "evaluation_settings",
+    ).first()
+    if not row:
+        return dict(_DEFAULT_EVALUATION_SETTINGS)
+    try:
+        saved = _json.loads(row.value)
+        result = dict(_DEFAULT_EVALUATION_SETTINGS)
+        result.update({k: saved[k] for k in _DEFAULT_EVALUATION_SETTINGS if k in saved})
+        return result
+    except Exception:
+        return dict(_DEFAULT_EVALUATION_SETTINGS)
+
+
+@app.get("/settings/evaluation")
+async def get_evaluation_settings(db: Session = Depends(get_db)) -> dict:
+    return _get_evaluation_settings(db, _ws_id(db))
+
+
+class EvaluationSettingsBody(BaseModel):
+    horizons_days: list[int] | None = None
+    min_n_letter_grade: int | None = None
+    min_n_win_rate: int | None = None
+    tie_band_pct: float | None = None
+    expiry_days: int | None = None
+
+
+@app.patch("/settings/evaluation")
+async def update_evaluation_settings(body: EvaluationSettingsBody, db: Session = Depends(get_db)) -> dict:
+    ws = _ws_id(db)
+    current = _get_evaluation_settings(db, ws)
+    if body.horizons_days is not None:
+        cleaned = sorted({int(d) for d in body.horizons_days if int(d) > 0})
+        if cleaned:
+            current["horizons_days"] = cleaned
+    if body.min_n_letter_grade is not None:
+        current["min_n_letter_grade"] = max(1, body.min_n_letter_grade)
+    if body.min_n_win_rate is not None:
+        current["min_n_win_rate"] = max(1, body.min_n_win_rate)
+    if body.tie_band_pct is not None:
+        current["tie_band_pct"] = max(0.0, min(10.0, body.tie_band_pct))
+    if body.expiry_days is not None:
+        current["expiry_days"] = max(1, body.expiry_days)
+    _upsert_setting(db, ws, "evaluation_settings", _json.dumps(current))
     db.commit()
     return current
 
@@ -3564,6 +3683,9 @@ class TransactionBuyBody(BaseModel):
     exchange_rate: float = 1.0
     transaction_date: str | None = None
     notes: str | None = None
+    # AI Evaluation M2 (P5): optional metadata-only link to the decision this
+    # trade fulfills. See services/portfolio_transactions.py::execute_buy docstring.
+    execution_decision_id: int | None = None
 
 
 class TransactionSellBody(BaseModel):
@@ -3575,6 +3697,7 @@ class TransactionSellBody(BaseModel):
     transaction_date: str | None = None
     notes: str | None = None
     remove_if_zero: bool = True
+    execution_decision_id: int | None = None
 
 
 class TransactionDepositBody(BaseModel):
@@ -3642,6 +3765,7 @@ def _tx_row(tx: Transaction) -> dict:
         "transaction_date": tx.transaction_date.isoformat() + "Z",
         "notes": tx.notes,
         "sector": tx.sector,
+        "execution_decision_id": tx.execution_decision_id,
         "created_at": tx.created_at.isoformat() + "Z" if tx.created_at else None,
     }
 
@@ -3681,6 +3805,7 @@ async def transaction_buy(
         transaction_date=tx_date,
         notes=body.notes,
         sector=sector,
+        execution_decision_id=body.execution_decision_id,
     )
     _analytics_invalidate(portfolio_id)
     return result
@@ -3719,6 +3844,7 @@ async def transaction_sell(
             transaction_date=tx_date,
             notes=body.notes,
             remove_if_zero=body.remove_if_zero,
+            execution_decision_id=body.execution_decision_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -6339,6 +6465,107 @@ async def get_calibration_history(
         }
         for r in rows
     ]
+
+
+# ─── AI Evaluation M3 — Aggregation APIs & Verdict Composer ──────────────────
+# See docs/AI_EVALUATION_IMPLEMENTATION_PLAN.md §5 M3. All endpoints here are
+# read + in-memory aggregation only (grading itself stays in the scheduler,
+# services/evaluation/horizon_grader.py + plan_grader.py, M1/M2) — every
+# response carries as_of + a per-section/top-level status so the frontend
+# (M4+) can render degraded/cold-start states instead of silent zeros
+# (PLAN §4.7).
+
+@app.get("/analytics/evaluation/scorecard")
+async def get_evaluation_scorecard(
+    portfolio_id: int,
+    period_days: int = 90,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Three-lens (Belief / Execution / Outcome) aggregate for one portfolio.
+
+    Reuses RecommendationGrade rows (M1 horizon grades, M2 plan grades) plus
+    the existing compute_portfolio_attribution / compare_human_vs_ai
+    analytics services — computes zero new grades. Cold-start portfolios
+    (no optimizer run ever) return status="cold_start" with structured
+    empty lenses, never zeros or an error.
+    """
+    _ws_id(db)
+    from services.evaluation.scorecard import compute_scorecard
+
+    return await asyncio.to_thread(compute_scorecard, db, portfolio_id, period_days)
+
+
+@app.get("/analytics/evaluation/recommendations")
+async def get_evaluation_recommendations_ledger(
+    portfolio_id: int,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Recommendations ledger (UX S2): every snapshot, newest first, with a
+    per-horizon HorizonStrip (graded / maturing / pending_grading) and the
+    decision recorded against it. Rejected/expired rows carry
+    is_counterfactual=True — the recommendation-keyed shadow (P2) always
+    exists regardless of what the human did.
+    """
+    _ws_id(db)
+    from services.evaluation.recommendation_ledger import list_recommendations_ledger
+
+    return await asyncio.to_thread(list_recommendations_ledger, db, portfolio_id, limit, offset)
+
+
+@app.get("/analytics/evaluation/recommendations/{snapshot_id}")
+async def get_evaluation_report_card(
+    portfolio_id: int,
+    snapshot_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Single-recommendation Report Card (UX S3): plan (day-0 PLAN grade) ->
+    execution (plan-vs-actual, if a decision was recorded) -> outcome
+    (horizon grades). Plan grading never changes; sections 2-3 fill in as
+    reality arrives.
+    """
+    _ws_id(db)
+    from services.evaluation.recommendation_ledger import get_report_card
+
+    result = await asyncio.to_thread(get_report_card, db, portfolio_id, snapshot_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Recommendation snapshot not found")
+    return result
+
+
+@app.get("/analytics/evaluation/execution")
+async def get_evaluation_execution_ledger(
+    portfolio_id: int,
+    period_days: int = 90,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Execution ledger (UX S4): decisions in the window with plan-vs-actual
+    execution scores, plus class-segmented acceptance (UX D5 — never an
+    unsegmented total).
+    """
+    _ws_id(db)
+    from services.evaluation.execution_ledger import list_execution_ledger
+
+    return await asyncio.to_thread(list_execution_ledger, db, portfolio_id, period_days)
+
+
+@app.get("/analytics/evaluation/execution/{decision_id}")
+async def get_evaluation_execution_detail(
+    portfolio_id: int,
+    decision_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Execution detail (UX S4b): per-symbol timing/size/funding deltas for
+    one decision, plus the §8 PARTIAL-execution warning when applicable.
+    """
+    _ws_id(db)
+    from services.evaluation.execution_ledger import get_execution_detail
+
+    result = await asyncio.to_thread(get_execution_detail, db, portfolio_id, decision_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Execution decision not found")
+    return result
 
 
 # ─── Phase 4C.6A — Timing Intelligence: Allocation Periods ───────────────────

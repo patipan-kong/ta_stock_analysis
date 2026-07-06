@@ -52,6 +52,7 @@ class Workspace(Base):
     shadow_portfolios = relationship("ShadowPortfolio", back_populates="workspace", cascade="all, delete-orphan")
     attribution_metrics = relationship("AttributionMetric", back_populates="workspace", cascade="all, delete-orphan")
     calibration_records = relationship("ConfidenceCalibrationRecord", back_populates="workspace", cascade="all, delete-orphan")
+    recommendation_grades = relationship("RecommendationGrade", back_populates="workspace", cascade="all, delete-orphan")
 
 
 class Portfolio(Base):
@@ -222,6 +223,10 @@ class Transaction(Base):
     transaction_date = Column(DateTime, nullable=False, index=True)
     notes = Column(Text, nullable=True)
     sector = Column(String, nullable=True)
+    # AI Evaluation M0 (P5): metadata-only link to the decision that led to this
+    # trade, populated only when entered via the app after an APPROVED/PARTIAL
+    # decision. Never read by the canonicalizer, rebuilder, or ledger validators.
+    execution_decision_id = Column(Integer, ForeignKey("user_execution_decisions.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     portfolio = relationship("Portfolio", back_populates="transactions")
@@ -386,6 +391,7 @@ class RecommendationSnapshot(Base):
     workspace = relationship("Workspace", back_populates="recommendation_snapshots")
     decisions = relationship("UserExecutionDecision", back_populates="snapshot", cascade="all, delete-orphan")
     shadow_portfolios = relationship("ShadowPortfolio", back_populates="recommendation_snapshot")
+    grades = relationship("RecommendationGrade", back_populates="recommendation_snapshot", cascade="all, delete-orphan")
 
 
 class UserExecutionDecision(Base):
@@ -406,6 +412,10 @@ class UserExecutionDecision(Base):
     original_symbol = Column(String, nullable=True)               # symbol AI recommended
     replacement_symbol = Column(String, nullable=True)            # symbol human chose instead
     reason_category = Column(String, nullable=True)               # short category tag
+    # AI Evaluation M0 (P4): True for EXPIRED rows the daily scheduler writes on
+    # behalf of the user (superseded-or-14-days undecided) — distinguishes system-
+    # authored decisions from genuine human actions everywhere `decision` is read.
+    is_system_generated = Column(Boolean, nullable=False, default=False)
     executed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -497,6 +507,41 @@ class AttributionMetric(Base):
 
     workspace = relationship("Workspace", back_populates="attribution_metrics")
     shadow_portfolio = relationship("ShadowPortfolio", back_populates="attribution_metrics")
+
+
+class RecommendationGrade(Base):
+    """AI Evaluation M0 (P3): append-only grade row for one recommendation snapshot.
+
+    One row per (recommendation_snapshot_id, grade_kind). Written once by the
+    grading services (M1 horizon_grader, M2 plan_grader) and never UPDATEd — a
+    discovered grading bug is corrected by a migration + DECISION_LOG entry,
+    per OPTIMIZER_PHILOSOPHY.md Invariant 1 (recorded history is immutable).
+    This model is data only; no business logic lives here (services/evaluation/
+    owns all grading arithmetic — see ENGINEERING_PRINCIPLES Single Source of Truth).
+    """
+    __tablename__ = "recommendation_grades"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    recommendation_snapshot_id = Column(Integer, ForeignKey("recommendation_snapshots.id", ondelete="CASCADE"), nullable=False, index=True)
+    portfolio_id = Column(Integer, ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False, index=True)
+    grade_kind = Column(String, nullable=False, index=True)        # PLAN | H7 | H30 | H90 | H180
+    graded_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    window_start = Column(String, nullable=True)                   # "YYYY-MM-DD"; null for PLAN (day-0, no window)
+    window_end = Column(String, nullable=True)                     # "YYYY-MM-DD"
+    return_pct = Column(Float, nullable=True)                      # horizon grades: recommendation-shadow return
+    benchmark_return_pct = Column(Float, nullable=True)
+    alpha = Column(Float, nullable=True)
+    max_drawdown_pct = Column(Float, nullable=True)
+    directional_correct = Column(Boolean, nullable=True)           # per-horizon directional call, null until mature
+    score = Column(Float, nullable=True)                           # PLAN/execution composite 0-100
+    detail_json = Column(Text, nullable=True)                      # documented sub-score breakdown (UX "[breakdown ▾]")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    workspace = relationship("Workspace", back_populates="recommendation_grades")
+    recommendation_snapshot = relationship("RecommendationSnapshot", back_populates="grades")
+
+    __table_args__ = (UniqueConstraint("recommendation_snapshot_id", "grade_kind", name="uq_recommendation_grade_kind"),)
 
 
 class ConfidenceCalibrationRecord(Base):
