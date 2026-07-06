@@ -6568,6 +6568,53 @@ async def get_evaluation_execution_detail(
     return result
 
 
+# ─── AI Evaluation M5 — Human vs AI Scoreboard & Opportunity Cost ────────────
+# See docs/AI_EVALUATION_IMPLEMENTATION_PLAN.md §5 M5. Both read + in-memory
+# aggregation only, grade-row sourced (never re-derives return math) — same
+# as_of/status conventions as the M3 endpoints above.
+
+@app.get("/analytics/evaluation/human-vs-ai")
+async def get_evaluation_human_vs_ai_scoreboard(
+    portfolio_id: int,
+    period_days: int = 90,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Grade-sourced Human vs AI Scoreboard (UX S5).
+
+    Additive to the existing /analytics/human-vs-ai (unchanged, still backs
+    the optimizer page) — this reads RecommendationGrade horizon rows
+    instead of live ad-hoc valuation, so it agrees exactly with the
+    Recommendations Ledger and Opportunity Cost ledger. Tie-banded per
+    evaluation_settings.tie_band_pct; segmented by trade class and by
+    structured override type (UX.2D columns).
+    """
+    _ws_id(db)
+    from services.analytics.human_vs_ai import compute_scoreboard
+
+    return await asyncio.to_thread(compute_scoreboard, db, portfolio_id, period_days)
+
+
+@app.get("/analytics/evaluation/opportunity-cost")
+async def get_evaluation_opportunity_cost(
+    portfolio_id: int,
+    period_days: int = 90,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Counterfactual Opportunity-Cost ledger (UX S6).
+
+    Prices every divergence from the AI's recommendation (REJECTED,
+    PARTIAL_EXECUTION, MANUAL_OVERRIDE, EXPIRED) against the recommendation-
+    keyed shadow's matured horizon grade — symmetric by construction (a
+    divergence can help or cost, §12). Includes a companion strip of the
+    system's own deferred trades, reported structurally with pricing marked
+    unavailable rather than fabricated.
+    """
+    _ws_id(db)
+    from services.evaluation.opportunity_cost import compute_opportunity_cost
+
+    return await asyncio.to_thread(compute_opportunity_cost, db, portfolio_id, period_days)
+
+
 # ─── Phase 4C.6A — Timing Intelligence: Allocation Periods ───────────────────
 
 @app.get("/analytics/timing-periods")

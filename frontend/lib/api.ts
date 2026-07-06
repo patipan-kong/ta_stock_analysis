@@ -3446,3 +3446,95 @@ export const getExecutionDetail = (portfolioId: number, decisionId: number) =>
   apiFetch<ExecutionDetail>(
     `/analytics/evaluation/execution/${decisionId}?portfolio_id=${portfolioId}`,
   );
+
+// ── AI Evaluation M5 — Human vs AI Scoreboard & Opportunity Cost ─────────────
+// Types mirror backend/services/{analytics/human_vs_ai.compute_scoreboard,
+// evaluation/opportunity_cost}.py exactly. Grade-row sourced (never live
+// ad-hoc valuation) so these agree with the S2 ledger and each other.
+
+export type ScoreboardOutcome = "ai_better" | "human_better" | "tie";
+
+export interface ScoreboardDecisionRow {
+  decision_id: number;
+  snapshot_id: number;
+  status: "graded" | "maturing";
+  decision: string;
+  delta: number | null;
+  outcome: ScoreboardOutcome | null;
+  grade_kind?: string | null;
+}
+
+export interface ScoreboardClassBucket {
+  human_better: number;
+  ai_better: number;
+  tie: number;
+  total: number;
+}
+
+export interface HumanVsAiScoreboard {
+  portfolio_id: number;
+  period_days: number;
+  as_of: string;
+  status: "ok" | "cold_start";
+  tie_band_pct: number;
+  summary: {
+    n_graded: number;
+    you_beat_ai: number;
+    ai_beat_you: number;
+    ties: number;
+    maturing: number;
+    net_effect_pct: number | null;
+  };
+  by_trade_class: Record<string, ScoreboardClassBucket>;
+  by_override_type: Record<string, ScoreboardClassBucket>;
+  decisions: ScoreboardDecisionRow[];
+}
+
+export const getHumanVsAiScoreboard = (portfolioId: number, periodDays = 90) =>
+  apiFetch<HumanVsAiScoreboard>(
+    `/analytics/evaluation/human-vs-ai?portfolio_id=${portfolioId}&period_days=${periodDays}`,
+  );
+
+export interface OpportunityCostRow {
+  decision_id: number;
+  snapshot_id: number;
+  date: string | null;
+  divergence_type: "REJECTED" | "PARTIAL_EXECUTION" | "MANUAL_OVERRIDE" | "EXPIRED";
+  override_type: string | null;
+  original_symbol: string | null;
+  replacement_symbol: string | null;
+  status: "graded" | "maturing";
+  grade_kind: string | null;
+  counterfactual_recommendation_return_pct: number | null;
+  actual_return_pct: number | null;
+  counterfactual_delta_pct: number | null;
+  note: string;
+}
+
+export interface SystemDeferralRow {
+  snapshot_id: number;
+  date: string | null;
+  symbol: string;
+  action: string;
+  reason: string;
+  note: string | null;
+  counterfactual_pricing: "unavailable";
+  counterfactual_reason: string;
+}
+
+export interface OpportunityCostLedger {
+  portfolio_id: number;
+  period_days: number;
+  as_of: string;
+  status: "ok" | "cold_start";
+  net_opportunity_cost_pct: number | null;
+  graded_count: number;
+  maturing_count: number;
+  rows: OpportunityCostRow[];
+  system_deferrals: SystemDeferralRow[];
+}
+
+export const getOpportunityCost = (portfolioId: number, periodDays = 90) =>
+  apiFetch<OpportunityCostLedger>(
+    `/analytics/evaluation/opportunity-cost?portfolio_id=${portfolioId}&period_days=${periodDays}`,
+  );

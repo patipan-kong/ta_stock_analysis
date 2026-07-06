@@ -18,7 +18,7 @@ Public API:
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -266,6 +266,179 @@ def _empty_summary() -> dict[str, Any]:
         "ai_wins": 0,
         "human_wins": 0,
         "verdict": "No execution decisions recorded yet.",
+    }
+
+
+_REASON_LABELS = {
+    "MANDATORY_RISK_REDUCTION": "Mandatory Risk Reduction",
+    "POLICY_ENFORCEMENT": "Policy Enforcement",
+    "PORTFOLIO_IMPROVEMENT": "Portfolio Improvement",
+}
+
+
+def _nearest_graded_horizon(db: Session, snapshot_id: int, period_days: int):
+    """Nearest matured RecommendationGrade horizon row for one snapshot.
+
+    Prefers the largest horizon that matured within period_days; falls back
+    to whatever horizon is graded if none fit that window (a decision can
+    still be scored against, e.g., an H7 grade even inside a 90-day query).
+    Returns None when nothing has graded yet — callers must treat that as
+    "maturing", never guess a return (PLAN §4.7). Shared by
+    services.evaluation.opportunity_cost (M5) and compute_scoreboard below
+    so "what would the recommendation have returned" is read the same way
+    everywhere (ENGINEERING_PRINCIPLES Single Source of Truth).
+    """
+    from models.database import RecommendationGrade
+
+    rows = (
+        db.query(RecommendationGrade)
+        .filter(
+            RecommendationGrade.recommendation_snapshot_id == snapshot_id,
+            RecommendationGrade.grade_kind.like("H%"),
+        )
+        .all()
+    )
+    if not rows:
+        return None
+    candidates = sorted(rows, key=lambda r: int(r.grade_kind[1:]))
+    within = [r for r in candidates if int(r.grade_kind[1:]) <= period_days]
+    return within[-1] if within else candidates[0]
+
+
+def compute_scoreboard(db: Session, portfolio_id: int, period_days: int = 90) -> dict[str, Any]:
+    """Grade-sourced Human-vs-AI Scoreboard (AI Evaluation M5, UX S5).
+
+    Additive sibling to compare_human_vs_ai — that function's live ad-hoc
+    valuation is unchanged and still backs /analytics/human-vs-ai,
+    /analytics/ai-vs-human-timeline, and the optimizer page's existing
+    AttributionPanel consumers (zero regression risk, ENGINEERING_PRINCIPLES
+    System Integration). This function instead reads the same
+    RecommendationGrade horizon rows the Recommendations Ledger (S2) and
+    Opportunity Cost (S6) already use — "verdicts sourced from grade rows,"
+    per the M5 implementation plan — so every Evaluation-hub screen that
+    says "the AI would have returned X%" is reading the identical recorded
+    number. Decisions without a matured grade row are reported as maturing,
+    never estimated from a live in-flight valuation.
+
+    is_system_generated (EXPIRED) rows are excluded here: S5 is specifically
+    about deliberate human judgment vs the AI ("where is each of you
+    strong?" — UX tone rule), whereas an EXPIRED row reflects inaction, not
+    a decision. Inaction is priced instead in
+    services.evaluation.opportunity_cost, which is the honest ledger for
+    ignored/expired recommendations.
+
+    Sign convention matches compare_human_vs_ai: delta = ai_recommendation
+    return − actual_return (positive = AI would have done better).
+    net_effect_pct is the mirror (−mean(delta)): positive means the human's
+    own decisions outperformed full compliance.
+
+    Trade-class and override-type segmentation are decision-level
+    approximations — the same documented convention as
+    execution_ledger.py's acceptance_by_class (a multi-trade recommendation
+    contributes its outcome to every Reason class it contains).
+    """
+    from main import _get_evaluation_settings
+    from models.database import UserExecutionDecision, Workspace
+    from services.evaluation.plan_grader import derive_full_plan, read_snapshot_plan_inputs
+
+    ws_row = db.query(Workspace).order_by(Workspace.id).first()
+    ws = ws_row.id if ws_row else 1
+    settings = _get_evaluation_settings(db, ws)
+    tie_band_pct = float(settings.get("tie_band_pct") or 0.3)
+
+    cutoff = (date.today() - timedelta(days=period_days)).isoformat()
+
+    decisions = (
+        db.query(UserExecutionDecision)
+        .filter(
+            UserExecutionDecision.workspace_id == ws,
+            UserExecutionDecision.portfolio_id == portfolio_id,
+            UserExecutionDecision.executed_at >= cutoff,
+            UserExecutionDecision.is_system_generated == False,  # noqa: E712
+        )
+        .order_by(UserExecutionDecision.executed_at.desc())
+        .all()
+    )
+
+    you_beat_ai = 0
+    ai_beat_you = 0
+    ties = 0
+    maturing = 0
+    deltas: list[float] = []
+    class_totals: dict[str, dict[str, int]] = {}
+    override_totals: dict[str, dict[str, int]] = {}
+    decision_rows: list[dict[str, Any]] = []
+
+    for dec in decisions:
+        snap = dec.snapshot
+        if snap is None:
+            continue
+
+        grade_row = _nearest_graded_horizon(db, snap.id, period_days)
+        since = dec.executed_at.strftime("%Y-%m-%d") if dec.executed_at else cutoff
+        actual_ret, _dd, _vol = _portfolio_return_since(db, portfolio_id, since)
+
+        if grade_row is None or grade_row.return_pct is None or actual_ret is None:
+            maturing += 1
+            decision_rows.append({
+                "decision_id": dec.id, "snapshot_id": snap.id, "status": "maturing",
+                "decision": dec.decision, "delta": None, "outcome": None, "grade_kind": None,
+            })
+            continue
+
+        delta = round(grade_row.return_pct - actual_ret, 4)
+        deltas.append(delta)
+        if abs(delta) <= tie_band_pct:
+            outcome = "tie"
+            ties += 1
+        elif delta > 0:
+            outcome = "ai_better"
+            ai_beat_you += 1
+        else:
+            outcome = "human_better"
+            you_beat_ai += 1
+
+        decision_rows.append({
+            "decision_id": dec.id, "snapshot_id": snap.id, "status": "graded",
+            "decision": dec.decision, "delta": delta, "outcome": outcome,
+            "grade_kind": grade_row.grade_kind,
+        })
+
+        inputs = read_snapshot_plan_inputs(db, snap)
+        if inputs is not None:
+            plan = derive_full_plan(inputs["target_allocations"], inputs["cash_available"], inputs["violations"])
+            seen_labels: set[str] = set()
+            for t in plan["execution_optimization"].trades:
+                label = _REASON_LABELS.get(t.reason)
+                if not label or label in seen_labels:
+                    continue
+                seen_labels.add(label)
+                bucket = class_totals.setdefault(label, {"human_better": 0, "ai_better": 0, "tie": 0})
+                bucket[outcome] += 1
+
+        if dec.decision == "MANUAL_OVERRIDE" and dec.override_type:
+            bucket = override_totals.setdefault(dec.override_type, {"human_better": 0, "ai_better": 0, "tie": 0})
+            bucket[outcome] += 1
+
+    net_effect_pct = round(-sum(deltas) / len(deltas), 4) if deltas else None
+
+    return {
+        "portfolio_id": portfolio_id,
+        "period_days": period_days,
+        "as_of": datetime.utcnow().isoformat() + "Z",
+        "status": "ok" if decisions else "cold_start",
+        "tie_band_pct": tie_band_pct,
+        "summary": {
+            "n_graded": len(deltas),
+            "you_beat_ai": you_beat_ai,
+            "ai_beat_you": ai_beat_you,
+            "ties": ties,
+            "maturing": maturing,
+            "net_effect_pct": net_effect_pct,
+        },
+        "by_trade_class": {label: {**v, "total": sum(v.values())} for label, v in class_totals.items()},
+        "by_override_type": {label: {**v, "total": sum(v.values())} for label, v in override_totals.items()},
+        "decisions": decision_rows,
     }
 
 
