@@ -2573,6 +2573,22 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     except Exception as _as_exc:
         _log.warning("analyze_optimizer: action_summary failed — continuing: %s", _as_exc)
 
+    # ── Execution Optimization — deterministic post-processing stage ─────────
+    # See OPTIMIZER_PHILOSOPHY.md §7/§9/§10. Never re-runs L1/L2/L3, never
+    # mutates target_allocations — a response-time view, same pattern as
+    # action_summary above.
+    try:
+        from services.optimizer.execution_optimizer import optimize_execution
+        _violations = (result.get("active_policy") or {}).get("violations", [])
+        result["execution_optimization"] = optimize_execution(
+            result.get("action_summary", {}),
+            result.get("target_allocations", []),
+            cash_available=float(result.get("cash_balance") or 0.0),
+            violations=_violations,
+        ).model_dump()
+    except Exception as _eo_exc:
+        _log.warning("analyze_optimizer: execution_optimization failed — continuing: %s", _eo_exc)
+
     finish_run(body.portfolio_id, ok=True)
     return result
 
@@ -2644,6 +2660,18 @@ async def get_optimizer_history_detail(history_id: int, db: Session = Depends(ge
             payload["action_summary"] = build_action_summary(payload.get("target_allocations", []))
         except Exception as _as_exc:
             _log.warning("get_optimizer_history_detail: action_summary backfill failed — continuing: %s", _as_exc)
+    if "execution_optimization" not in payload:
+        try:
+            from services.optimizer.execution_optimizer import optimize_execution
+            _violations = (payload.get("active_policy") or {}).get("violations", [])
+            payload["execution_optimization"] = optimize_execution(
+                payload.get("action_summary", {}),
+                payload.get("target_allocations", []),
+                cash_available=float(payload.get("cash_balance") or 0.0),
+                violations=_violations,
+            ).model_dump()
+        except Exception as _eo_exc:
+            _log.warning("get_optimizer_history_detail: execution_optimization backfill failed — continuing: %s", _eo_exc)
     return payload
 
 

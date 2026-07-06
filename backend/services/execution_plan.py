@@ -29,8 +29,6 @@ from services.funding_source_analysis import (
 
 log = logging.getLogger(__name__)
 
-_REDUCE_RELEASE_PCT = 0.25  # release 25% of a position when signal = REDUCE
-
 
 # ── Response models ────────────────────────────────────────────────────────────
 
@@ -39,8 +37,12 @@ class FundingAction(BaseModel):
     symbol: str
     current_shares: float
     current_value: float          # avg_cost × shares (estimated, no live price)
-    release_pct: float            # 1.0 for SELL, 0.25 for REDUCE
+    release_pct: float            # fraction of the position actually released today
     estimated_cash_release: float
+    full_recommended_amount: float | None = None   # this trade's own full planned release
+    necessity: str | None = None                   # "NECESSARY" | "DISCRETIONARY"
+    execution_state: str | None = None             # "FULL" | "SCALED" | "DEFERRED"
+    note: str | None = None                        # human explanation
 
 
 class BuyAction(BaseModel):
@@ -62,6 +64,7 @@ class CashSummary(BaseModel):
 
 class ExecutionPlanResult(BaseModel):
     funding_actions: list[FundingAction]
+    deferred_funding_actions: list[FundingAction] = []  # discretionary trades not needed today
     buy_actions: list[BuyAction]
     cash_summary: CashSummary
     status: str                      # "READY" | "INSUFFICIENT" | "NO_SELLS_NEEDED"
@@ -134,40 +137,11 @@ def build_execution_plan(
         if r.symbol.endswith(".BK"):
             signal_map.setdefault(r.symbol[:-3], sig)
 
-    # ── Funding sources: existing holdings flagged SELL or REDUCE ──────────────
     buy_set = {s.upper() for s in buy_symbols}
-    funding_actions: list[FundingAction] = []
 
-    for item in portfolio_items:
-        sym = item.symbol
-        if sym in buy_set or sym.rstrip(".BK") in buy_set:
-            continue  # don't fund by selling what we're buying
-        signal = signal_map.get(sym, "HOLD")
-        if signal not in ("SELL", "REDUCE"):
-            continue
-
-        current_value = item_values.get(sym, 0.0)
-        release_pct = 1.0 if signal == "SELL" else _REDUCE_RELEASE_PCT
-
-        funding_actions.append(FundingAction(
-            action=signal,
-            symbol=sym,
-            current_shares=round(float(item.shares), 4),
-            current_value=round(current_value, 2),
-            release_pct=release_pct,
-            estimated_cash_release=round(current_value * release_pct, 2),
-        ))
-
-    # SELL first, then REDUCE; within each group sorted by value desc
-    funding_actions.sort(
-        key=lambda fa: (0 if fa.action == "SELL" else 1, -fa.estimated_cash_release)
-    )
-
-    # ── Capital available ──────────────────────────────────────────────────────
-    cash_released = sum(fa.estimated_cash_release for fa in funding_actions)
-    total_deployable = cash + cash_released
-
-    # ── Buy actions from sizing suggestions ────────────────────────────────────
+    # ── Buy actions from sizing suggestions (computed first — funding needs
+    #    to know the total deployment before it can decide what's actually
+    #    necessary to release; see OPTIMIZER_PHILOSOPHY.md §10) ────────────────
     sizing_map = {str(s.get("symbol", "")).upper(): s for s in sizing_suggestions}
     _timing = timing_scores or {}
     buy_actions: list[BuyAction] = []
@@ -187,8 +161,54 @@ def build_execution_plan(
         ))
 
     buy_actions.sort(key=lambda ba: -ba.allocation_pct)
-
     total_deployed = sum(ba.estimated_amount for ba in buy_actions)
+
+    # ── Funding: existing holdings flagged SELL or REDUCE ──────────────────────
+    # Execution Optimization (services/optimizer/execution_optimizer.py) decides
+    # which of these actually execute today, and how much of each — never an
+    # unconditional "every flagged holding becomes a funding action" scan.
+    funding_breakdown = build_funding_sources(
+        item_values=item_values,
+        signal_map=signal_map,
+        cash_available=cash,
+        buy_set=buy_set,
+        total_deployment=total_deployed,
+    )
+
+    funding_actions: list[FundingAction] = []
+    deferred_funding_actions: list[FundingAction] = []
+    for src in (funding_breakdown.sell_sources + funding_breakdown.reduce_sources):
+        funding_actions.append(FundingAction(
+            action=src.action, symbol=src.symbol,
+            current_shares=round(float(next(
+                (i.shares for i in portfolio_items if i.symbol == src.symbol), 0.0
+            )), 4),
+            current_value=src.current_value,
+            release_pct=src.release_pct,
+            estimated_cash_release=src.estimated_release,
+            full_recommended_amount=src.current_value,
+            necessity=src.necessity,
+            execution_state=src.execution_state,
+            note=src.note,
+        ))
+    for src in funding_breakdown.deferred_sources:
+        deferred_funding_actions.append(FundingAction(
+            action=src.action, symbol=src.symbol,
+            current_shares=round(float(next(
+                (i.shares for i in portfolio_items if i.symbol == src.symbol), 0.0
+            )), 4),
+            current_value=src.current_value,
+            release_pct=src.release_pct,
+            estimated_cash_release=src.estimated_release,
+            full_recommended_amount=src.current_value,
+            necessity=src.necessity,
+            execution_state=src.execution_state,
+            note=src.note,
+        ))
+
+    # ── Capital available ──────────────────────────────────────────────────────
+    cash_released = funding_breakdown.total_released
+    total_deployable = cash + cash_released
     cash_remaining = round(total_deployable - total_deployed, 2)
 
     # ── Warnings ───────────────────────────────────────────────────────────────
@@ -212,16 +232,9 @@ def build_execution_plan(
     else:
         status = "READY"
 
-    funding_breakdown = build_funding_sources(
-        item_values=item_values,
-        signal_map=signal_map,
-        cash_available=cash,
-        buy_set=buy_set,
-        total_deployment=total_deployed,
-    )
-
     return ExecutionPlanResult(
         funding_actions=funding_actions,
+        deferred_funding_actions=deferred_funding_actions,
         buy_actions=buy_actions,
         cash_summary=CashSummary(
             total_value=round(total_value, 2),

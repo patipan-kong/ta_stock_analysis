@@ -1050,6 +1050,42 @@ export interface OptimizerResult {
   stabilization?: StabilizationMeta | null;
   // UX.2C — Action Summary
   action_summary?: ActionSummary | null;
+  // Execution Optimization — deterministic post-processing stage
+  execution_optimization?: ExecutionOptimizationResult | null;
+}
+
+// ── Execution Optimization ────────────────────────────────────────────────────
+// See docs/OPTIMIZER_PHILOSOPHY.md §7/§9/§10 and
+// backend/services/optimizer/execution_optimizer.py. Reason/Necessity/
+// Execution Role/Execution State are deliberately independent axes — see
+// that module's docstring for why each exists separately.
+
+export type TradeReason =
+  | "MANDATORY_RISK_REDUCTION"
+  | "POLICY_ENFORCEMENT"
+  | "PORTFOLIO_IMPROVEMENT";
+
+export type ExecutionRole = "STANDALONE" | "FUNDING_SOURCE" | "NOT_NEEDED_TODAY";
+
+export interface OptimizedTrade {
+  symbol: string;
+  action: "SELL" | "REDUCE";
+  sector?: string | null;
+  reason: TradeReason;
+  necessity: TradeNecessity;
+  execution_role: ExecutionRole;
+  execution_state: TradeExecutionState;
+  full_recommended_amount: number;
+  executed_amount: number;
+  note: string;
+}
+
+export interface ExecutionOptimizationResult {
+  cash_available: number;
+  total_buy_deployment: number;
+  funding_gap: number;
+  trades: OptimizedTrade[];
+  idle_cash_after: number;
 }
 
 export interface OptimizerHistoryItem {
@@ -2980,6 +3016,9 @@ export const suggestPositionSizes = (
 
 // ── Phase UX.2E — Execution Plan Generator ────────────────────────────────────
 
+export type TradeNecessity = "NECESSARY" | "DISCRETIONARY";
+export type TradeExecutionState = "FULL" | "SCALED" | "DEFERRED";
+
 export interface FundingAction {
   action: "SELL" | "REDUCE";
   symbol: string;
@@ -2987,6 +3026,10 @@ export interface FundingAction {
   current_value: number;
   release_pct: number;
   estimated_cash_release: number;
+  full_recommended_amount?: number | null;
+  necessity?: TradeNecessity | null;
+  execution_state?: TradeExecutionState | null;
+  note?: string | null;
 }
 
 export interface BuyAction {
@@ -3014,6 +3057,9 @@ export interface FundingSourceItem {
   current_value: number;
   release_pct: number;
   estimated_release: number;
+  necessity?: TradeNecessity | null;
+  execution_state?: TradeExecutionState | null;
+  note?: string | null;
 }
 
 export interface FundingCashSource {
@@ -3030,10 +3076,12 @@ export interface FundingBreakdown {
   total_deployment: number;
   surplus_cash: number;
   status: "FUNDED" | "INSUFFICIENT" | "CASH_ONLY";
+  deferred_sources?: FundingSourceItem[];
 }
 
 export interface ExecutionPlanResult {
   funding_actions: FundingAction[];
+  deferred_funding_actions?: FundingAction[];
   buy_actions: BuyAction[];
   cash_summary: ExecutionCashSummary;
   status: "READY" | "INSUFFICIENT" | "NO_SELLS_NEEDED";

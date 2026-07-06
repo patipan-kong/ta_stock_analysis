@@ -17,7 +17,7 @@ const DECISION_BADGE: Record<ExecutionDecisionType, string> = {
 };
 
 function decisionLabel(decision: ExecutionDecisionType): string {
-  if (decision === "APPROVED") return "Approve Rebalance";
+  if (decision === "APPROVED") return "Approve Recommendation";
   if (decision === "REJECTED") return "Reject Recommendation";
   if (decision === "MANUAL_OVERRIDE") return "Manual Override";
   return "Partial Execution";
