@@ -4,6 +4,10 @@ Converts a basket of stocks (with technical, fundamental, risk, and
 confidence scores) into a target portfolio allocation where weights sum
 to 100%.
 
+Produces an Ideal Portfolio in the sense of OPTIMIZER_PHILOSOPHY.md §5 —
+friction-free target weights; whether a trade toward them is worth making
+today is decided downstream, not here.
+
 Formula
 -------
     expected_return  = technical_score * 0.40 + fundamental_score * 0.40

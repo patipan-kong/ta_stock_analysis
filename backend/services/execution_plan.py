@@ -5,6 +5,9 @@ Bridges the gap between optimizer analysis and actual trade execution by
 identifying funding sources (SELL/REDUCE existing holdings) and sizing
 buy targets using the position sizing output already computed.
 
+See OPTIMIZER_PHILOSOPHY.md §9 (Reason vs. Execution Role) and §10 (Funding
+Philosophy) — a sale here is never justified "to fund" a purchase.
+
 Public API
 ----------
 build_execution_plan(portfolio_id, workspace_id, buy_symbols,

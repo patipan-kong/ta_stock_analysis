@@ -4,12 +4,13 @@
 
 Read the following project documents first:
 
-Required
+Required Reading
 
-- docs/ENGINEERING_PRINCIPLES.md
-- docs/ARCHITECTURE.md
-- docs/ROADMAP.md
-- docs/PORTFOLIO_CALCULATION_RULES.md
+- ENGINEERING_PRINCIPLES.md
+- ARCHITECTURE.md
+- OPTIMIZER_PHILOSOPHY.md
+- PORTFOLIO_CALCULATION_RULES.md
+- DECISION_LOG.md
 
 Read additional documents only when relevant.
 
@@ -31,3 +32,15 @@ Avoid duplicating project rules inside CLAUDE.md.
 
 If you are modifying an existing feature,
 search DECISION_LOG.md for related architectural decisions before changing behavior.
+
+### Optimizer-related work
+Before modifying any optimizer logic, execution logic, policy logic,
+or AI evaluation logic, read these documents first:
+
+1. docs/ENGINEERING_PRINCIPLES.md
+2. docs/ARCHITECTURE.md
+3. docs/OPTIMIZER_PHILOSOPHY.md
+4. docs/PORTFOLIO_CALCULATION_RULES.md
+5. docs/DECISION_LOG.md (if relevant)
+
+Do not modify optimizer behavior without understanding the philosophy described in OPTIMIZER_PHILOSOPHY.md.

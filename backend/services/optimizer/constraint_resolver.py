@@ -12,6 +12,9 @@ Resolution rule for upper-bound constraints (position cap, sector cap, turnover)
 Resolution rule for lower-bound constraints (cash floor):
     effective = max(user_pref, regime_policy, emergency_limit, system_safety)
 
+See OPTIMIZER_PHILOSOPHY.md §2 — constraints are enforced deterministically
+and never negotiate with a belief, however confident.
+
 The resolved EffectiveEnvelope is the ONLY policy object injected into:
   - L1/L2/L3 AI prompt governance blocks
   - Post-AI constraint enforcement in run_layered_optimizer

@@ -1,3 +1,9 @@
+"""3-Layer Optimizer — L1 Strategist, L2 Challenger, L3 Risk Auditor.
+
+See OPTIMIZER_PHILOSOPHY.md §5 (pipeline stages) and §6 (Belief Engine
+boundary) — these layers answer belief questions only; trade selection and
+funding arithmetic happen downstream, deterministically.
+"""
 import json
 import logging
 from typing import Callable

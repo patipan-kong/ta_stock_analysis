@@ -10,6 +10,9 @@ Prevents optimizer hyperactivity through four deterministic mechanisms:
 These checks run AFTER the AI pipeline completes and BEFORE the result is returned to
 the frontend. They are purely deterministic — no additional AI calls are made.
 
+See OPTIMIZER_PHILOSOPHY.md §8 — every trade is guilty until proven necessary;
+this layer is where that default is enforced.
+
 Override conditions bypass the cooldown when urgent action is warranted:
   - Market regime change since last rebalance
   - Sector concentration breach detected

@@ -9,6 +9,9 @@ Converts optimizer signals into a structured funding flow:
     ─────────────────────────────────────────
     Total Funding  →  vs. Total Deployment  →  Surplus / Shortfall
 
+See OPTIMIZER_PHILOSOPHY.md §10 — existing cash is always the first funding
+source; a sale is a funding source only if it already justifies itself.
+
 Public API
 ----------
 build_funding_sources(item_values, signal_map, cash_available, buy_set,

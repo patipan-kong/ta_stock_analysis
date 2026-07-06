@@ -7,6 +7,9 @@ The Policy Engine is the structural risk-governance layer above all AI agents.
 AI recommendations operate INSIDE these deterministic constraints; they cannot
 override hard limits regardless of what they propose.
 
+See OPTIMIZER_PHILOSOPHY.md §2 — this envelope encodes Priorities 1-2 of the
+objective hierarchy; no lower priority may ever purchase a violation of it.
+
 Public API:
     compute_policy(persona_ctx, regime_ctx, portfolio_data, consensus, max_sector_pct)
         → PolicyEnvelope
