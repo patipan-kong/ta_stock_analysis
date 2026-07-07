@@ -2408,10 +2408,34 @@ export interface AttributionHistoryRecord {
   computed_at: string | null;
 }
 
+// AI Evaluation M6 — effect waterfall (services/analytics/attribution_engine
+// .compute_attribution_waterfall), additive on /analytics/attribution-summary.
+export interface AttributionWaterfallEffect {
+  key: string;
+  label: string;
+  value: number | null;
+  status: "ok" | "approx" | "unavailable" | "maturing" | "no_overrides";
+  note: string;
+}
+
+export interface AttributionWaterfall {
+  portfolio_id: number;
+  period_days: number;
+  status: "ok" | "insufficient_data";
+  as_of: string;
+  benchmark_return_pct: number | null;
+  actual_return_pct: number | null;
+  effects: AttributionWaterfallEffect[];
+  residual_pct: number | null;
+  residual_note: string | null;
+  verdict: VerdictPayload | null;
+}
+
 export interface AttributionSummaryResponse {
   portfolio_id: number;
   current: PortfolioAttributionResult;
   history: AttributionHistoryRecord[];
+  waterfall: AttributionWaterfall;
 }
 
 export interface DecisionComparison {
@@ -2629,6 +2653,42 @@ export interface ShadowSummaryItem {
   snapshot_count: number;
 }
 
+// AI Evaluation M6 — Three Portfolios (services/evaluation/ideal_series.py),
+// additive on /analytics/shadow-performance.
+export interface ThreePortfoliosChartRow {
+  date: string;
+  ideal: number | null;
+  ai: number | null;
+  actual: number | null;
+  benchmark: number | null;
+}
+
+export interface ThreePortfolioSeriesStat {
+  status: string;
+  return_pct: number | null;
+  max_drawdown_pct: number | null;
+  annualized_volatility: number | null;
+}
+
+export interface PortfolioGap {
+  value: number | null;
+  label: string;
+  interpretation: VerdictPayload;
+}
+
+export interface ThreePortfolios {
+  portfolio_id: number;
+  period_days: number;
+  status: "ok" | "insufficient_data";
+  as_of: string;
+  chart: ThreePortfoliosChartRow[];
+  ideal: ThreePortfolioSeriesStat;
+  ai_portfolio: ThreePortfolioSeriesStat;
+  actual: ThreePortfolioSeriesStat;
+  gap_a: PortfolioGap;
+  gap_b: PortfolioGap;
+}
+
 export interface ShadowPerformanceSummary {
   portfolio_id: number;
   has_shadows: boolean;
@@ -2638,6 +2698,7 @@ export interface ShadowPerformanceSummary {
     active_model: ShadowSummaryItem | null;
     tracking_since: string | null;
   } | null;
+  three_portfolios: ThreePortfolios;
 }
 
 export interface AIvsHumanTimelineEntry {
@@ -2681,10 +2742,10 @@ export interface CalibrationHistoryEntry {
   computed_at: string;
 }
 
-/** Portfolio-level aggregate shadow performance */
-export const getShadowPerformanceSummary = (portfolioId: number) =>
+/** Portfolio-level aggregate shadow performance (+ Three Portfolios, M6) */
+export const getShadowPerformanceSummary = (portfolioId: number, periodDays = 90) =>
   apiFetch<ShadowPerformanceSummary>(
-    `/analytics/shadow-performance?portfolio_id=${portfolioId}`,
+    `/analytics/shadow-performance?portfolio_id=${portfolioId}&period_days=${periodDays}`,
   );
 
 /** Per-decision AI vs human timeline */
@@ -3233,13 +3294,17 @@ export interface BeliefLens {
   grade: LetterGrade;
 }
 
+// AI Evaluation M6: Implementation Shortfall (Gap A) — additive union with
+// the M3-era UnavailableField (services/evaluation/ideal_series.py).
+export type ImplementationShortfall = UnavailableField | { status: "ok"; value_pct: number };
+
 export interface ExecutionLens {
   status: EvidenceStatus;
   n_plans: number;
   avg_plan_score: number | null;
   avg_necessity_pct: number | null;
   avg_funding_efficiency_pct: number | null;
-  implementation_shortfall: UnavailableField;
+  implementation_shortfall: ImplementationShortfall;
   grade: LetterGrade;
 }
 
@@ -3251,14 +3316,26 @@ export interface WinRate {
   human_wins: number | null;
 }
 
+// AI Evaluation M6: Ideal return — additive union with UnavailableField.
+export type IdealReturnField = UnavailableField | { status: "ok"; value_pct: number | null };
+
+// AI Evaluation M5: Net Opportunity Cost, now wired from
+// services/evaluation/opportunity_cost.py instead of shipping unavailable.
+export interface NetOpportunityCostField {
+  status: string;
+  value_pct: number | null;
+  graded_count: number | null;
+  maturing_count: number | null;
+}
+
 export interface OutcomeLens {
   status: string;
   actual_return_pct: number | null;
   ai_model_return_pct: number | null;
-  ideal_return_pct: UnavailableField;
+  ideal_return_pct: IdealReturnField;
   benchmark_return_pct: number | null;
   win_rate: WinRate;
-  net_opportunity_cost: UnavailableField;
+  net_opportunity_cost: NetOpportunityCostField;
   max_drawdown_pct: { actual: number | null; ai_model: number | null; ideal: number | null };
   regret_score: number | null;
 }

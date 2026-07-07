@@ -5698,10 +5698,16 @@ async def get_attribution_summary(
     )
     history = _get_summary(db, portfolio_id, limit=10)
 
+    from services.analytics.attribution_engine import compute_attribution_waterfall
+    waterfall = await asyncio.to_thread(
+        compute_attribution_waterfall, db, portfolio_id, evaluation_window_days
+    )
+
     return {
         "portfolio_id": portfolio_id,
         "current": current,
         "history": history,
+        "waterfall": waterfall,
     }
 
 
@@ -6065,6 +6071,7 @@ async def record_decision_by_snapshot(
 @app.get("/analytics/shadow-performance")
 async def get_shadow_performance_summary(
     portfolio_id: int,
+    period_days: int = 90,
     db: Session = Depends(get_db),
 ) -> dict:
     """Portfolio-level shadow performance summary.
@@ -6072,8 +6079,32 @@ async def get_shadow_performance_summary(
     Aggregates all active shadow portfolios for a portfolio into a single
     response with inception return, current value, last valued date, and
     benchmark alpha for each shadow type.  Null-safe for new portfolios.
+
+    AI Evaluation M6 (additive): also returns `three_portfolios` — Ideal /
+    AI Portfolio (ACTIVE_MODEL) / Your Portfolio aligned on one date axis
+    (indexed to 100) plus Gap A (Ideal−AI) and Gap B (AI−You), for the S7
+    Three Portfolios screen. `period_days` defaults to 90 so existing
+    callers that omit it see unchanged behavior in every other field.
     """
     ws = _ws_id(db)
+    from services.evaluation.ideal_series import compute_three_portfolios
+    from services.evaluation.verdict_composer import compose_gap_interpretation
+
+    settings = _get_evaluation_settings(db, ws)
+    tie_band_pct = float(settings.get("tie_band_pct") or 0.3)
+
+    three_portfolios = await asyncio.to_thread(
+        compute_three_portfolios, db, portfolio_id, period_days
+    )
+    gap_a_value = three_portfolios.get("gap_a", {}).get("value")
+    gap_b_value = three_portfolios.get("gap_b", {}).get("value")
+    three_portfolios["gap_a"]["interpretation"] = compose_gap_interpretation(
+        gap_kind="gap_a", value=gap_a_value, tie_band_pct=tie_band_pct
+    )
+    three_portfolios["gap_b"]["interpretation"] = compose_gap_interpretation(
+        gap_kind="gap_b", value=gap_b_value, tie_band_pct=tie_band_pct
+    )
+
     rows = (
         db.query(ShadowPortfolio)
         .filter_by(workspace_id=ws, portfolio_id=portfolio_id, is_active=True)
@@ -6081,7 +6112,10 @@ async def get_shadow_performance_summary(
         .all()
     )
     if not rows:
-        return {"portfolio_id": portfolio_id, "shadows": [], "has_shadows": False}
+        return {
+            "portfolio_id": portfolio_id, "shadows": [], "has_shadows": False,
+            "three_portfolios": three_portfolios,
+        }
 
     from services.decision_memory.shadow_tracker import value_shadow_portfolio as _val_shadow
 
@@ -6141,6 +6175,7 @@ async def get_shadow_performance_summary(
                 (s["inception_date"] for s in shadows if s["inception_date"]), default=None
             ),
         },
+        "three_portfolios": three_portfolios,
     }
 
 

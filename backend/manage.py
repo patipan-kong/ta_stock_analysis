@@ -1370,6 +1370,280 @@ def _cmd_backfill_recommendation_grades(args: argparse.Namespace) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Regenerate: regenerate_paper_portfolios (Accounting Correctness Milestone 2)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _shadow_state_counts(db, portfolio_ids: list[int]) -> dict[str, int]:
+    """Identity/count snapshot used for before/after regeneration validation."""
+    shadow_q = db.query(ShadowPortfolio).filter(ShadowPortfolio.portfolio_id.in_(portfolio_ids))
+    static_shadows = shadow_q.filter(ShadowPortfolio.shadow_type == "STATIC_FROZEN").all()
+    active_shadows = shadow_q.filter(ShadowPortfolio.shadow_type == "ACTIVE_MODEL").count()
+    recommendation_shadows = len([s for s in static_shadows if s.execution_decision_id is None])
+    decision_shadows = len(static_shadows) - recommendation_shadows
+    shadow_ids = [s.id for s in shadow_q.all()]
+    snapshot_count = (
+        db.query(ShadowPortfolioSnapshot)
+        .filter(ShadowPortfolioSnapshot.shadow_portfolio_id.in_(shadow_ids))
+        .count()
+        if shadow_ids else 0
+    )
+    attribution_count = (
+        db.query(AttributionMetric)
+        .filter(AttributionMetric.portfolio_id.in_(portfolio_ids))
+        .count()
+    )
+    return {
+        "shadows_total": len(static_shadows) + active_shadows,
+        "shadows_static_decision": decision_shadows,
+        "shadows_static_recommendation": recommendation_shadows,
+        "shadows_active_model": active_shadows,
+        "snapshots": snapshot_count,
+        "attribution_rows": attribution_count,
+    }
+
+
+def _export_shadow_regeneration_backup(db, portfolio_ids: list[int], backup_dir: str = "backups") -> str:
+    """Dump ShadowPortfolio + ShadowPortfolioSnapshot + AttributionMetric rows
+    for *portfolio_ids* to JSON before regeneration mutates them — mirrors
+    portfolio_rebuilder.py's _export_backup convention (pre-commit backup,
+    backup failure aborts the commit).
+    """
+    os.makedirs(backup_dir, exist_ok=True)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ids_label = "_".join(str(i) for i in portfolio_ids) if len(portfolio_ids) <= 5 else f"{len(portfolio_ids)}portfolios"
+    path = os.path.join(backup_dir, f"regenerate_shadows_{ids_label}_{ts}.json")
+
+    shadows = db.query(ShadowPortfolio).filter(ShadowPortfolio.portfolio_id.in_(portfolio_ids)).all()
+    shadow_ids = [s.id for s in shadows]
+    snaps = (
+        db.query(ShadowPortfolioSnapshot)
+        .filter(ShadowPortfolioSnapshot.shadow_portfolio_id.in_(shadow_ids))
+        .all()
+        if shadow_ids else []
+    )
+    attributions = (
+        db.query(AttributionMetric)
+        .filter(AttributionMetric.portfolio_id.in_(portfolio_ids))
+        .all()
+    )
+
+    data = {
+        "portfolio_ids": portfolio_ids,
+        "backup_timestamp": datetime.utcnow().isoformat() + "Z",
+        "shadow_portfolios": [
+            {
+                "id": s.id, "portfolio_id": s.portfolio_id, "shadow_type": s.shadow_type,
+                "inception_date": s.inception_date, "inception_value": s.inception_value,
+                "recommendation_snapshot_id": s.recommendation_snapshot_id,
+                "execution_decision_id": s.execution_decision_id,
+                "inception_holdings_json": s.inception_holdings_json,
+                "paper_cash_balance": s.paper_cash_balance,
+                "current_value": s.current_value,
+                "inception_return_pct": s.inception_return_pct,
+            }
+            for s in shadows
+        ],
+        "shadow_portfolio_snapshots": [
+            {
+                "shadow_portfolio_id": sn.shadow_portfolio_id, "snapshot_date": sn.snapshot_date,
+                "total_value": sn.total_value, "return_pct_since_inception": sn.return_pct_since_inception,
+                "daily_return_pct": sn.daily_return_pct, "holdings_json": sn.holdings_json,
+                "benchmark_return_pct": sn.benchmark_return_pct, "alpha": sn.alpha,
+            }
+            for sn in snaps
+        ],
+        "attribution_metrics": [
+            {
+                "id": a.id, "shadow_portfolio_id": a.shadow_portfolio_id, "portfolio_id": a.portfolio_id,
+                "evaluation_period_start": a.evaluation_period_start, "evaluation_period_end": a.evaluation_period_end,
+                "actual_return_pct": a.actual_return_pct, "static_shadow_return_pct": a.static_shadow_return_pct,
+                "ai_model_return_pct": a.ai_model_return_pct, "regret_score": a.regret_score,
+            }
+            for a in attributions
+        ],
+    }
+
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, default=str)
+    return os.path.abspath(path)
+
+
+def _print_shadow_state_counts(label: str, counts: dict[str, int]) -> None:
+    print(f"{label}:")
+    print(f"  ShadowPortfolio (ACTIVE_MODEL)          : {counts['shadows_active_model']}")
+    print(f"  ShadowPortfolio (STATIC_FROZEN, decision): {counts['shadows_static_decision']}")
+    print(f"  ShadowPortfolio (STATIC_FROZEN, recomm.) : {counts['shadows_static_recommendation']}")
+    print(f"  ShadowPortfolio total                    : {counts['shadows_total']}")
+    print(f"  ShadowPortfolioSnapshot rows              : {counts['snapshots']}")
+    print(f"  AttributionMetric rows                    : {counts['attribution_rows']}")
+
+
+async def _cmd_regenerate_paper_portfolios(args: argparse.Namespace) -> int:
+    """Historical regeneration for Accounting Correctness Milestone 2.
+
+    Re-derives ShadowPortfolio.paper_cash_balance/inception_holdings_json and
+    ShadowPortfolioSnapshot rows for every existing shadow through the
+    Milestone 1-corrected engine (services.decision_memory.shadow_tracker's
+    regenerate_static_shadow / regenerate_active_model_shadow), then refreshes
+    each portfolio's AttributionMetric row (compute_portfolio_attribution is
+    an idempotent per-day upsert, so this never creates a duplicate).
+
+    Defaults to a dry run (--commit is required to persist changes) and
+    supports --backup to export affected rows to JSON first (mirrors
+    portfolio_rebuilder.py's pre-commit backup convention; backup failure
+    aborts the commit). Never touches RecommendationSnapshot, PortfolioSnapshot,
+    PortfolioItem, Transaction, or UserExecutionDecision.
+    """
+    from services.decision_memory.shadow_tracker import regenerate_portfolio_paper_history
+    from services.analytics.attribution_engine import compute_portfolio_attribution
+
+    db = SessionLocal()
+    t_start = time.monotonic()
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        if not args.portfolio and not args.all:
+            print("ERROR: Specify --portfolio ID or --all", file=sys.stderr)
+            return 1
+
+        pq = db.query(Portfolio.id).filter(Portfolio.workspace_id == ws_id)
+        if args.portfolio:
+            pq = pq.filter(Portfolio.id == args.portfolio)
+        portfolio_ids = [row[0] for row in pq.all()]
+        if not portfolio_ids:
+            print("ERROR: No matching portfolios found.", file=sys.stderr)
+            return 1
+
+        print(f"\n{_hr()}")
+        print("Paper Portfolio Regeneration (Accounting Correctness Milestone 2)")
+        print(f"Portfolios in scope : {len(portfolio_ids)} {portfolio_ids}")
+        print(f"Mode                : {'COMMIT' if args.commit else 'DRY RUN (no changes will be persisted)'}")
+        print(_hr())
+
+        before = _shadow_state_counts(db, portfolio_ids)
+        _print_shadow_state_counts("Before regeneration", before)
+
+        if args.commit and args.backup:
+            try:
+                backup_path = _export_shadow_regeneration_backup(db, portfolio_ids)
+                print(f"\nBackup written: {backup_path}")
+            except Exception as exc:
+                print(f"\nERROR: backup failed, aborting commit — {exc}", file=sys.stderr)
+                return 1
+
+        if args.commit and not args.yes:
+            print(
+                f"\nAbout to regenerate paper-portfolio history for {len(portfolio_ids)} "
+                "portfolio(s) and persist the changes."
+            )
+            if not _confirm():
+                print("Aborted.")
+                return 1
+
+        print(f"\n{_hr()}")
+        print("Regenerating...")
+        dry_run = not args.commit
+        violations: list[str] = []
+        errors: list[dict] = []
+        skipped: list[dict] = []
+        shadows_regenerated = 0
+        snapshots_written = 0
+
+        for pid in portfolio_ids:
+            result = regenerate_portfolio_paper_history(db, pid, ws_id, dry_run=dry_run)
+            for r in result["static_shadows"]:
+                if r.get("status") == "regenerated":
+                    shadows_regenerated += 1
+                    snapshots_written += r.get("snapshots_rewritten", 0)
+                    print(
+                        f"  portfolio {pid}: static shadow {r['shadow_id']} regenerated "
+                        f"(cash {r['prev_cash']:.2f} -> {r['new_cash']:.2f}, "
+                        f"{r['snapshots_rewritten']} snapshots)"
+                    )
+                elif r.get("status") == "error":
+                    errors.append(r)
+                    violations.append(f"portfolio {pid} shadow {r['shadow_id']}: {r['error']}")
+                    print(f"  portfolio {pid}: static shadow {r['shadow_id']} FAILED — {r['error']}", file=sys.stderr)
+                else:
+                    skipped.append({"portfolio_id": pid, **r})
+                    print(f"  portfolio {pid}: static shadow {r.get('shadow_id')} skipped ({r.get('status')})")
+            am = result["active_model"]
+            if am and am.get("status") == "regenerated":
+                shadows_regenerated += 1
+                snapshots_written += am.get("snapshots_written", 0)
+                print(
+                    f"  portfolio {pid}: ACTIVE_MODEL shadow {am['shadow_id']} regenerated "
+                    f"({am['rebalances_replayed']} rebalances replayed, "
+                    f"{am['snapshots_written']} snapshots, final cash {am['final_cash']:.2f})"
+                )
+            elif am and am.get("status") == "error":
+                errors.append(am)
+                violations.append(f"portfolio {pid} active model: {am['error']}")
+                print(f"  portfolio {pid}: ACTIVE_MODEL FAILED — {am['error']}", file=sys.stderr)
+            elif am and am.get("status") != "no_active_model_shadow":
+                print(f"  portfolio {pid}: ACTIVE_MODEL skipped ({am.get('status')})")
+
+            if args.commit and result["errors"] == [] and (result["static_shadows"] or (am and am.get("status") == "regenerated")):
+                try:
+                    compute_portfolio_attribution(db, pid)
+                except Exception as exc:
+                    print(f"  portfolio {pid}: attribution refresh failed — {exc}", file=sys.stderr)
+                    violations.append(f"portfolio {pid} attribution refresh: {exc}")
+
+        print(f"\n{_hr()}")
+        print("Regeneration validation")
+        print(_hr())
+        after = _shadow_state_counts(db, portfolio_ids)
+        _print_shadow_state_counts("After regeneration" if args.commit else "After regeneration (dry run — DB unchanged)", after)
+
+        identity_ok = (
+            before["shadows_total"] == after["shadows_total"]
+            and before["shadows_static_decision"] == after["shadows_static_decision"]
+            and before["shadows_static_recommendation"] == after["shadows_static_recommendation"]
+            and before["shadows_active_model"] == after["shadows_active_model"]
+        )
+        no_snapshot_loss = after["snapshots"] >= before["snapshots"]
+
+        accounted_for = shadows_regenerated + len(errors) + len(skipped)
+        fully_accounted = accounted_for == before["shadows_total"]
+
+        print(f"\nIdentity preserved (no shadow rows created/deleted): {'PASS' if identity_ok else 'FAIL'}")
+        print(f"No historical snapshot rows lost                    : {'PASS' if no_snapshot_loss else 'FAIL'}")
+        print(f"Every shadow accounted for (regenerated+errors+skipped == before total): "
+              f"{'PASS' if fully_accounted else 'FAIL'} ({accounted_for}/{before['shadows_total']})")
+        print(f"NAV invariant violations                            : {len(violations)}")
+        for v in violations[:20]:
+            print(f"  - {v}")
+        if skipped:
+            print(f"\nSkipped (no stored holdings to regenerate — not a violation): {len(skipped)}")
+            for s in skipped:
+                print(f"  - portfolio {s['portfolio_id']} shadow {s.get('shadow_id')}: {s.get('status')}")
+
+        print(f"\nShadows regenerated : {shadows_regenerated}")
+        print(f"Snapshots written   : {snapshots_written}")
+        print(f"Errors (NAV invariant, excluded)     : {len(errors)}")
+        print(f"Skipped (no holdings, excluded)      : {len(skipped)}")
+
+        ok = identity_ok and no_snapshot_loss and fully_accounted and not errors
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        db.rollback()
+        return 1
+    finally:
+        db.close()
+
+    elapsed = time.monotonic() - t_start
+    print(f"\n{_hr()}")
+    print(f"Done in {elapsed:.2f}s")
+    return 0 if ok else 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Recalculate: recalculate_snapshot_returns
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -2909,6 +3183,34 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Backfill all portfolios in the workspace",
     )
 
+    # ── regenerate_paper_portfolios ───────────────────────────────────────────
+    regen = sub.add_parser(
+        "regenerate_paper_portfolios",
+        help="Regenerate paper-portfolio history through the corrected accounting engine (Accounting Correctness Milestone 2)",
+        description=textwrap.dedent("""\
+            Re-derives ShadowPortfolio.paper_cash_balance/inception_holdings_json
+            and ShadowPortfolioSnapshot rows for every existing shadow through
+            the Milestone 1 cash-leak fix, then refreshes each portfolio's
+            AttributionMetric row (idempotent per-day upsert).
+
+            Only derived tables are touched: ShadowPortfolio,
+            ShadowPortfolioSnapshot, AttributionMetric. RecommendationSnapshot,
+            PortfolioSnapshot, PortfolioItem, Transaction, and
+            UserExecutionDecision are never written.
+
+            Defaults to a dry run (computes and validates everything, including
+            per-day NAV invariant checks, then rolls back). Pass --commit to
+            persist. Pass --backup with --commit to export affected rows to
+            JSON first (backup failure aborts the commit).
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    regen.add_argument("--portfolio", "-p", type=int, metavar="ID", help="Portfolio ID to regenerate")
+    regen.add_argument("--all", action="store_true", help="Regenerate all portfolios in the workspace")
+    regen.add_argument("--commit", action="store_true", help="Persist changes (default is dry run)")
+    regen.add_argument("--backup", action="store_true", help="Export affected rows to JSON before committing")
+    regen.add_argument("--yes", action="store_true", help="Skip the confirmation prompt before committing")
+
     # ── rebuild_portfolio ─────────────────────────────────────────────────────
     rebuild = sub.add_parser(
         "rebuild_portfolio",
@@ -3346,6 +3648,9 @@ def main() -> None:
         sys.exit(exit_code)
     elif args.command == "backfill_recommendation_grades":
         exit_code = _cmd_backfill_recommendation_grades(args)
+        sys.exit(exit_code)
+    elif args.command == "regenerate_paper_portfolios":
+        exit_code = asyncio.run(_cmd_regenerate_paper_portfolios(args))
         sys.exit(exit_code)
     else:
         parser.print_help()

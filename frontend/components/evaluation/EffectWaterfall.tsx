@@ -19,9 +19,11 @@ export interface WaterfallRow {
 export default function EffectWaterfall({
   rows,
   net,
+  netLabel = "NET",
 }: {
   rows: WaterfallRow[];
   net?: number | null;
+  netLabel?: string;
 }) {
   const scale = Math.max(1, ...rows.map((r) => Math.abs(r.value)));
   return (
@@ -59,7 +61,7 @@ export default function EffectWaterfall({
       })}
       {net != null && (
         <div className="flex items-center gap-3 text-xs pt-2 border-t font-bold">
-          <span className="w-40 shrink-0 text-gray-800">NET</span>
+          <span className="w-40 shrink-0 text-gray-800">{netLabel}</span>
           <div className="flex-1" />
           <span className={`w-20 shrink-0 text-right tabular-nums italic ${net >= 0 ? "text-green-700" : "text-red-600"}`}>
             {net >= 0 ? "+" : ""}

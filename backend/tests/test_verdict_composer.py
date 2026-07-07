@@ -18,6 +18,18 @@ compose_report_card_verdict
   9. plan graded, no horizon matured yet -> plan-only sentence
   10. plan + matured horizon, beat benchmark -> "worked" phrasing
   11. plan + matured horizon, trailed benchmark -> "trailed" phrasing
+
+compose_gap_interpretation — AI Evaluation M6
+  12. value None -> "not enough history" branch
+  13. gap_a within tie band -> near-zero / "not earning its keep" branch
+  14. gap_a positive, outside tie band -> "price of practical execution"
+  15. gap_a negative, outside tie band -> "check the belief engine"
+  16. gap_b positive/negative/tie branches produce distinct, non-empty text
+
+compose_attribution_verdict — AI Evaluation M6
+  17. missing actual/benchmark -> insufficient-evidence sentence
+  18. all effects None -> "not yet measurable" sentence
+  19. dominant effect (largest |value|) is named in the sentence
 """
 from __future__ import annotations
 
@@ -27,6 +39,8 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from services.evaluation.verdict_composer import (  # noqa: E402
+    compose_attribution_verdict,
+    compose_gap_interpretation,
     compose_report_card_verdict,
     compose_scorecard_verdict,
     letter_grade,
@@ -119,3 +133,63 @@ def test_report_card_verdict_trailed_benchmark():
         benchmark_return_pct=1.1, alpha=-2.1, directional_correct=False,
     )
     assert "trailed" in result["en"]
+
+
+def test_gap_interpretation_none_value():
+    result = compose_gap_interpretation(gap_kind="gap_a", value=None, tie_band_pct=0.3)
+    assert "not enough history" in result["en"].lower()
+    assert result["th"]
+
+
+def test_gap_a_near_zero_is_not_earning_its_keep():
+    result = compose_gap_interpretation(gap_kind="gap_a", value=0.1, tie_band_pct=0.3)
+    assert "earning its keep" in result["en"]
+
+
+def test_gap_a_positive_is_price_of_practical_execution():
+    result = compose_gap_interpretation(gap_kind="gap_a", value=2.0, tie_band_pct=0.3)
+    assert "price of practical execution" in result["en"]
+
+
+def test_gap_a_negative_flags_belief_engine():
+    result = compose_gap_interpretation(gap_kind="gap_a", value=-2.0, tie_band_pct=0.3)
+    assert "belief engine" in result["en"]
+
+
+def test_gap_b_branches_are_distinct():
+    tie = compose_gap_interpretation(gap_kind="gap_b", value=0.1, tie_band_pct=0.3)
+    ai_ahead = compose_gap_interpretation(gap_kind="gap_b", value=2.0, tie_band_pct=0.3)
+    human_ahead = compose_gap_interpretation(gap_kind="gap_b", value=-2.0, tie_band_pct=0.3)
+
+    texts = {tie["en"], ai_ahead["en"], human_ahead["en"]}
+    assert len(texts) == 3
+    assert "full compliance" in ai_ahead["en"]
+    assert "added value" in human_ahead["en"]
+
+
+def test_attribution_verdict_insufficient_evidence():
+    result = compose_attribution_verdict(
+        period_days=90, actual_return_pct=None, benchmark_return_pct=3.2, effects=[],
+    )
+    assert "not enough graded history" in result["en"].lower()
+
+
+def test_attribution_verdict_no_measured_effects():
+    result = compose_attribution_verdict(
+        period_days=90, actual_return_pct=6.8, benchmark_return_pct=3.2,
+        effects=[{"label": "Timing Effect", "value": None}],
+    )
+    assert "not yet measurable" in result["en"]
+
+
+def test_attribution_verdict_names_dominant_effect():
+    result = compose_attribution_verdict(
+        period_days=90, actual_return_pct=6.8, benchmark_return_pct=3.2,
+        effects=[
+            {"label": "Stock Selection & Allocation", "value": 2.9},
+            {"label": "Timing Effect", "value": -0.4},
+            {"label": "Your Overrides", "value": 0.7},
+        ],
+    )
+    assert "stock selection & allocation" in result["en"].lower()
+    assert "+6.8%" in result["en"] and "+3.2%" in result["en"]

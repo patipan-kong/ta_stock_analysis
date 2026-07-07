@@ -133,6 +133,104 @@ def compose_scorecard_verdict(
     }
 
 
+def compose_gap_interpretation(
+    *,
+    gap_kind: str,
+    value: float | None,
+    tie_band_pct: float,
+) -> dict[str, str]:
+    """One-line reading of Gap A (Ideal−AI) or Gap B (AI−You), AI Evaluation
+    M6 (UX S7). Sign meaning differs between the two gaps
+    (OPTIMIZER_PHILOSOPHY.md §12's three-way Implementation Shortfall
+    reading vs. the plain human-vs-AI comparison) so the templates are
+    written separately rather than shared. gap_kind is "gap_a" or "gap_b".
+    """
+    if value is None:
+        return {
+            "en": "Not enough history yet to interpret this gap.",
+            "th": "ยังมีข้อมูลไม่พอที่จะตีความช่องว่างนี้",
+        }
+
+    if gap_kind == "gap_a":
+        if abs(value) <= tie_band_pct:
+            return {
+                "en": "Near zero — the execution layer is tracking the ideal closely; it may not be earning its keep as a distinct layer.",
+                "th": "ใกล้ศูนย์ — ชั้นการดำเนินการติดตามพอร์ตในอุดมคติได้ใกล้เคียง อาจไม่ได้สร้างคุณค่าเพิ่มในฐานะชั้นแยกต่างหาก",
+            }
+        if value > 0:
+            return {
+                "en": f"+{value:.1f}% — the price of practical execution; a persistently large gap suggests execution is being too conservative.",
+                "th": f"+{value:.1f}% — ต้นทุนของการดำเนินการจริง หากช่องว่างนี้ยังคงมากต่อเนื่อง แสดงว่าการดำเนินการอาจระมัดระวังเกินไป",
+            }
+        return {
+            "en": f"{value:.1f}% — execution outperformed the frictionless ideal; if this persists, check the belief engine, not the execution layer.",
+            "th": f"{value:.1f}% — การดำเนินการให้ผลดีกว่าพอร์ตในอุดมคติที่ไร้แรงเสียดทาน หากเกิดขึ้นต่อเนื่อง ควรตรวจสอบที่ชั้นความเชื่อ ไม่ใช่ชั้นการดำเนินการ",
+        }
+
+    # gap_b: AI − You
+    if abs(value) <= tie_band_pct:
+        return {
+            "en": "Near zero — your decisions performed about the same as full compliance with the AI Portfolio.",
+            "th": "ใกล้ศูนย์ — การตัดสินใจของคุณให้ผลใกล้เคียงกับการทำตามพอร์ต AI ทั้งหมด",
+        }
+    if value > 0:
+        return {
+            "en": f"+{value:.1f}% — full compliance with the AI Portfolio would have outperformed your own decisions.",
+            "th": f"+{value:.1f}% — การทำตามพอร์ต AI ทั้งหมดจะให้ผลดีกว่าการตัดสินใจของคุณ",
+        }
+    return {
+        "en": f"{abs(value):.1f}% — your own decisions added value over full compliance with the AI Portfolio.",
+        "th": f"{abs(value):.1f}% — การตัดสินใจของคุณเองเพิ่มมูลค่าเหนือกว่าการทำตามพอร์ต AI ทั้งหมด",
+    }
+
+
+def compose_attribution_verdict(
+    *,
+    period_days: int,
+    actual_return_pct: float | None,
+    benchmark_return_pct: float | None,
+    effects: list[dict[str, Any]],
+) -> dict[str, str]:
+    """The Attribution screen's leading sentence (UX S8): "a user should be
+    able to read only the sentence and leave correctly informed." Names the
+    single largest-magnitude measured effect — a simplified, single-cause
+    version of the UX mock's multi-clause narrative (documented scope
+    choice: naming and ranking *multiple* causes in prose is closer to
+    generation than templating; one dominant, deterministically-selected
+    cause keeps this a template, not a narrative). `effects` is
+    [{"label", "value"}, ...] — rows with value=None (unavailable/maturing)
+    are excluded from the "dominant effect" selection, never guessed.
+    """
+    if actual_return_pct is None or benchmark_return_pct is None:
+        return {
+            "en": f"Not enough graded history yet to explain the last {period_days} days' return.",
+            "th": f"ยังมีข้อมูลไม่พอที่จะอธิบายผลตอบแทนในช่วง {period_days} วันที่ผ่านมา",
+        }
+
+    diff = round(actual_return_pct - benchmark_return_pct, 2)
+    measured = [e for e in effects if e.get("value") is not None]
+    if not measured:
+        return {
+            "en": f"You returned {actual_return_pct:+.1f}% vs the benchmark {benchmark_return_pct:+.1f}%. The breakdown is not yet measurable.",
+            "th": f"คุณได้รับผลตอบแทน {actual_return_pct:+.1f}% เทียบกับตลาด {benchmark_return_pct:+.1f}% แต่ยังไม่สามารถแยกสาเหตุได้",
+        }
+
+    dominant = max(measured, key=lambda e: abs(e["value"]))
+    verb_en = "came from" if dominant["value"] >= 0 else "was cost by"
+    verb_th = "มาจาก" if dominant["value"] >= 0 else "ถูกลดทอนจาก"
+
+    return {
+        "en": (
+            f"You returned {actual_return_pct:+.1f}% vs the benchmark {benchmark_return_pct:+.1f}%. "
+            f"Most of the {diff:+.1f}% difference {verb_en} {dominant['label'].lower()}."
+        ),
+        "th": (
+            f"คุณได้รับผลตอบแทน {actual_return_pct:+.1f}% เทียบกับตลาด {benchmark_return_pct:+.1f}% "
+            f"ส่วนต่าง {diff:+.1f}% ส่วนใหญ่{verb_th}{dominant['label']}"
+        ),
+    }
+
+
 def compose_report_card_verdict(
     *,
     plan_score: float | None,

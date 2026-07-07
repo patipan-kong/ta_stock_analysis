@@ -213,6 +213,44 @@ def _actual_portfolio_metrics(
     return total_return, max_dd, volatility
 
 
+def compute_actual_indexed_series(db: Session, portfolio_id: int, cutoff: str) -> dict[str, float]:
+    """Per-date TWR-indexed (base=100) series for the actual portfolio.
+
+    Chains PortfolioSnapshot.investment_return_pct with the identical
+    formula _compute_twr uses for the summary return figure (same field,
+    same multiplicative step) but exposes the running per-date index
+    instead of one final cumulative number — so a performance chart and
+    its summary card read from one methodology and can never disagree
+    (Accounting Correctness C5, Issue B: the Three Portfolios "You" line
+    previously reindexed raw total_value, which double-counts external
+    cash flows a TWR chain correctly strips). Falls back to a raw two-point
+    NAV ratio only when the window has no adjusted returns at all (legacy
+    pre-Phase-3B.8 rows) — the same fallback _actual_portfolio_metrics
+    uses for its own total_return figure.
+    """
+    snaps = _get_actual_snapshots(db, portfolio_id, cutoff)
+    valid_snaps = [s for s in snaps if s.total_value and s.total_value > 0]
+    if not valid_snaps:
+        return {}
+
+    adjusted = [s for s in valid_snaps if s.investment_return_pct is not None]
+    if not adjusted:
+        first, last = valid_snaps[0], valid_snaps[-1]
+        if not first.total_value:
+            return {}
+        return {
+            first.snapshot_date: 100.0,
+            last.snapshot_date: round(last.total_value / first.total_value * 100, 4),
+        }
+
+    running = 100.0
+    dated: dict[str, float] = {}
+    for s in adjusted:
+        running *= 1.0 + s.investment_return_pct / 100.0
+        dated[s.snapshot_date] = round(running, 4)
+    return dated
+
+
 def _shadow_portfolio_metrics(
     snaps: list[Any],
 ) -> tuple[float | None, float, float | None]:
@@ -460,6 +498,260 @@ def _interpret(
         f"AI model and actual portfolio returned within {abs(regret_score):.2f}% of each other "
         "— execution was broadly aligned with recommendations."
     )
+
+
+def _timing_and_fee_effects(
+    db: Session, portfolio_id: int, cutoff: str,
+) -> tuple[float | None, float | None, float | None]:
+    """Dollar-weighted timing effect + fee effect, expressed as % of latest NAV.
+
+    Timing: reuses services.evaluation.plan_grader.read_snapshot_plan_inputs
+    and services.evaluation.execution_analyzer.compute_execution_analysis
+    (M2, unchanged) for each decision's per-symbol timing_delta_pct and
+    executed_amount — a standard transaction-cost-attribution technique
+    (deviation % × dollars actually moved), never an invented scaling
+    constant (AI Evaluation M6).
+
+    Fees: sums the already-existing PortfolioSnapshot.period_fees_paid
+    column (Phase 3B.10) over the window — exact, not approximated.
+
+    Returns (timing_effect_pct, fee_effect_pct, latest_nav); any component
+    is None when it cannot be measured (no linked transactions / no NAV).
+    """
+    from models.database import UserExecutionDecision, PortfolioSnapshot
+    from services.evaluation.plan_grader import read_snapshot_plan_inputs
+    from services.evaluation.execution_analyzer import compute_execution_analysis
+    from services.evaluation.execution_ledger import _recommendation_prices, _linked_transactions
+
+    latest_snap = (
+        db.query(PortfolioSnapshot)
+        .filter(PortfolioSnapshot.portfolio_id == portfolio_id, PortfolioSnapshot.total_value > 0)
+        .order_by(PortfolioSnapshot.snapshot_date.desc())
+        .first()
+    )
+    latest_nav = latest_snap.total_value if latest_snap else None
+
+    decisions = (
+        db.query(UserExecutionDecision)
+        .filter(
+            UserExecutionDecision.portfolio_id == portfolio_id,
+            UserExecutionDecision.executed_at >= cutoff,
+        )
+        .all()
+    )
+
+    timing_dollar_effect = 0.0
+    has_timing = False
+    for dec in decisions:
+        snap = dec.snapshot
+        if snap is None:
+            continue
+        inputs = read_snapshot_plan_inputs(db, snap)
+        if inputs is None:
+            continue
+        analysis = compute_execution_analysis(
+            inputs["target_allocations"], inputs["cash_available"], inputs["violations"],
+            _recommendation_prices(snap), _linked_transactions(db, dec.id),
+        )
+        for sym_data in (analysis.get("symbols") or {}).values():
+            td = sym_data.get("timing_delta_pct")
+            executed = sym_data.get("executed_amount")
+            if td is not None and executed:
+                has_timing = True
+                # Negative timing_delta means the fill was cheaper than the
+                # recommendation-date price — a positive return effect.
+                timing_dollar_effect += -(td / 100.0) * executed
+
+    timing_effect_pct = (
+        round(timing_dollar_effect / latest_nav * 100, 4)
+        if has_timing and latest_nav else None
+    )
+
+    fee_rows = (
+        db.query(PortfolioSnapshot.period_fees_paid)
+        .filter(
+            PortfolioSnapshot.portfolio_id == portfolio_id,
+            PortfolioSnapshot.snapshot_date >= cutoff,
+            PortfolioSnapshot.period_fees_paid.isnot(None),
+        )
+        .all()
+    )
+    total_fees = sum(r[0] for r in fee_rows if r[0])
+    fee_effect_pct = round(-total_fees / latest_nav * 100, 4) if latest_nav else None
+
+    return timing_effect_pct, fee_effect_pct, latest_nav
+
+
+def compute_attribution_waterfall(db: Session, portfolio_id: int, period_days: int = 90) -> dict[str, Any]:
+    """Effect waterfall: benchmark → actual return, decomposed (AI Evaluation
+    M6, UX S8). Reuses, never re-derives:
+
+      - compute_portfolio_attribution (this module) for actual/AI returns.
+      - services.decision_memory.attribution.compute_attribution for the
+        BHB selection/allocation/interaction stub — reported as one combined
+        "Stock Selection & Allocation" row (approx=True) since the stub
+        cannot yet separate the three effects (per-sector benchmark data is
+        not available — see DECISION_LOG). The *combined* total_alpha is a
+        real, already-computable number even though its 3-way split isn't.
+      - _timing_and_fee_effects (above) for the timing and execution (fee)
+        effects.
+      - services.analytics.human_vs_ai.compute_scoreboard's per-decision
+        deltas for MANUAL_OVERRIDE rows, for the override effect.
+
+    Funding effect is honestly reported unavailable: funding_fidelity_pct is
+    a compliance percentage, not a return quantity, and no defensible
+    conversion exists — its influence (if any) rides in the residual row
+    rather than being invented.
+
+    Reconciliation: benchmark_return + Σ(measured effects) + residual ==
+    actual_return, by construction — residual absorbs whatever the measured
+    effects don't explain (the Funding effect, BHB imprecision, compounding-
+    order effects) and is always shown, never silently dropped (constraint
+    §4.8 / M6 acceptance criteria).
+    """
+    from datetime import date as _date, timedelta as _timedelta
+    from models.database import ShadowPortfolio, ShadowPortfolioSnapshot
+    from services.decision_memory.attribution import compute_attribution as _compute_bhb
+    from services.evaluation.verdict_composer import compose_attribution_verdict
+
+    cutoff = (_date.today() - _timedelta(days=period_days)).isoformat()
+    today = _date.today().isoformat()
+    as_of = datetime.utcnow().isoformat() + "Z"
+
+    attribution = compute_portfolio_attribution(db, portfolio_id, period_days)
+    actual_return = attribution.get("actual", {}).get("return_pct")
+
+    ai_row = (
+        db.query(ShadowPortfolio)
+        .filter_by(portfolio_id=portfolio_id, shadow_type="ACTIVE_MODEL", is_active=True)
+        .order_by(ShadowPortfolio.created_at.desc())
+        .first()
+    )
+
+    benchmark_return: float | None = None
+    selection_allocation_value: float | None = None
+    bhb_status = "unavailable"
+    if ai_row:
+        bhb = _compute_bhb(db, ai_row.id, cutoff, today)
+        benchmark_return = bhb.get("benchmark_return")
+        if bhb.get("portfolio_return") is not None and benchmark_return is not None:
+            selection_allocation_value = round(bhb["portfolio_return"] - benchmark_return, 4)
+            bhb_status = "approx"
+
+        if benchmark_return is None:
+            latest_sps = (
+                db.query(ShadowPortfolioSnapshot)
+                .filter_by(shadow_portfolio_id=ai_row.id)
+                .order_by(ShadowPortfolioSnapshot.snapshot_date.desc())
+                .first()
+            )
+            if latest_sps:
+                benchmark_return = latest_sps.benchmark_return_pct
+
+    if actual_return is None or benchmark_return is None:
+        return {
+            "portfolio_id": portfolio_id,
+            "period_days": period_days,
+            "status": "insufficient_data",
+            "as_of": as_of,
+            "benchmark_return_pct": benchmark_return,
+            "actual_return_pct": actual_return,
+            "effects": [],
+            "residual_pct": None,
+            "residual_note": None,
+            "verdict": compose_attribution_verdict(
+                period_days=period_days, actual_return_pct=actual_return,
+                benchmark_return_pct=benchmark_return, effects=[],
+            ),
+        }
+
+    timing_effect_pct, fee_effect_pct, _latest_nav = _timing_and_fee_effects(db, portfolio_id, cutoff)
+
+    from services.analytics.human_vs_ai import compute_scoreboard
+    scoreboard = compute_scoreboard(db, portfolio_id, period_days)
+    scoreboard_decisions = scoreboard.get("decisions", [])
+    override_deltas = [
+        r["delta"] for r in scoreboard_decisions
+        if r.get("decision") == "MANUAL_OVERRIDE" and r.get("status") == "graded" and r.get("delta") is not None
+    ]
+    has_overrides = any(r.get("decision") == "MANUAL_OVERRIDE" for r in scoreboard_decisions)
+
+    if override_deltas:
+        # compute_scoreboard's delta = ai_recommendation_return − actual;
+        # sign-flip + average so positive here means "your override helped."
+        override_effect_pct = round(-sum(override_deltas) / len(override_deltas), 4)
+        override_status = "ok"
+    elif has_overrides:
+        override_effect_pct = None
+        override_status = "maturing"
+    else:
+        override_effect_pct = 0.0
+        override_status = "no_overrides"
+
+    effects = [
+        {
+            "key": "selection_allocation",
+            "label": "Stock Selection & Allocation",
+            "value": selection_allocation_value,
+            "status": bhb_status,
+            "note": "Per-sector BHB decomposition requires per-sector benchmark data (structural stub) — see DECISION_LOG.",
+        },
+        {
+            "key": "timing",
+            "label": "Timing Effect",
+            "value": timing_effect_pct,
+            "status": "approx" if timing_effect_pct is not None else "unavailable",
+            "note": "Dollar-weighted fill-price deviation vs. recommendation-date price, on linked transactions only.",
+        },
+        {
+            "key": "execution",
+            "label": "Execution Effect (fees)",
+            "value": fee_effect_pct,
+            "status": "ok" if fee_effect_pct is not None else "unavailable",
+            "note": "Brokerage fees paid in the window, as % of latest NAV.",
+        },
+        {
+            "key": "funding",
+            "label": "Funding Effect",
+            "value": None,
+            "status": "unavailable",
+            "note": "Funding fidelity is a compliance percentage, not a return quantity — no measurable conversion exists; folded into the residual row.",
+        },
+        {
+            "key": "overrides",
+            "label": "Your Overrides",
+            "value": override_effect_pct,
+            "status": override_status,
+            "note": "Mean (AI-recommendation return − actual) across graded MANUAL_OVERRIDE decisions, sign-flipped so positive = your override helped.",
+        },
+    ]
+
+    measured_sum = sum(e["value"] for e in effects if e["value"] is not None)
+    residual_pct = round((actual_return - benchmark_return) - measured_sum, 4)
+
+    verdict = compose_attribution_verdict(
+        period_days=period_days,
+        actual_return_pct=actual_return,
+        benchmark_return_pct=benchmark_return,
+        effects=[{"label": e["label"], "value": e["value"]} for e in effects],
+    )
+
+    return {
+        "portfolio_id": portfolio_id,
+        "period_days": period_days,
+        "status": "ok",
+        "as_of": as_of,
+        "benchmark_return_pct": round(benchmark_return, 4),
+        "actual_return_pct": round(actual_return, 4),
+        "effects": effects,
+        "residual_pct": residual_pct,
+        "residual_note": (
+            "Whatever the measured effects above don't explain — includes the "
+            "Funding effect (not separably measurable) and BHB/compounding-order "
+            "approximation error. Always shown, never dropped."
+        ),
+        "verdict": verdict,
+    }
 
 
 def get_attribution_summary(

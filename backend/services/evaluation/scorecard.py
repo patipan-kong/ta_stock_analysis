@@ -1,10 +1,9 @@
-"""scorecard.py — AI Evaluation M3: three-lens aggregation for GET
-/analytics/evaluation/scorecard.
+"""scorecard.py — AI Evaluation M3 (extended M6): three-lens aggregation for
+GET /analytics/evaluation/scorecard.
 
 Aggregates Belief / Execution / Outcome (OPTIMIZER_PHILOSOPHY.md §12) from
-data M1/M2 already persisted, plus two already-existing analytics services —
-this module computes zero new grades and re-derives zero return formulas
-(PLAN §4.6):
+data M1/M2/M5/M6 already persisted or computed elsewhere — this module
+computes zero new grades and re-derives zero return formulas (PLAN §4.6):
 
     Belief Quality    — RecommendationGrade rows with grade_kind starting
                         "H" (horizon grades, M1): hit rate (share with
@@ -17,26 +16,27 @@ this module computes zero new grades and re-derives zero return formulas
                         (M2): average plan score, and the necessity/
                         funding_efficiency sub-scores already stored in
                         each row's detail_json. Implementation Shortfall
-                        (Gap A, ideal-vs-AI-Portfolio) needs the ideal
-                        return series, which is services/evaluation/
-                        ideal_series.py — explicitly scoped to M6 by
-                        docs/AI_EVALUATION_IMPLEMENTATION_PLAN.md §5. Ships
-                        here as an honest "unavailable" field rather than a
-                        fabricated number (PLAN §4.7).
+                        (Gap A, ideal-vs-AI-Portfolio) is read from
+                        services.evaluation.ideal_series.compute_ideal_series
+                        (M6) minus attribution_engine's ai_model_shadow
+                        return — the exact same figure
+                        /analytics/shadow-performance's three_portfolios.
+                        gap_a reports (Single Source of Truth, never
+                        recomputed a second way here).
     Outcome Quality   — services.analytics.attribution_engine
                         .compute_portfolio_attribution() (existing, already
                         used by /analytics/attribution-summary) for actual
                         vs AI-Portfolio (ACTIVE_MODEL shadow) returns and
                         drawdowns; services.analytics.human_vs_ai
                         .compare_human_vs_ai() (existing) for the win-rate
-                        figure. Net Opportunity Cost is explicitly "a
-                        placeholder until M5" per the implementation plan's
-                        own M3 section — ships unavailable, not zero.
-                        The benchmark ("SET") figure is read directly off
-                        the most recent ShadowPortfolioSnapshot's own
-                        already-computed benchmark_return_pct column
-                        (shadow_tracker.py owns that computation) rather
-                        than fetching or re-deriving prices here.
+                        figure; services.evaluation.opportunity_cost (M5)
+                        for Net Opportunity Cost and ideal_series (M6) for
+                        Ideal return / drawdown. The benchmark ("SET")
+                        figure is read directly off the most recent
+                        ShadowPortfolioSnapshot's own already-computed
+                        benchmark_return_pct column (shadow_tracker.py owns
+                        that computation) rather than fetching or
+                        re-deriving prices here.
 
 Min-n gating (P7, UX D10) is applied server-side via
 verdict_composer.letter_grade() for the Belief/Execution letter chips, and
@@ -142,7 +142,10 @@ def _calibration_join(db: Session, ws: int, portfolio_id: int) -> dict[str, Any]
     }
 
 
-def _execution_lens(db: Session, ws: int, portfolio_id: int, cutoff_dt: datetime, min_n: int) -> dict[str, Any]:
+def _execution_lens(
+    db: Session, ws: int, portfolio_id: int, cutoff_dt: datetime, min_n: int,
+    ideal: dict[str, Any], ai_model_return_pct: float | None,
+) -> dict[str, Any]:
     from models.database import RecommendationGrade
 
     rows = (
@@ -178,27 +181,44 @@ def _execution_lens(db: Session, ws: int, portfolio_id: int, cutoff_dt: datetime
     status = "ok" if rows else "cold_start"
     grade = letter_grade(avg_score, len(scores), min_n)
 
+    # Implementation Shortfall (Gap A) = Ideal − AI Portfolio return over the
+    # same window (AI Evaluation M6, services/evaluation/ideal_series.py).
+    # Single Source of Truth: this is the exact same figure
+    # /analytics/shadow-performance's three_portfolios.gap_a reports — never
+    # recomputed a second way here.
+    ideal_return = ideal.get("return_pct")
+    if ideal.get("status") != "ok" or ideal_return is None or ai_model_return_pct is None:
+        implementation_shortfall: dict[str, Any] = {
+            "status": "unavailable",
+            "reason": ideal.get("reason") or "ai_portfolio_return_unavailable",
+        }
+    else:
+        implementation_shortfall = {
+            "status": "ok",
+            "value_pct": round(ideal_return - ai_model_return_pct, 4),
+        }
+
     return {
         "status": status,
         "n_plans": len(rows),
         "avg_plan_score": avg_score,
         "avg_necessity_pct": avg_necessity,
         "avg_funding_efficiency_pct": avg_funding_eff,
-        "implementation_shortfall": {
-            "status": "unavailable",
-            "reason": "ideal_series_not_yet_implemented_pending_M6",
-        },
+        "implementation_shortfall": implementation_shortfall,
         "grade": grade,
     }
 
 
-def _outcome_lens(db: Session, ws: int, portfolio_id: int, period_days: int, min_n_win_rate: int) -> dict[str, Any]:
-    from services.analytics.attribution_engine import compute_portfolio_attribution
+def _outcome_lens(
+    db: Session, ws: int, portfolio_id: int, period_days: int, min_n_win_rate: int,
+    ideal: dict[str, Any], attribution: dict[str, Any],
+) -> dict[str, Any]:
     from services.analytics.human_vs_ai import compare_human_vs_ai
+    from services.evaluation.opportunity_cost import compute_opportunity_cost
     from models.database import ShadowPortfolio, ShadowPortfolioSnapshot
 
-    attribution = compute_portfolio_attribution(db, portfolio_id, period_days)
     hva = compare_human_vs_ai(db, portfolio_id, period_days)
+    oc = compute_opportunity_cost(db, portfolio_id, period_days)
 
     benchmark_return_pct = None
     active_shadow = (
@@ -220,11 +240,24 @@ def _outcome_lens(db: Session, ws: int, portfolio_id: int, period_days: int, min
     win_rate_n = hva.get("summary", {}).get("decisions_with_data", 0)
     win_rate_status = "ok" if win_rate_n >= min_n_win_rate else "insufficient_evidence"
 
+    ideal_return_pct: dict[str, Any] | float | None
+    if ideal.get("status") == "ok":
+        ideal_return_pct = {"status": "ok", "value_pct": ideal.get("return_pct")}
+    else:
+        ideal_return_pct = {"status": "unavailable", "reason": ideal.get("reason") or "insufficient_data"}
+
+    net_opportunity_cost = {
+        "status": oc.get("status"),
+        "value_pct": oc.get("net_opportunity_cost_pct"),
+        "graded_count": oc.get("graded_count"),
+        "maturing_count": oc.get("maturing_count"),
+    }
+
     return {
         "status": attribution.get("status", "unavailable"),
         "actual_return_pct": attribution.get("actual", {}).get("return_pct"),
         "ai_model_return_pct": (attribution.get("ai_model_shadow") or {}).get("return_pct"),
-        "ideal_return_pct": {"status": "unavailable", "reason": "ideal_series_not_yet_implemented_pending_M6"},
+        "ideal_return_pct": ideal_return_pct,
         "benchmark_return_pct": benchmark_return_pct,
         "win_rate": {
             "status": win_rate_status,
@@ -233,11 +266,11 @@ def _outcome_lens(db: Session, ws: int, portfolio_id: int, period_days: int, min
             "ai_wins": hva.get("summary", {}).get("ai_wins"),
             "human_wins": hva.get("summary", {}).get("human_wins"),
         },
-        "net_opportunity_cost": {"status": "unavailable", "reason": "opportunity_cost_pending_M5"},
+        "net_opportunity_cost": net_opportunity_cost,
         "max_drawdown_pct": {
             "actual": attribution.get("actual", {}).get("max_drawdown_pct"),
             "ai_model": (attribution.get("ai_model_shadow") or {}).get("max_drawdown_pct"),
-            "ideal": None,
+            "ideal": ideal.get("max_drawdown_pct"),
         },
         "regret_score": attribution.get("regret_score"),
     }
@@ -304,13 +337,13 @@ def compute_scorecard(db: Session, portfolio_id: int, period_days: int = 90) -> 
                        "grade": {"status": "unavailable", "letter": None, "n": 0}},
             "execution": {**empty_lens, "n_plans": 0, "avg_plan_score": None, "avg_necessity_pct": None,
                           "avg_funding_efficiency_pct": None,
-                          "implementation_shortfall": {"status": "unavailable", "reason": "ideal_series_not_yet_implemented_pending_M6"},
+                          "implementation_shortfall": {"status": "unavailable", "reason": "no_recommendation_snapshot_at_or_before_period"},
                           "grade": {"status": "unavailable", "letter": None, "n": 0}},
             "outcome": {**empty_lens, "actual_return_pct": None, "ai_model_return_pct": None,
-                        "ideal_return_pct": {"status": "unavailable", "reason": "ideal_series_not_yet_implemented_pending_M6"},
+                        "ideal_return_pct": {"status": "unavailable", "reason": "no_recommendation_snapshot_at_or_before_period"},
                         "benchmark_return_pct": None,
                         "win_rate": {"status": "insufficient_evidence", "n": 0, "hit_rate_pct": None, "ai_wins": 0, "human_wins": 0},
-                        "net_opportunity_cost": {"status": "unavailable", "reason": "opportunity_cost_pending_M5"},
+                        "net_opportunity_cost": {"status": "cold_start", "value_pct": None, "graded_count": 0, "maturing_count": 0},
                         "max_drawdown_pct": {"actual": None, "ai_model": None, "ideal": None},
                         "regret_score": None},
             "verdict": {
@@ -324,9 +357,16 @@ def compute_scorecard(db: Session, portfolio_id: int, period_days: int = 90) -> 
     cutoff_date = (date.today() - timedelta(days=period_days)).isoformat()
     cutoff_dt = datetime.utcnow() - timedelta(days=period_days)
 
+    from services.evaluation.ideal_series import compute_ideal_series
+    from services.analytics.attribution_engine import compute_portfolio_attribution
+
+    ideal = compute_ideal_series(db, portfolio_id, period_days)
+    attribution = compute_portfolio_attribution(db, portfolio_id, period_days)
+    ai_model_return_pct = (attribution.get("ai_model_shadow") or {}).get("return_pct")
+
     belief = _belief_lens(db, ws, portfolio_id, cutoff_date, min_n_letter)
-    execution = _execution_lens(db, ws, portfolio_id, cutoff_dt, min_n_letter)
-    outcome = _outcome_lens(db, ws, portfolio_id, period_days, min_n_win_rate)
+    execution = _execution_lens(db, ws, portfolio_id, cutoff_dt, min_n_letter, ideal, ai_model_return_pct)
+    outcome = _outcome_lens(db, ws, portfolio_id, period_days, min_n_win_rate, ideal, attribution)
 
     verdict = compose_scorecard_verdict(
         period_days=period_days,

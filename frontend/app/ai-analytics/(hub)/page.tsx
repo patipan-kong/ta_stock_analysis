@@ -173,7 +173,7 @@ export default function ScorecardPage() {
               <div className="pt-1 border-t">
                 <GapAnnotation
                   label="Implementation shortfall"
-                  value={null}
+                  value={data.execution.implementation_shortfall.status === "ok" ? data.execution.implementation_shortfall.value_pct : null}
                   unavailableReason={data.execution.implementation_shortfall.status === "unavailable" ? data.execution.implementation_shortfall.reason : undefined}
                 />
               </div>
@@ -182,7 +182,12 @@ export default function ScorecardPage() {
             <LensCardShell title="Outcome Quality" question="Did it work?">
               <Stat label="You" value={pct(data.outcome.actual_return_pct)} valueClass={pnlTone(data.outcome.actual_return_pct)} />
               <Stat label="AI Portfolio" value={pct(data.outcome.ai_model_return_pct)} valueClass={pnlTone(data.outcome.ai_model_return_pct)} />
-              <Stat label="Ideal" value="unavailable" sub={data.outcome.ideal_return_pct.status === "unavailable" ? data.outcome.ideal_return_pct.reason : undefined} />
+              <Stat
+                label="Ideal"
+                value={data.outcome.ideal_return_pct.status === "ok" ? pct(data.outcome.ideal_return_pct.value_pct) : "unavailable"}
+                valueClass={data.outcome.ideal_return_pct.status === "ok" ? pnlTone(data.outcome.ideal_return_pct.value_pct) : undefined}
+                sub={data.outcome.ideal_return_pct.status === "unavailable" ? data.outcome.ideal_return_pct.reason : undefined}
+              />
               <Stat label="Benchmark" value={pct(data.outcome.benchmark_return_pct)} valueClass={pnlTone(data.outcome.benchmark_return_pct)} />
               <div className="pt-1 border-t">
                 {data.outcome.win_rate.status === "ok" ? (
@@ -199,8 +204,8 @@ export default function ScorecardPage() {
           </div>
 
           {/* Row 3 — the three portfolios summary (point returns only; the
-              indexed sparkline + Gap A/B pair ship in M5/M6 once ideal_series.py
-              and the human-vs-AI extension exist — see completion report). */}
+              full indexed hero chart + allocation/risk breakdowns live on
+              the S7 Portfolios screen, "full view" link below). */}
           <div className="bg-white border border-gray-200 rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">The Three Portfolios ({periodDays}D)</h3>
@@ -209,14 +214,18 @@ export default function ScorecardPage() {
               </Link>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
-              <Stat label="Ideal" value="unavailable" />
+              <Stat
+                label="Ideal"
+                value={data.outcome.ideal_return_pct.status === "ok" ? pct(data.outcome.ideal_return_pct.value_pct) : "unavailable"}
+                valueClass={data.outcome.ideal_return_pct.status === "ok" ? pnlTone(data.outcome.ideal_return_pct.value_pct) : undefined}
+              />
               <Stat label="AI Portfolio" value={pct(data.outcome.ai_model_return_pct)} valueClass={pnlTone(data.outcome.ai_model_return_pct)} />
               <Stat label="You" value={pct(data.outcome.actual_return_pct)} valueClass={pnlTone(data.outcome.actual_return_pct)} />
               <Stat label="Benchmark" value={pct(data.outcome.benchmark_return_pct)} valueClass={pnlTone(data.outcome.benchmark_return_pct)} />
             </div>
             <GapAnnotation
               label="Gap A (Ideal − AI, implementation shortfall)"
-              value={null}
+              value={data.execution.implementation_shortfall.status === "ok" ? data.execution.implementation_shortfall.value_pct : null}
               unavailableReason={data.execution.implementation_shortfall.status === "unavailable" ? data.execution.implementation_shortfall.reason : undefined}
             />
             <p className="text-xs text-gray-400 mt-1">
