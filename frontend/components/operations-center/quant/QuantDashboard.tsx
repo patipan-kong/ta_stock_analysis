@@ -7,6 +7,7 @@ import MarketStatusCard from "./MarketStatusCard";
 import ConsensusRoomCard from "./ConsensusRoomCard";
 import PolicyEnvelopeCard from "./PolicyEnvelopeCard";
 import LatestCommitteeDecisionCard from "./LatestCommitteeDecisionCard";
+import EvaluationVerdictTile from "./EvaluationVerdictTile";
 import DecisionWorkspace from "../decision-workspace/DecisionWorkspace";
 
 const fmtBaht = (v: number) =>
@@ -92,6 +93,8 @@ export default function QuantDashboard({
           <span className="text-gray-400">ข้อมูล ณ {s.snapshot_date}</span>
         )}
       </div>
+
+      <EvaluationVerdictTile portfolioId={portfolioId} />
 
       <LatestCommitteeDecisionCard portfolioId={portfolioId} />
 

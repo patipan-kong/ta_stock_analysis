@@ -3,7 +3,7 @@ _Canonical business specification for Portfolio Performance Calculation. Source 
 
 _Status: **Implemented.** `backend/services/portfolio_metrics.py` is the single shared implementation this document specifies, and `portfolio_rebuilder.py`, `portfolio_snapshots.py`, and `snapshot_return_recovery.py` all delegate to it (ADR-001 through ADR-004, ratified 2026-06-30). Sections 4, 6, and 7's recommendations are implemented as described below. See [Section 12](#12-open-questions) for what remains open (Open Questions #4-#6 — not addressed by this implementation)._
 
-_Companion docs: [ARCH_SPEC.md](ARCH_SPEC.md) (schema + formula reference), [DECISION_LOG.md](DECISION_LOG.md) (why past decisions were made)._
+_Companion docs: [ARCH_SPEC.md](ARCH_SPEC.md) (schema + formula reference), [DECISION_LOG.md](DECISION_LOG.md) (why past decisions were made), [OPTIMIZER_PHILOSOPHY.md](OPTIMIZER_PHILOSOPHY.md) (why the optimizer recommends trades in the first place — this document governs what happened to NAV after they executed, not whether they should have)._
 
 ---
 

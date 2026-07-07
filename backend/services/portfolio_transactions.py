@@ -77,6 +77,7 @@ def execute_buy(
     notes: str | None = None,
     sector: str | None = None,
     fee_profile: FeeProfile | None = None,
+    execution_decision_id: int | None = None,
 ) -> dict:
     """Create a BUY transaction, upsert the holding, and reduce portfolio cash.
 
@@ -84,6 +85,14 @@ def execute_buy(
     Avg cost uses weighted-average formula with fee-inclusive effective price:
         effective_price = (gross + all_fees) / shares
     Cash is allowed to go negative so users can record purchases before depositing.
+
+    execution_decision_id (AI Evaluation M2, P5): optional, metadata-only
+    link to the UserExecutionDecision that led to this trade. Populated only
+    when the caller passes one (app buy/sell flow after an APPROVED/PARTIAL
+    decision) — never inferred or backfilled by this function. The
+    canonicalizer, portfolio_rebuilder, and ledger validators must never read
+    this column; it rides on the ledger as evaluation-layer metadata, not
+    ledger data itself.
     """
     d_shares = _d(shares)
     d_price  = _d(price_per_share)
@@ -138,6 +147,7 @@ def execute_buy(
         transaction_date=tx_date,
         notes=notes,
         sector=sector or (item.sector if item else None),
+        execution_decision_id=execution_decision_id,
     )
     db.add(tx)
     db.commit()
@@ -182,6 +192,7 @@ def execute_sell(
     notes: str | None = None,
     remove_if_zero: bool = True,
     fee_profile: FeeProfile | None = None,
+    execution_decision_id: int | None = None,
 ) -> dict:
     """Create a SELL transaction, reduce the holding, and increase portfolio cash.
 
@@ -251,6 +262,7 @@ def execute_sell(
         exchange_rate=exchange_rate,
         transaction_date=tx_date,
         notes=full_notes,
+        execution_decision_id=execution_decision_id,
     )
     db.add(tx)
     db.commit()

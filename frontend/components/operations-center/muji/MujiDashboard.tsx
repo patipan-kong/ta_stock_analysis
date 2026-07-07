@@ -5,6 +5,7 @@ import GoalProfileCard from "./GoalProfileCard";
 import GoalProgressCard from "./GoalProgressCard";
 import MujiSummaryCard from "./MujiSummaryCard";
 import ActionCard from "./ActionCard";
+import TrustReportCard from "./TrustReportCard";
 
 const fmtBaht = (v: number) =>
   `฿${v.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -71,6 +72,10 @@ export default function MujiDashboard({
       />
 
       <MujiSummaryCard translation={status.muji_translation} />
+
+      {/* AI Evaluation M7 — Trust Report (UX S9): the trust-loop entry
+          point into the Evaluation hub, framed gently for MUJI mode. */}
+      <TrustReportCard portfolioId={portfolioId} />
 
       <ActionCard
         portfolioId={portfolioId}

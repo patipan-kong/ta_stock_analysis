@@ -832,6 +832,32 @@ function FundingFlowCard({ bd, buyActions }: { bd: FundingBreakdown; buyActions:
         </div>
       )}
 
+      {/* ── Deferred — discretionary trades not needed for funding today ── */}
+      {bd.deferred_sources && bd.deferred_sources.length > 0 && (
+        <div className="bg-gray-50 border-b border-gray-100">
+          <div className="px-4 pt-3 pb-1">
+            <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wide mb-2">
+              Not Executing Today
+            </p>
+            <div className="space-y-1.5 pb-2">
+              {bd.deferred_sources.map((src: FundingSourceItem) => (
+                <div key={src.symbol} className="flex flex-col gap-0.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">
+                      {src.action}
+                    </span>
+                    <span className="font-mono font-semibold text-gray-500 text-xs">
+                      {src.symbol}
+                    </span>
+                  </div>
+                  {src.note && <p className="text-[10px] text-gray-400 pl-1">{src.note}</p>}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Summary bar ──────────────────────────────────────────────── */}
       <div className={`border-t-2 px-4 py-3 ${FUND_STATUS_STYLE[bd.status] ?? "border-gray-200 bg-gray-50 text-gray-800"}`}>
         <div className="flex items-center justify-between gap-4 flex-wrap">

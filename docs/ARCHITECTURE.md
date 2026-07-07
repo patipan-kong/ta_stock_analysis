@@ -1,6 +1,7 @@
 # Architecture Specification
 _Source of truth for system design, subsystem contracts, and implementation details._
 _See [ROADMAP.md](ROADMAP.md) for phase history. See [DECISION_LOG.md](DECISION_LOG.md) for design decisions._
+_See [OPTIMIZER_PHILOSOPHY.md](OPTIMIZER_PHILOSOPHY.md) for why the optimizer, execution, and policy subsystems below are shaped the way they are — this document describes their contracts, that one describes their purpose._
 
 ---
 
@@ -249,6 +250,8 @@ valuation_percentile : PE rank vs batch peers (optimizer only)
 
 ## 3-Layer Optimizer (`agents/optimizer.py`)
 
+_Design rationale: [OPTIMIZER_PHILOSOPHY.md](OPTIMIZER_PHILOSOPHY.md) §5 (pipeline shape) and §6 (why AI owns belief, not trade arithmetic)._
+
 ### Layer roles and output schemas
 | Layer | Role | Default Provider | Output Schema |
 |---|---|---|---|
@@ -366,6 +369,8 @@ Resolver runs before `compute_policy()`; policy engine applies confidence discou
 ---
 
 ## Adaptive Policy Engine (`services/optimizer/policy_engine.py`)
+
+_Design rationale: [OPTIMIZER_PHILOSOPHY.md](OPTIMIZER_PHILOSOPHY.md) §2 (Objective Hierarchy) — constraints enforced here outrank AI beliefs, deterministically and without exception._
 
 `compute_policy(persona_ctx, regime_ctx, portfolio_data, consensus, max_sector_pct)` → `PolicyEnvelope`
 

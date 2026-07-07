@@ -1,6 +1,9 @@
 """UX.2D — Structured Override Classifier.
 
 Pure functions only.  No AI calls.  No DB writes.
+
+See OPTIMIZER_PHILOSOPHY.md §13 — an override is the most valuable data
+point the system receives; classify it, never discard or overwrite it.
 """
 from __future__ import annotations
 

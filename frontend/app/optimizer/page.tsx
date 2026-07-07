@@ -560,7 +560,7 @@ const SWAP_TYPE_CLS: Record<string, string> = {
 
 function SwapTable({ swaps }: { swaps: SwapSuggestion[] }) {
   if (!swaps || swaps.length === 0) {
-    return <p className="text-sm text-gray-500">No swap proposals from Strategist.</p>;
+    return <p className="text-sm text-gray-500">No changes met the conviction bar this cycle.</p>;
   }
   return (
     <div className="overflow-x-auto">
@@ -971,7 +971,6 @@ function Layer1Section({
   const swaps: SwapSuggestion[] = layer.swap_suggestions ?? [];
   const topBuys: string[] = (layer as Record<string, unknown>).top_buys as string[] ?? [];
   const sectorFlags: string[] = (layer as Record<string, unknown>).sector_flags as string[] ?? [];
-  const priority: string = (layer as Record<string, unknown>).priority as string ?? "";
   const allocations: TargetAllocation[] = layer.target_allocations ?? [];
 
   return (
@@ -979,9 +978,7 @@ function Layer1Section({
       <div className="flex items-center gap-2 flex-wrap">
         <div>
           <h3 className="font-semibold text-gray-800">🟠 {layer.name ?? "Strategist"}</h3>
-          <p className="text-xs text-orange-600 mt-0.5">
-            Recommendations{priority ? ` — priority: ${priority}` : ""}
-          </p>
+          <p className="text-xs text-orange-600 mt-0.5">Stability Review</p>
         </div>
         <AIBadge provider={layer.provider} model={layer.model} label="" />
       </div>
@@ -994,6 +991,12 @@ function Layer1Section({
             <div className="bg-orange-50 border border-orange-200 rounded-lg px-4 py-2">
               <p className="text-sm text-orange-900">{layer.summary}</p>
             </div>
+          )}
+
+          {(allocations.length > 0 || swaps.length > 0) && (
+            <p className="text-xs text-gray-400 font-medium">
+              {(allocations.length || swaps.length) === 1 ? "Recommendation" : "Recommendations"}
+            </p>
           )}
 
           {allocations.length > 0 ? (
@@ -1014,14 +1017,16 @@ function Layer1Section({
           )}
 
           {topBuys.length > 0 && (
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs text-gray-400 font-medium">Top buys:</span>
-              {topBuys.map((sym) => (
-                <Link key={sym} href={`/stock/${encodeURIComponent(sym)}`}
-                  className="text-xs font-semibold text-green-700 bg-green-50 border border-green-200 px-2 py-0.5 rounded hover:bg-green-100">
-                  {sym.replace(".BK", "")}{sym.endsWith(".BK") ? <span className="text-gray-400">.BK</span> : ""}
-                </Link>
-              ))}
+            <div>
+              <p className="text-xs text-gray-400 font-medium mb-1">Top Watchlist</p>
+              <div className="flex items-center gap-2 flex-wrap">
+                {topBuys.map((sym) => (
+                  <Link key={sym} href={`/stock/${encodeURIComponent(sym)}`}
+                    className="text-xs font-semibold text-green-700 bg-green-50 border border-green-200 px-2 py-0.5 rounded hover:bg-green-100">
+                    {sym.replace(".BK", "")}{sym.endsWith(".BK") ? <span className="text-gray-400">.BK</span> : ""}
+                  </Link>
+                ))}
+              </div>
             </div>
           )}
 
@@ -1462,7 +1467,7 @@ function PortfolioMetricsBar({ result }: { result: OptimizerResult }) {
 // ─── Decision Action Panel ────────────────────────────────────────────────────
 
 const DECISION_CFG: Record<ExecutionDecisionType, { label: string; cls: string; icon: string }> = {
-  APPROVED:         { label: "Approve Rebalance", icon: "✓", cls: "bg-green-600 text-white hover:bg-green-700" },
+  APPROVED:         { label: "Approve Recommendation", icon: "✓", cls: "bg-green-600 text-white hover:bg-green-700" },
   REJECTED:         { label: "Reject Recommendation", icon: "✗", cls: "border border-red-300 text-red-700 hover:bg-red-50" },
   MANUAL_OVERRIDE:  { label: "Manual Override",  icon: "✎", cls: "border border-gray-300 text-gray-600 hover:bg-gray-50" },
   PARTIAL_EXECUTION:{ label: "Partial",          icon: "½", cls: "border border-amber-300 text-amber-700 hover:bg-amber-50" },
@@ -1635,6 +1640,17 @@ function DecisionActionPanel({
             Performance impact tracked. See Attribution panel below.
           </p>
         )}
+
+        {/* AI Evaluation M7 entry point (UX §2.3): "Track this decision" ->
+            the graded execution detail (S4b) for this exact decision. */}
+        <div className="mt-2.5 pt-2.5 border-t border-gray-100">
+          <Link
+            href={`/ai-analytics/execution/${existing.id}`}
+            className="text-xs font-semibold text-blue-600 hover:underline"
+          >
+            Track this decision in AI Evaluation →
+          </Link>
+        </div>
       </section>
     );
   }
@@ -2281,13 +2297,25 @@ function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance,
       )}
 
       {/* ── Execution ────────────────────────────────────────────────────── */}
-      <SectionLabel id="execution">Execution</SectionLabel>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <SectionLabel id="execution">Execution</SectionLabel>
+        {/* AI Evaluation M7 entry point (UX §2.3): "How did this run turn
+            out?" -> the full graded Report Card for this exact recommendation. */}
+        {result.recommendation_snapshot_id && (
+          <Link
+            href={`/ai-analytics/recommendations/${result.recommendation_snapshot_id}`}
+            className="text-xs font-semibold text-blue-600 hover:underline"
+          >
+            AI Evaluation Report Card →
+          </Link>
+        )}
+      </div>
 
       {/* Primary output: what to trade today — a view derived from the
           recommendation above (action_summary classification joined with
           target_allocations amounts), not a separately stored "execution
           plan". The canonical recommendation is never mutated. */}
-      <ExecutionPlanCard result={result} />
+      <ExecutionPlanCard result={result} portfolioId={portfolioId ?? undefined} />
 
       {/* Act on the plan — record approve/reject/override */}
       {result.recommendation_snapshot_id && portfolioId && (

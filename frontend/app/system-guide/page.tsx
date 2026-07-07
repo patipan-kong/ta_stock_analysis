@@ -85,18 +85,6 @@ function OverviewTab() {
       ],
     },
     {
-      icon: "🤖",
-      name: "ศูนย์บัญชาการ AI",
-      color: "border-purple-500 bg-purple-50",
-      titleColor: "text-purple-700",
-      desc: "จุดเดียวสำหรับทุกฟีเจอร์ AI — ดูสถานะ สั่งวิเคราะห์ และเข้าเครื่องมือขั้นสูง",
-      items: [
-        "โหมด MUJI (สรุปเข้าใจง่าย) / โหมด Quant (ข้อมูลแน่น)",
-        "สั่งวิเคราะห์พอร์ต (Run Optimizer) ได้ตรงจากหน้านี้ พร้อม timeline สด",
-        "ลิงก์เข้า Optimizer (รายละเอียดผลเต็ม) และ Portfolio Intelligence (ความจำการตัดสินใจ)",
-      ],
-    },
-    {
       icon: "👀",
       name: "รายการเฝ้าดู",
       color: "border-emerald-500 bg-emerald-50",
@@ -107,6 +95,18 @@ function OverviewTab() {
         "Optimizer ใช้รายการนี้จัดอันดับโอกาสซื้อใหม่",
       ],
     },
+    {
+      icon: "🤖",
+      name: "ศูนย์บัญชาการ AI",
+      color: "border-purple-500 bg-purple-50",
+      titleColor: "text-purple-700",
+      desc: "จุดเดียวสำหรับทุกฟีเจอร์ AI — ดูสถานะ สั่งวิเคราะห์ และเข้าเครื่องมือขั้นสูง",
+      items: [
+        "โหมด MUJI (สรุปเข้าใจง่าย) / โหมด Quant (ข้อมูลแน่น)",
+        "สั่งวิเคราะห์พอร์ต (Run Optimizer) ได้ตรงจากหน้านี้ พร้อม timeline สด",
+        "ลิงก์เข้า Optimizer (รายละเอียดผลเต็ม) และ Portfolio Intelligence (ความจำการตัดสินใจ)",
+      ],
+    },    
     {
       icon: "⚙",
       name: "ระบบ (Admin)",

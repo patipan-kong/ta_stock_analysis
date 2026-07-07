@@ -2,6 +2,8 @@
 
 These principles apply to all code changes.
 
+_These are code-structure principles (reuse, single source of truth, failure handling). For the optimizer's product/decision philosophy — objective hierarchy, Belief vs. Execution Plan, why a trade must justify itself — see [OPTIMIZER_PHILOSOPHY.md](OPTIMIZER_PHILOSOPHY.md); do not duplicate that reasoning here._
+
 ## Reuse Before Create
 
 Before implementing any change:

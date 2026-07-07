@@ -1,10 +1,17 @@
 "use client";
 
+// AI Evaluation M0 (Planning Decision P1): relocated intact from /ai-analytics
+// to /ai-analytics/system. The root route is reserved for the Evaluation hub
+// (docs/EXECUTION_INTELLIGENCE_UX.md); this page's content — AI operational
+// telemetry (cost/latency/tokens/reliability) — is a different concern and is
+// unchanged here, just moved one level deeper.
+
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { getAiAnalytics, getSystemHealth, type AiAnalytics, type SystemHealth } from "@/lib/api";
 import { KPICard } from "@/components/analytics/KPICard";
 import { fmtMs, fmtUsd, fmtInt, fmtPct01, fallbackHealth } from "@/lib/ai-analytics-transformers";
+import BackBreadcrumb from "@/components/BackBreadcrumb";
 
 import ModelLeaderboard from "@/components/analytics/ai/ModelLeaderboard";
 import LayerHeatmap from "@/components/analytics/ai/LayerHeatmap";
@@ -113,10 +120,11 @@ export default function AiAnalyticsPage() {
 
   return (
     <div className="space-y-5 max-w-6xl">
+      <BackBreadcrumb parent="AI Analytics" current="System" href="/ai-analytics" />
       {/* ── Header + global date filter ───────────────────────────────────── */}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold mb-1">AI Analytics</h1>
+          <h1 className="text-2xl font-bold mb-1">AI System Telemetry</h1>
           <p className="text-sm text-gray-500">
             Observability for every AI call — cost, latency, tokens, and reliability across providers, models, and
             optimizer layers.

@@ -277,6 +277,29 @@ async def _run_snapshots_core(triggered_by: str) -> None:
                     traceback.format_exc().rstrip(),
                 )
 
+            # AI Evaluation M1 — EXPIRED decisions (P4), then horizon grading (P2/P3).
+            # EXPIRED runs first so a snapshot that ages out or is superseded today
+            # is gradable as such starting today rather than one scheduler cycle late.
+            eval_t0 = time.perf_counter()
+            try:
+                from services.evaluation.expired_writer import write_expired_decisions
+                from services.evaluation.horizon_grader import grade_due_recommendations
+                expired_result = write_expired_decisions(db)
+                grade_result = grade_due_recommendations(db)
+                log.info(
+                    "snapshot_scheduler: evaluation pass — expired=%d graded=%d skipped=%d deactivated=%d  elapsed=%s",
+                    len(expired_result.get("written", [])),
+                    len(grade_result.get("graded", [])),
+                    len(grade_result.get("skipped", [])),
+                    len(grade_result.get("deactivated", [])),
+                    _fmt_ms(_elapsed_ms(eval_t0)),
+                )
+            except Exception:
+                log.error(
+                    "snapshot_scheduler: evaluation pass failed\n%s",
+                    traceback.format_exc().rstrip(),
+                )
+
             # Compute attribution metrics for portfolios with active shadows (Phase 3B.7C).
             # Runs after shadow valuation so snapshots are fresh.
             attr_t0 = time.perf_counter()

@@ -18,18 +18,23 @@ const NAV_MAIN: { label: string; href: string; match: string[] }[] = [
     href: "/portfolio",
     match: ["/portfolio", "/performance", "/analytics", "/stock"],
   },
+  { label: "รายการเฝ้าดู", href: "/watchlist", match: ["/watchlist"] },
   {
     label: "ศูนย์บัญชาการ AI",
     href: "/operations-center",
     match: ["/operations-center", "/optimizer", "/portfolio-intelligence"],
   },
-  { label: "รายการเฝ้าดู", href: "/watchlist", match: ["/watchlist"] },
+  // AI Evaluation Hub (Scorecard / Recommendations / Execution / Human vs AI /
+  // Opportunity Cost) — promoted from the ⚙ ระบบ dropdown to primary nav so
+  // it's discoverable, not tucked next to Settings. Prefix match also covers
+  // /ai-analytics/system (AI ops telemetry), still one click away per its own
+  // header link (docs/AI_EVALUATION_IMPLEMENTATION_PLAN.md Planning Decision P1).
+  { label: "ประเมินผล AI", href: "/ai-analytics", match: ["/ai-analytics"] },
   { label: "📚 คู่มือ", href: "/system-guide", match: ["/system-guide"] },
 ];
 
 const NAV_ADMIN = [
-  { label: "ตั้งค่า",     href: "/settings" },
-  { label: "AI Analytics", href: "/ai-analytics" },
+  { label: "ตั้งค่า", href: "/settings" },
 ];
 
 function isActive(match: string[], pathname: string) {

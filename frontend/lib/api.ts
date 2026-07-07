@@ -1050,6 +1050,42 @@ export interface OptimizerResult {
   stabilization?: StabilizationMeta | null;
   // UX.2C — Action Summary
   action_summary?: ActionSummary | null;
+  // Execution Optimization — deterministic post-processing stage
+  execution_optimization?: ExecutionOptimizationResult | null;
+}
+
+// ── Execution Optimization ────────────────────────────────────────────────────
+// See docs/OPTIMIZER_PHILOSOPHY.md §7/§9/§10 and
+// backend/services/optimizer/execution_optimizer.py. Reason/Necessity/
+// Execution Role/Execution State are deliberately independent axes — see
+// that module's docstring for why each exists separately.
+
+export type TradeReason =
+  | "MANDATORY_RISK_REDUCTION"
+  | "POLICY_ENFORCEMENT"
+  | "PORTFOLIO_IMPROVEMENT";
+
+export type ExecutionRole = "STANDALONE" | "FUNDING_SOURCE" | "NOT_NEEDED_TODAY";
+
+export interface OptimizedTrade {
+  symbol: string;
+  action: "SELL" | "REDUCE";
+  sector?: string | null;
+  reason: TradeReason;
+  necessity: TradeNecessity;
+  execution_role: ExecutionRole;
+  execution_state: TradeExecutionState;
+  full_recommended_amount: number;
+  executed_amount: number;
+  note: string;
+}
+
+export interface ExecutionOptimizationResult {
+  cash_available: number;
+  total_buy_deployment: number;
+  funding_gap: number;
+  trades: OptimizedTrade[];
+  idle_cash_after: number;
 }
 
 export interface OptimizerHistoryItem {
@@ -2372,10 +2408,34 @@ export interface AttributionHistoryRecord {
   computed_at: string | null;
 }
 
+// AI Evaluation M6 — effect waterfall (services/analytics/attribution_engine
+// .compute_attribution_waterfall), additive on /analytics/attribution-summary.
+export interface AttributionWaterfallEffect {
+  key: string;
+  label: string;
+  value: number | null;
+  status: "ok" | "approx" | "unavailable" | "maturing" | "no_overrides";
+  note: string;
+}
+
+export interface AttributionWaterfall {
+  portfolio_id: number;
+  period_days: number;
+  status: "ok" | "insufficient_data";
+  as_of: string;
+  benchmark_return_pct: number | null;
+  actual_return_pct: number | null;
+  effects: AttributionWaterfallEffect[];
+  residual_pct: number | null;
+  residual_note: string | null;
+  verdict: VerdictPayload | null;
+}
+
 export interface AttributionSummaryResponse {
   portfolio_id: number;
   current: PortfolioAttributionResult;
   history: AttributionHistoryRecord[];
+  waterfall: AttributionWaterfall;
 }
 
 export interface DecisionComparison {
@@ -2593,6 +2653,42 @@ export interface ShadowSummaryItem {
   snapshot_count: number;
 }
 
+// AI Evaluation M6 — Three Portfolios (services/evaluation/ideal_series.py),
+// additive on /analytics/shadow-performance.
+export interface ThreePortfoliosChartRow {
+  date: string;
+  ideal: number | null;
+  ai: number | null;
+  actual: number | null;
+  benchmark: number | null;
+}
+
+export interface ThreePortfolioSeriesStat {
+  status: string;
+  return_pct: number | null;
+  max_drawdown_pct: number | null;
+  annualized_volatility: number | null;
+}
+
+export interface PortfolioGap {
+  value: number | null;
+  label: string;
+  interpretation: VerdictPayload;
+}
+
+export interface ThreePortfolios {
+  portfolio_id: number;
+  period_days: number;
+  status: "ok" | "insufficient_data";
+  as_of: string;
+  chart: ThreePortfoliosChartRow[];
+  ideal: ThreePortfolioSeriesStat;
+  ai_portfolio: ThreePortfolioSeriesStat;
+  actual: ThreePortfolioSeriesStat;
+  gap_a: PortfolioGap;
+  gap_b: PortfolioGap;
+}
+
 export interface ShadowPerformanceSummary {
   portfolio_id: number;
   has_shadows: boolean;
@@ -2602,6 +2698,7 @@ export interface ShadowPerformanceSummary {
     active_model: ShadowSummaryItem | null;
     tracking_since: string | null;
   } | null;
+  three_portfolios: ThreePortfolios;
 }
 
 export interface AIvsHumanTimelineEntry {
@@ -2645,10 +2742,10 @@ export interface CalibrationHistoryEntry {
   computed_at: string;
 }
 
-/** Portfolio-level aggregate shadow performance */
-export const getShadowPerformanceSummary = (portfolioId: number) =>
+/** Portfolio-level aggregate shadow performance (+ Three Portfolios, M6) */
+export const getShadowPerformanceSummary = (portfolioId: number, periodDays = 90) =>
   apiFetch<ShadowPerformanceSummary>(
-    `/analytics/shadow-performance?portfolio_id=${portfolioId}`,
+    `/analytics/shadow-performance?portfolio_id=${portfolioId}&period_days=${periodDays}`,
   );
 
 /** Per-decision AI vs human timeline */
@@ -2980,6 +3077,9 @@ export const suggestPositionSizes = (
 
 // ── Phase UX.2E — Execution Plan Generator ────────────────────────────────────
 
+export type TradeNecessity = "NECESSARY" | "DISCRETIONARY";
+export type TradeExecutionState = "FULL" | "SCALED" | "DEFERRED";
+
 export interface FundingAction {
   action: "SELL" | "REDUCE";
   symbol: string;
@@ -2987,6 +3087,10 @@ export interface FundingAction {
   current_value: number;
   release_pct: number;
   estimated_cash_release: number;
+  full_recommended_amount?: number | null;
+  necessity?: TradeNecessity | null;
+  execution_state?: TradeExecutionState | null;
+  note?: string | null;
 }
 
 export interface BuyAction {
@@ -3014,6 +3118,9 @@ export interface FundingSourceItem {
   current_value: number;
   release_pct: number;
   estimated_release: number;
+  necessity?: TradeNecessity | null;
+  execution_state?: TradeExecutionState | null;
+  note?: string | null;
 }
 
 export interface FundingCashSource {
@@ -3030,10 +3137,12 @@ export interface FundingBreakdown {
   total_deployment: number;
   surplus_cash: number;
   status: "FUNDED" | "INSUFFICIENT" | "CASH_ONLY";
+  deferred_sources?: FundingSourceItem[];
 }
 
 export interface ExecutionPlanResult {
   funding_actions: FundingAction[];
+  deferred_funding_actions?: FundingAction[];
   buy_actions: BuyAction[];
   cash_summary: ExecutionCashSummary;
   status: "READY" | "INSUFFICIENT" | "NO_SELLS_NEEDED";
@@ -3142,4 +3251,389 @@ export const calculateRiskBudget = (portfolioId: number, symbols: string[]) =>
       method: "POST",
       body: JSON.stringify({ symbols }),
     },
+  );
+
+// ── AI Evaluation M3 — Aggregation APIs & Verdict Composer ───────────────────
+// Types mirror backend/services/evaluation/{scorecard,recommendation_ledger,
+// execution_ledger,verdict_composer}.py exactly. All calculations happen
+// server-side (ENGINEERING_PRINCIPLES Single Source of Truth) — these
+// interfaces describe payload shape only; no metric is ever recomputed here.
+
+export type EvidenceStatus = "ok" | "insufficient_evidence" | "unavailable" | "cold_start" | "partial";
+
+export interface LetterGrade {
+  status: "ok" | "insufficient_evidence" | "unavailable";
+  letter: string | null;
+  n: number;
+}
+
+export interface VerdictPayload {
+  en: string;
+  th: string;
+  branch?: "ai_ahead" | "human_ahead" | "tie" | "insufficient_evidence";
+}
+
+export interface UnavailableField {
+  status: "unavailable";
+  reason: string;
+}
+
+export interface CalibrationJoin {
+  status: "ok" | "unavailable";
+  calibration_score: number | null;
+  consensus_strength_calibration: number | null;
+  computed_at: string | null;
+}
+
+export interface BeliefLens {
+  status: EvidenceStatus;
+  n_graded: number;
+  hit_rate_pct: number | null;
+  avg_alpha_pct: number | null;
+  calibration: CalibrationJoin;
+  grade: LetterGrade;
+}
+
+// AI Evaluation M6: Implementation Shortfall (Gap A) — additive union with
+// the M3-era UnavailableField (services/evaluation/ideal_series.py).
+export type ImplementationShortfall = UnavailableField | { status: "ok"; value_pct: number };
+
+export interface ExecutionLens {
+  status: EvidenceStatus;
+  n_plans: number;
+  avg_plan_score: number | null;
+  avg_necessity_pct: number | null;
+  avg_funding_efficiency_pct: number | null;
+  implementation_shortfall: ImplementationShortfall;
+  grade: LetterGrade;
+}
+
+export interface WinRate {
+  status: "ok" | "insufficient_evidence";
+  n: number;
+  hit_rate_pct: number | null;
+  ai_wins: number | null;
+  human_wins: number | null;
+}
+
+// AI Evaluation M6: Ideal return — additive union with UnavailableField.
+export type IdealReturnField = UnavailableField | { status: "ok"; value_pct: number | null };
+
+// AI Evaluation M5: Net Opportunity Cost, now wired from
+// services/evaluation/opportunity_cost.py instead of shipping unavailable.
+export interface NetOpportunityCostField {
+  status: string;
+  value_pct: number | null;
+  graded_count: number | null;
+  maturing_count: number | null;
+}
+
+export interface OutcomeLens {
+  status: string;
+  actual_return_pct: number | null;
+  ai_model_return_pct: number | null;
+  ideal_return_pct: IdealReturnField;
+  benchmark_return_pct: number | null;
+  win_rate: WinRate;
+  net_opportunity_cost: NetOpportunityCostField;
+  max_drawdown_pct: { actual: number | null; ai_model: number | null; ideal: number | null };
+  regret_score: number | null;
+}
+
+export interface RecentGrade {
+  recommendation_snapshot_id: number;
+  grade_kind: string;
+  graded_at: string | null;
+  score: number | null;
+  return_pct: number | null;
+  benchmark_return_pct: number | null;
+  alpha: number | null;
+}
+
+export interface EvaluationScorecard {
+  portfolio_id: number;
+  period_days: number;
+  status: EvidenceStatus;
+  as_of: string;
+  belief: BeliefLens;
+  execution: ExecutionLens;
+  outcome: OutcomeLens;
+  verdict: VerdictPayload;
+  recent_grades: RecentGrade[];
+}
+
+export const getEvaluationScorecard = (portfolioId: number, periodDays = 90) =>
+  apiFetch<EvaluationScorecard>(
+    `/analytics/evaluation/scorecard?portfolio_id=${portfolioId}&period_days=${periodDays}`,
+  );
+
+export type HorizonCellStatus = "graded" | "maturing" | "pending_grading";
+
+export interface HorizonCell {
+  status: HorizonCellStatus;
+  return_pct?: number | null;
+  benchmark_return_pct?: number | null;
+  alpha?: number | null;
+  directional_correct?: boolean | null;
+  graded_at?: string | null;
+  due_date?: string;
+  days_remaining?: number;
+}
+
+export interface RecommendationLedgerRow {
+  snapshot_id: number;
+  date: string | null;
+  consensus_type: string | null;
+  trade_count: number;
+  decision: string | null;
+  is_system_generated: boolean;
+  is_counterfactual: boolean;
+  horizon_strip: Record<string, HorizonCell>;
+  headline_alpha: number | null;
+}
+
+export interface RecommendationLedger {
+  portfolio_id: number;
+  total: number;
+  limit: number;
+  offset: number;
+  as_of: string;
+  status: "ok" | "cold_start";
+  rows: RecommendationLedgerRow[];
+}
+
+export const getRecommendationsLedger = (portfolioId: number, limit = 50, offset = 0) =>
+  apiFetch<RecommendationLedger>(
+    `/analytics/evaluation/recommendations?portfolio_id=${portfolioId}&limit=${limit}&offset=${offset}`,
+  );
+
+export interface ReportCardPlanSection {
+  status: "ok" | "unavailable";
+  reason?: string;
+  buy_trades?: Array<{ symbol: string; action: string; planned_amount: number }>;
+  sell_reduce_trades?: Array<Record<string, unknown>>;
+  cash_available?: number;
+  funding_gap?: number;
+  grade?: { score: number | null; detail: Record<string, unknown> | null };
+  portfolio_assessment?: string | null;
+  no_action_summary?: string | null;
+}
+
+export interface ReportCardExecutionSection {
+  status: "no_decision_recorded" | "ok";
+  decision_id?: number;
+  decision?: string;
+  executed_at?: string | null;
+  analysis?: Record<string, unknown>;
+}
+
+export interface RecommendationReportCard {
+  snapshot_id: number;
+  portfolio_id: number;
+  date: string | null;
+  persona: string | null;
+  regime: string | null;
+  consensus_type: string | null;
+  confidence: number | null;
+  plan: ReportCardPlanSection;
+  decision: { decision: string | null; is_system_generated: boolean | null; executed_at: string | null } | null;
+  execution: ReportCardExecutionSection;
+  outcomes: Record<string, HorizonCell>;
+  verdict: VerdictPayload;
+  as_of: string;
+}
+
+export const getRecommendationReportCard = (portfolioId: number, snapshotId: number) =>
+  apiFetch<RecommendationReportCard>(
+    `/analytics/evaluation/recommendations/${snapshotId}?portfolio_id=${portfolioId}`,
+  );
+
+export interface AcceptanceByClassEntry {
+  accepted: number;
+  total: number;
+  acceptance_pct: number | null;
+}
+
+export interface ExecutionLedgerSummary {
+  total_decisions: number;
+  decision_counts: Record<string, number>;
+  acceptance_by_class: Record<string, AcceptanceByClassEntry>;
+  acceptance_note: string;
+  avg_execution_score: number | null;
+  avg_timing_delta_pct: number | null;
+  avg_funding_fidelity_pct: number | null;
+}
+
+export interface ExecutionLedgerRow {
+  decision_id: number;
+  snapshot_id: number;
+  date: string | null;
+  decision: string;
+  execution_status: string | null;
+  execution_score: number | null;
+  completeness_pct: number | null;
+  funding_fidelity_pct: number | null;
+  outcome_delta: { grade_kind: string; return_pct: number | null; alpha: number | null; is_counterfactual: boolean } | null;
+}
+
+export interface ExecutionLedger {
+  portfolio_id: number;
+  period_days: number;
+  as_of: string;
+  status: "ok" | "cold_start";
+  summary: ExecutionLedgerSummary;
+  rows: ExecutionLedgerRow[];
+}
+
+export const getExecutionLedger = (portfolioId: number, periodDays = 90) =>
+  apiFetch<ExecutionLedger>(
+    `/analytics/evaluation/execution?portfolio_id=${portfolioId}&period_days=${periodDays}`,
+  );
+
+export interface ExecutionSymbolDelta {
+  action: string;
+  planned_amount: number;
+  executed_amount: number | null;
+  timing_delta_pct: number | null;
+  size_delta_pct: number | null;
+  note: string | null;
+}
+
+export interface ExecutionAnalysis {
+  status: "ok" | "partial" | "unavailable";
+  reason?: string | null;
+  score: number | null;
+  symbols: Record<string, ExecutionSymbolDelta>;
+  completeness_pct: number;
+  funding_fidelity_pct: number | null;
+}
+
+export interface ExecutionDetail {
+  decision_id: number;
+  snapshot_id: number;
+  portfolio_id: number;
+  decision: string;
+  executed_at: string | null;
+  analysis: ExecutionAnalysis;
+  partial_warning: string | null;
+  as_of: string;
+}
+
+export const getExecutionDetail = (portfolioId: number, decisionId: number) =>
+  apiFetch<ExecutionDetail>(
+    `/analytics/evaluation/execution/${decisionId}?portfolio_id=${portfolioId}`,
+  );
+
+// ── AI Evaluation M5 — Human vs AI Scoreboard & Opportunity Cost ─────────────
+// Types mirror backend/services/{analytics/human_vs_ai.compute_scoreboard,
+// evaluation/opportunity_cost}.py exactly. Grade-row sourced (never live
+// ad-hoc valuation) so these agree with the S2 ledger and each other.
+
+export type ScoreboardOutcome = "ai_better" | "human_better" | "tie";
+
+export interface ScoreboardDecisionRow {
+  decision_id: number;
+  snapshot_id: number;
+  status: "graded" | "maturing";
+  decision: string;
+  delta: number | null;
+  outcome: ScoreboardOutcome | null;
+  grade_kind?: string | null;
+}
+
+export interface ScoreboardClassBucket {
+  human_better: number;
+  ai_better: number;
+  tie: number;
+  total: number;
+}
+
+export interface HumanVsAiScoreboard {
+  portfolio_id: number;
+  period_days: number;
+  as_of: string;
+  status: "ok" | "cold_start";
+  tie_band_pct: number;
+  summary: {
+    n_graded: number;
+    you_beat_ai: number;
+    ai_beat_you: number;
+    ties: number;
+    maturing: number;
+    net_effect_pct: number | null;
+  };
+  by_trade_class: Record<string, ScoreboardClassBucket>;
+  by_override_type: Record<string, ScoreboardClassBucket>;
+  decisions: ScoreboardDecisionRow[];
+}
+
+export const getHumanVsAiScoreboard = (portfolioId: number, periodDays = 90) =>
+  apiFetch<HumanVsAiScoreboard>(
+    `/analytics/evaluation/human-vs-ai?portfolio_id=${portfolioId}&period_days=${periodDays}`,
+  );
+
+export interface OpportunityCostRow {
+  decision_id: number;
+  snapshot_id: number;
+  date: string | null;
+  divergence_type: "REJECTED" | "PARTIAL_EXECUTION" | "MANUAL_OVERRIDE" | "EXPIRED";
+  override_type: string | null;
+  original_symbol: string | null;
+  replacement_symbol: string | null;
+  status: "graded" | "maturing";
+  grade_kind: string | null;
+  counterfactual_recommendation_return_pct: number | null;
+  actual_return_pct: number | null;
+  counterfactual_delta_pct: number | null;
+  note: string;
+}
+
+export interface SystemDeferralRow {
+  snapshot_id: number;
+  date: string | null;
+  symbol: string;
+  action: string;
+  reason: string;
+  note: string | null;
+  counterfactual_pricing: "unavailable";
+  counterfactual_reason: string;
+}
+
+export interface OpportunityCostLedger {
+  portfolio_id: number;
+  period_days: number;
+  as_of: string;
+  status: "ok" | "cold_start";
+  net_opportunity_cost_pct: number | null;
+  graded_count: number;
+  maturing_count: number;
+  rows: OpportunityCostRow[];
+  system_deferrals: SystemDeferralRow[];
+}
+
+export const getOpportunityCost = (portfolioId: number, periodDays = 90) =>
+  apiFetch<OpportunityCostLedger>(
+    `/analytics/evaluation/opportunity-cost?portfolio_id=${portfolioId}&period_days=${periodDays}`,
+  );
+
+// AI Evaluation M7 — MUJI Trust Report (UX S9): at most three plain
+// sentences, no letter grades, no jargon. Same verdict source as the
+// Scorecard (S1), a different register.
+export interface TrustReportSentence {
+  en: string;
+  th: string;
+}
+
+export interface TrustReport {
+  portfolio_id: number;
+  period_days: number;
+  status: "ok" | "partial" | "cold_start";
+  as_of: string;
+  sentences: TrustReportSentence[];
+  link: string;
+}
+
+export const getTrustReport = (portfolioId: number, periodDays = 90) =>
+  apiFetch<TrustReport>(
+    `/analytics/evaluation/trust-report?portfolio_id=${portfolioId}&period_days=${periodDays}`,
   );

@@ -1,3 +1,9 @@
+"""3-Layer Optimizer — L1 Strategist, L2 Challenger, L3 Risk Auditor.
+
+See OPTIMIZER_PHILOSOPHY.md §5 (pipeline stages) and §6 (Belief Engine
+boundary) — these layers answer belief questions only; trade selection and
+funding arithmetic happen downstream, deterministically.
+"""
 import json
 import logging
 from typing import Callable
@@ -887,14 +893,28 @@ priority="no_action" when ALL of the following are true:
 - All current positions are within 3% of their ideal weight
 - No urgent regime or policy signal
 
-Output schema — nothing else. Max 400 tokens.
+Output schema — nothing else. Max 550 tokens.
 swaps: max 3 (sell or buy may be null for one-sided REDUCE or ACCUMULATE from cash)
 top_buys: max 5 watchlist symbols ranked by signal quality
 sector_flags: max 3 short strings
 priority: one word only
+summary: exactly 2 sentences, written the way a strategist briefs a client — natural
+  investment language, not a status log. Sentence 1: what you reviewed and the
+  overall read (e.g. "Sector weights are balanced and no position has drifted far
+  from target." / "The portfolio still carries a sound risk posture heading into
+  this cycle."). Sentence 2: name what, if anything, cleared today's conviction bar
+  and why the rest did not (e.g. "KBANK's concentration has crossed a line worth
+  trimming, but ADVANC and CENTEL don't yet show enough edge to displace what's
+  already held."). Vary phrasing and sentence structure run to run — do not reuse
+  the same template every time. Never restate the full allocation plan, that is
+  Layer 2's job. Avoid mechanical phrases like "system", "threshold triggered", or
+  "no action detected" — write as an analyst, not a machine.
 "r" = one reason for the swap, under 12 words (e.g. "Technology at 45% > 30% limit").
 
-{{"swaps":[{{"sell":"SYM|null","buy":"SYM|null","score_delta":0.0,"sector":"S","type":"SELL|SWAP|REDUCE","r":"<12 words"}}],"top_buys":["S"],"sector_flags":["S 45%>30%"],"priority":"growth"}}"""
+If running low on output budget, prioritize in this order: (1) swaps, (2) priority,
+(3) summary, (4) top_buys, (5) sector_flags.
+
+{{"swaps":[{{"sell":"SYM|null","buy":"SYM|null","score_delta":0.0,"sector":"S","type":"SELL|SWAP|REDUCE","r":"<12 words"}}],"top_buys":["S"],"sector_flags":["S 45%>30%"],"priority":"growth","summary":"<2 natural-language sentences>"}}"""
 
 
 def _layer2_prompt(
