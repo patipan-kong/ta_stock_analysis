@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import PortfolioTabs from "@/components/PortfolioTabs";
 import {
@@ -215,6 +216,16 @@ export default function PerformancePage() {
               ? `${snapshots.length} snapshot${snapshots.length !== 1 ? "s" : ""} · earliest ${snapshots[0].snapshot_date}`
               : "No snapshots yet — generate one to start tracking"}
           </p>
+          {/* AI Evaluation M7 entry point (UX §2.3): "Why this return?" ->
+              the Attribution breakdown (S8) for this portfolio. */}
+          {portfolioId > 0 && (
+            <Link
+              href="/ai-analytics/attribution"
+              className="inline-block text-xs font-semibold text-blue-600 hover:underline mt-1"
+            >
+              Why this return? See Attribution →
+            </Link>
+          )}
         </div>
         <button
           onClick={handleGenerate}

@@ -153,8 +153,8 @@ The 4-item Thai top nav stays. The Evaluation hub joins the AI hub's match array
 
 ```
 พอร์ตโฟลิโอ        → /portfolio /performance /analytics /stock
-AI                → /operations-center /optimizer /portfolio-intelligence /ai-analytics  ← hub lives here
 รายการเฝ้าดู       → /watchlist
+AI                → /operations-center /optimizer /portfolio-intelligence /ai-analytics  ← hub lives here
 📚 คู่มือ          → /system-guide
 ```
 

@@ -199,7 +199,13 @@ function CashStat({ label, value, tone }: { label: string; value: number; tone?:
  *  A display-only view derived from the canonical recommendation
  *  (action_summary classification joined with target_allocations amounts) —
  *  nothing here is persisted or written back. */
-export default function ExecutionPlanCard({ result }: { result: OptimizerResult }) {
+export default function ExecutionPlanCard({
+  result,
+  portfolioId,
+}: {
+  result: OptimizerResult;
+  portfolioId?: number;
+}) {
   const plan = deriveExecutionPlan(
     result.action_summary,
     result.target_allocations,
@@ -228,6 +234,16 @@ export default function ExecutionPlanCard({ result }: { result: OptimizerResult 
           <span className="text-xs font-semibold px-2 py-0.5 rounded-full border bg-green-50 border-green-200 text-green-700">
             No trades today
           </span>
+        )}
+        {/* AI Evaluation M7 entry point (UX §2.3): "AI's track record on
+            calls like this" -> Human vs AI, scoped to this portfolio. */}
+        {portfolioId != null && (
+          <Link
+            href="/ai-analytics/human-vs-ai"
+            className="ml-auto text-xs font-semibold text-blue-700 hover:underline whitespace-nowrap"
+          >
+            AI's track record on calls like this →
+          </Link>
         )}
       </div>
 

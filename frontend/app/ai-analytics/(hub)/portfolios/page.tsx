@@ -136,16 +136,23 @@ export default function PortfoliosPage() {
                 <p className={`font-semibold tabular-nums ${pnlTone(tp.actual.return_pct)}`}>{pct(tp.actual.return_pct)}</p>
               </div>
             </div>
-            <div className="grid sm:grid-cols-2 gap-2 mt-3 pt-3 border-t">
+          </div>
+
+          <div className="bg-white border border-gray-200 rounded-xl p-4">
+            <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide mb-0.5">The Two Gaps</h3>
+            <p className="text-xs text-gray-400 mb-3">What explains the difference between the three portfolios.</p>
+            <div className="grid sm:grid-cols-2 gap-4">
               <GapAnnotation
-                label="Gap A (Ideal − AI)"
+                label="Gap A · Ideal − AI"
                 value={tp.gap_a.value}
                 interpretation={tp.gap_a.interpretation?.en}
+                size="lg"
               />
               <GapAnnotation
-                label="Gap B (AI − You)"
+                label="Gap B · AI − You"
                 value={tp.gap_b.value}
                 interpretation={tp.gap_b.interpretation?.en}
+                size="lg"
               />
             </div>
           </div>

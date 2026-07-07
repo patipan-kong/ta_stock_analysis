@@ -6650,6 +6650,25 @@ async def get_evaluation_opportunity_cost(
     return await asyncio.to_thread(compute_opportunity_cost, db, portfolio_id, period_days)
 
 
+@app.get("/analytics/evaluation/trust-report")
+async def get_evaluation_trust_report(
+    portfolio_id: int,
+    period_days: int = 90,
+    db: Session = Depends(get_db),
+) -> dict:
+    """MUJI Trust Report — at most three plain-language sentences (UX S9).
+
+    Reuses compute_scorecard (belief/gap-B), list_execution_ledger
+    (compliance counts) and compute_scoreboard (trade-class insight); no new
+    grading or return math. Consumed by the MUJI dashboard's Trust Report
+    card, one click from the full Scorecard (S1).
+    """
+    _ws_id(db)
+    from services.evaluation.trust_report import compute_trust_report
+
+    return await asyncio.to_thread(compute_trust_report, db, portfolio_id, period_days)
+
+
 # ─── Phase 4C.6A — Timing Intelligence: Allocation Periods ───────────────────
 
 @app.get("/analytics/timing-periods")

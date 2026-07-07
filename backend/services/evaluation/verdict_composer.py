@@ -70,6 +70,33 @@ def letter_grade(score: float | None, n: int, min_n: int) -> dict[str, Any]:
     return {"status": "ok", "letter": "F", "n": n}
 
 
+def _belief_clause(period_days: int, belief_status: str, belief_avg_alpha: float | None) -> tuple[str, str]:
+    """AI-vs-benchmark clause shared by compose_scorecard_verdict and
+    compose_trust_report (MUJI) — one branch table, two registers reading
+    the same underlying number (ENGINEERING_PRINCIPLES Single Source of
+    Truth: the branch logic is never re-derived per caller).
+    """
+    if belief_status == "ok" and belief_avg_alpha is not None:
+        if belief_avg_alpha > 0:
+            return (
+                f"Over the last {period_days} days, AI recommendations beat the benchmark",
+                f"ในช่วง {period_days} วันที่ผ่านมา คำแนะนำของ AI ให้ผลดีกว่าตลาด",
+            )
+        if belief_avg_alpha < 0:
+            return (
+                f"Over the last {period_days} days, AI recommendations trailed the benchmark",
+                f"ในช่วง {period_days} วันที่ผ่านมา คำแนะนำของ AI ให้ผลด้อยกว่าตลาด",
+            )
+        return (
+            f"Over the last {period_days} days, AI recommendations matched the benchmark",
+            f"ในช่วง {period_days} วันที่ผ่านมา คำแนะนำของ AI ให้ผลใกล้เคียงตลาด",
+        )
+    return (
+        f"Over the last {period_days} days, there is not yet enough graded history to judge AI recommendations",
+        f"ในช่วง {period_days} วันที่ผ่านมา ยังมีข้อมูลไม่พอที่จะประเมินคำแนะนำของ AI",
+    )
+
+
 def compose_scorecard_verdict(
     *,
     period_days: int,
@@ -95,19 +122,7 @@ def compose_scorecard_verdict(
     "ai_ahead" | "human_ahead" | "tie" | "insufficient_evidence" — asserted
     exhaustively in tests.
     """
-    if belief_status == "ok" and belief_avg_alpha is not None:
-        if belief_avg_alpha > 0:
-            belief_en = f"Over the last {period_days} days, AI recommendations beat the benchmark"
-            belief_th = f"ในช่วง {period_days} วันที่ผ่านมา คำแนะนำของ AI ให้ผลดีกว่าตลาด"
-        elif belief_avg_alpha < 0:
-            belief_en = f"Over the last {period_days} days, AI recommendations trailed the benchmark"
-            belief_th = f"ในช่วง {period_days} วันที่ผ่านมา คำแนะนำของ AI ให้ผลด้อยกว่าตลาด"
-        else:
-            belief_en = f"Over the last {period_days} days, AI recommendations matched the benchmark"
-            belief_th = f"ในช่วง {period_days} วันที่ผ่านมา คำแนะนำของ AI ให้ผลใกล้เคียงตลาด"
-    else:
-        belief_en = f"Over the last {period_days} days, there is not yet enough graded history to judge AI recommendations"
-        belief_th = f"ในช่วง {period_days} วันที่ผ่านมา ยังมีข้อมูลไม่พอที่จะประเมินคำแนะนำของ AI"
+    belief_en, belief_th = _belief_clause(period_days, belief_status, belief_avg_alpha)
 
     if gap_b is None or gap_b_n < min_n_win_rate:
         branch = "insufficient_evidence"
@@ -296,3 +311,79 @@ def compose_report_card_verdict(
         "en": f"{plan_en}, {outcome_en}.{directional_note_en}",
         "th": f"{plan_th} {outcome_th}{directional_note_th}",
     }
+
+
+def compose_trust_report(
+    *,
+    period_days: int,
+    belief_avg_alpha: float | None,
+    belief_status: str,
+    gap_b: float | None,
+    gap_b_n: int,
+    min_n_win_rate: int,
+    tie_band_pct: float,
+    followed_count: int,
+    total_decisions: int,
+    insight: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """MUJI Trust Report (AI Evaluation M7, UX S9): at most three plain
+    sentences, no letter grades, no jargon, at most two numbers per sentence
+    (UX: "one calm card, not the hub"). Reuses the same verdict data
+    compose_scorecard_verdict already reads (_belief_clause, gap_b) rather
+    than re-deriving the AI-vs-benchmark or human-vs-AI branch logic a
+    second way — MUJI and Quant are two registers over one source of truth.
+
+    `insight` is the strongest sample-backed observation from
+    services.analytics.human_vs_ai.compute_scoreboard's by_trade_class
+    breakdown (already computed there, read here — never recomputed):
+    {"label": str, "human_better": int, "total": int} when the human's
+    deviations from a specific trade class beat the AI more often than not
+    on a defensible sample, else None. When None, sentence 3 is omitted
+    entirely rather than padded with a vague filler — "three sentences
+    maximum" does not mean three sentences always.
+
+    Returns {"sentences": [{"en", "th"}, ...], "branch": str}.
+    """
+    belief_en, belief_th = _belief_clause(period_days, belief_status, belief_avg_alpha)
+    sentences = [{"en": f"{belief_en}.", "th": f"{belief_th}"}]
+
+    if total_decisions == 0:
+        sentences.append({
+            "en": "You have not yet recorded a decision on an AI recommendation.",
+            "th": "คุณยังไม่ได้บันทึกการตัดสินใจกับคำแนะนำของ AI",
+        })
+        branch = "no_decisions"
+    else:
+        compliance_en = f"You followed {followed_count} of {total_decisions} recommendations."
+        compliance_th = f"คุณทำตามคำแนะนำ {followed_count} จาก {total_decisions} ครั้ง"
+
+        if gap_b is None or gap_b_n < min_n_win_rate:
+            branch = "insufficient_evidence"
+            perf_en = "not enough of your decisions have matured yet to say how your own judgment performed"
+            perf_th = "การตัดสินใจของคุณยังครบกำหนดประเมินไม่พอ จึงยังบอกไม่ได้ว่าผลงานเป็นอย่างไร"
+        elif abs(gap_b) <= tie_band_pct:
+            branch = "tie"
+            perf_en = "your own decisions performed about the same as following the AI exactly"
+            perf_th = "การตัดสินใจของคุณให้ผลใกล้เคียงกับการทำตาม AI ทั้งหมด"
+        elif gap_b > 0:
+            branch = "ai_ahead"
+            perf_en = "following the AI's recommendations exactly would have done slightly better"
+            perf_th = "หากทำตามคำแนะนำของ AI ทั้งหมดจะให้ผลดีกว่าเล็กน้อย"
+        else:
+            branch = "human_ahead"
+            perf_en = f"your own decisions did well ({gap_b * -1:+.1f}%)"
+            perf_th = f"การตัดสินใจของคุณเองก็ทำได้ดี ({gap_b * -1:+.1f}%)"
+
+        sentences.append({
+            "en": f"{compliance_en} Overall, {perf_en}.",
+            "th": f"{compliance_th} {perf_th}",
+        })
+
+    if insight is not None:
+        label = insight["label"]
+        sentences.append({
+            "en": f"Worth noting: when you didn't follow \"{label}\" recommendations, it was often the right call.",
+            "th": f'สิ่งที่น่าสนใจ: ครั้งที่คุณไม่ทำตามคำแนะนำประเภท "{label}" มักเป็นการตัดสินใจที่ถูก',
+        })
+
+    return {"sentences": sentences, "branch": branch}

@@ -1,10 +1,10 @@
-Version: 1.0 (Draft for review)
-Status: Proposed
+Version: 1.0
+Status: Complete (M0–M7 shipped)
 Owner: Portfolio Intelligence Platform
 Phase: AI Evaluation & Execution Intelligence
 Design Baseline: EXECUTION_INTELLIGENCE_UX.md v1.0 (approved)
 Audience: Implementing agent (Claude Sonnet 5)
-Last Updated: 2026-07-06
+Last Updated: 2026-07-07
 
 # AI Evaluation & Execution Intelligence — Implementation Plan
 
@@ -519,13 +519,15 @@ interpretation strings match §12 readings.
 
 ## 9. Milestone Summary
 
-| M | Deliverable | Layer | Depends on |
-|---|---|---|---|
-| M0 | Schema, config, telemetry relocation | DB + FE plumbing | — |
-| M1 | Horizon grading engine + EXPIRED + backfill | BE + scheduler | M0 |
-| M2 | Plan grader + execution analyzer + linkage | BE | M0 |
-| M3 | Evaluation APIs + verdict composer | BE | M1, M2 |
-| M4 | Hub shell + component kit + S1–S3 | FE | M3 |
-| M5 | Human-vs-AI ext. + opportunity cost + S4–S6 | BE + FE | M3, M4 |
-| M6 | Ideal series + attribution waterfall + S7–S8 | BE + FE | M5 |
-| M7 | MUJI card + entry points + hardening + docs | FE + docs | M6 |
+| M | Deliverable | Layer | Depends on | Status |
+|---|---|---|---|---|
+| M0 | Schema, config, telemetry relocation | DB + FE plumbing | — | ✅ Shipped 2026-07-06 |
+| M1 | Horizon grading engine + EXPIRED + backfill | BE + scheduler | M0 | ✅ Shipped 2026-07-06 |
+| M2 | Plan grader + execution analyzer + linkage | BE | M0 | ✅ Shipped 2026-07-06 |
+| M3 | Evaluation APIs + verdict composer | BE | M1, M2 | ✅ Shipped 2026-07-06 |
+| M4 | Hub shell + component kit + S1–S3 | FE | M3 | ✅ Shipped 2026-07-06 |
+| M5 | Human-vs-AI ext. + opportunity cost + S4–S6 | BE + FE | M3, M4 | ✅ Shipped 2026-07-06 |
+| M6 | Ideal series + attribution waterfall + S7–S8 | BE + FE | M5 | ✅ Shipped 2026-07-06 |
+| M7 | MUJI card + entry points + hardening + docs | FE + docs | M6 | ✅ Shipped 2026-07-07 |
+
+**Phase status: complete.** See DECISION_LOG.md's "AI Evaluation M0"–"AI Evaluation M7" entries for the full record of each milestone's decisions, scope deviations, and verification. Remaining engineering issues (pre-existing, out of this phase's scope) are tracked in DECISION_LOG.md's "Open Engineering Issues" list under "AI Evaluation Progress" — not repeated here to avoid a second copy going stale.

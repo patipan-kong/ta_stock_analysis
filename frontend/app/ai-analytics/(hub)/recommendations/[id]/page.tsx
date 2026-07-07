@@ -260,6 +260,10 @@ export default function ReportCardPage() {
             <AsOfStamp asOf={data.as_of} />
           </div>
 
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+            <VerdictSentence verdict={data.verdict} />
+          </div>
+
           <SectionCard title="1 · The Plan (immutable record)">
             <PlanSection plan={data.plan} />
           </SectionCard>
@@ -271,10 +275,6 @@ export default function ReportCardPage() {
           <SectionCard title="3 · Outcome (frozen shadow vs benchmark)">
             <OutcomeSection outcomes={data.outcomes} />
           </SectionCard>
-
-          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-            <VerdictSentence verdict={data.verdict} />
-          </div>
         </>
       )}
     </div>

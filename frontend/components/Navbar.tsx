@@ -18,12 +18,12 @@ const NAV_MAIN: { label: string; href: string; match: string[] }[] = [
     href: "/portfolio",
     match: ["/portfolio", "/performance", "/analytics", "/stock"],
   },
+  { label: "รายการเฝ้าดู", href: "/watchlist", match: ["/watchlist"] },
   {
     label: "ศูนย์บัญชาการ AI",
     href: "/operations-center",
     match: ["/operations-center", "/optimizer", "/portfolio-intelligence"],
   },
-  { label: "รายการเฝ้าดู", href: "/watchlist", match: ["/watchlist"] },
   // AI Evaluation Hub (Scorecard / Recommendations / Execution / Human vs AI /
   // Opportunity Cost) — promoted from the ⚙ ระบบ dropdown to primary nav so
   // it's discoverable, not tucked next to Settings. Prefix match also covers

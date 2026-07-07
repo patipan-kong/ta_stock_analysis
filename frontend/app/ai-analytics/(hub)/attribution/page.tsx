@@ -134,10 +134,11 @@ export default function AttributionPage() {
           </div>
 
           <div className="bg-white border border-gray-200 rounded-xl p-4">
-            <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide mb-3">
+            <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide mb-1">
               Waterfall — Benchmark ({wf.benchmark_return_pct?.toFixed(1)}%) → You ({wf.actual_return_pct?.toFixed(1)}%)
             </h3>
-            <EffectWaterfall rows={rows} net={netTotal} netLabel="Total (You − Benchmark)" />
+            <p className="text-[11px] text-gray-400 mb-3">Realized effects — already reflected in your actual return, not hypothetical.</p>
+            <EffectWaterfall rows={rows} net={netTotal} netLabel="Total (You − Benchmark)" variant="realized" />
           </div>
 
           <div className="bg-white border border-gray-200 rounded-xl">

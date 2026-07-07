@@ -11,12 +11,33 @@ export default function GapAnnotation({
   value,
   interpretation,
   unavailableReason,
+  size = "sm",
 }: {
   label: string;
   value?: number | null;
   interpretation?: string;
   unavailableReason?: string | null;
+  size?: "sm" | "lg";
 }) {
+  if (size === "lg") {
+    return (
+      <div>
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{label}</p>
+        {unavailableReason || value == null ? (
+          <p className="text-sm text-gray-400 italic mt-1">unavailable{unavailableReason ? ` — ${unavailableReason}` : ""}</p>
+        ) : (
+          <>
+            <p className={`text-2xl font-bold tabular-nums mt-0.5 ${value >= 0 ? "text-green-700" : "text-red-600"}`}>
+              {value >= 0 ? "+" : ""}
+              {value.toFixed(1)}%
+            </p>
+            {interpretation && <p className="text-xs text-gray-500 mt-1">{interpretation}</p>}
+          </>
+        )}
+      </div>
+    );
+  }
+
   if (unavailableReason || value == null) {
     return (
       <div className="text-xs text-gray-400">

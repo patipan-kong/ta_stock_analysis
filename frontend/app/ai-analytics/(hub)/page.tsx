@@ -190,51 +190,52 @@ export default function ScorecardPage() {
               />
               <Stat label="Benchmark" value={pct(data.outcome.benchmark_return_pct)} valueClass={pnlTone(data.outcome.benchmark_return_pct)} />
               <div className="pt-1 border-t">
-                {data.outcome.win_rate.status === "ok" ? (
-                  <Stat
-                    label="Win rate"
-                    value={pct(data.outcome.win_rate.hit_rate_pct, 0)}
-                    sub={`${data.outcome.win_rate.ai_wins ?? 0} AI · ${data.outcome.win_rate.human_wins ?? 0} you`}
-                  />
-                ) : (
-                  <Stat label="Win rate" value="หลักฐานยังไม่พอ" sub={`n=${data.outcome.win_rate.n}`} />
-                )}
+                <GapAnnotation
+                  label="Net opportunity cost"
+                  value={
+                    data.outcome.net_opportunity_cost.status === "ok" && data.outcome.net_opportunity_cost.graded_count
+                      ? data.outcome.net_opportunity_cost.value_pct
+                      : null
+                  }
+                  unavailableReason={
+                    data.outcome.net_opportunity_cost.status !== "ok"
+                      ? "no decisions recorded yet"
+                      : !data.outcome.net_opportunity_cost.graded_count
+                      ? `maturing${data.outcome.net_opportunity_cost.maturing_count ? ` — ${data.outcome.net_opportunity_cost.maturing_count} pending` : ""}`
+                      : undefined
+                  }
+                  interpretation={
+                    data.outcome.net_opportunity_cost.graded_count
+                      ? `of diverging from AI calls (n=${data.outcome.net_opportunity_cost.graded_count})`
+                      : undefined
+                  }
+                />
+                <Link href="/ai-analytics/opportunity-cost" className="text-[11px] text-blue-600 hover:underline mt-1 inline-block">
+                  See every divergence priced →
+                </Link>
               </div>
             </LensCardShell>
           </div>
 
-          {/* Row 3 — the three portfolios summary (point returns only; the
-              full indexed hero chart + allocation/risk breakdowns live on
-              the S7 Portfolios screen, "full view" link below). */}
-          <div className="bg-white border border-gray-200 rounded-xl p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">The Three Portfolios ({periodDays}D)</h3>
-              <Link href="/ai-analytics/portfolios" className="text-xs text-blue-600 hover:underline">
-                full view →
+          {/* Row 3 — cross-reference, not a second scorecard. The four
+              return numbers already appear in the Outcome Quality card
+              above; this is pure wayfinding to where the full indexed
+              chart and both named gaps live. */}
+          <div className="bg-white border border-gray-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">The Three Portfolios</h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Full indexed chart, Gap A (Ideal − AI), and Gap B (AI − You) — one click away.
+              </p>
+            </div>
+            <div className="flex items-center gap-4 text-xs font-medium">
+              <Link href="/ai-analytics/portfolios" className="text-blue-600 hover:underline">
+                Portfolios & Gap A →
               </Link>
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
-              <Stat
-                label="Ideal"
-                value={data.outcome.ideal_return_pct.status === "ok" ? pct(data.outcome.ideal_return_pct.value_pct) : "unavailable"}
-                valueClass={data.outcome.ideal_return_pct.status === "ok" ? pnlTone(data.outcome.ideal_return_pct.value_pct) : undefined}
-              />
-              <Stat label="AI Portfolio" value={pct(data.outcome.ai_model_return_pct)} valueClass={pnlTone(data.outcome.ai_model_return_pct)} />
-              <Stat label="You" value={pct(data.outcome.actual_return_pct)} valueClass={pnlTone(data.outcome.actual_return_pct)} />
-              <Stat label="Benchmark" value={pct(data.outcome.benchmark_return_pct)} valueClass={pnlTone(data.outcome.benchmark_return_pct)} />
-            </div>
-            <GapAnnotation
-              label="Gap A (Ideal − AI, implementation shortfall)"
-              value={data.execution.implementation_shortfall.status === "ok" ? data.execution.implementation_shortfall.value_pct : null}
-              unavailableReason={data.execution.implementation_shortfall.status === "unavailable" ? data.execution.implementation_shortfall.reason : undefined}
-            />
-            <p className="text-xs text-gray-400 mt-1">
-              For how your own decisions compared to full AI compliance (Gap B), see{" "}
               <Link href="/ai-analytics/human-vs-ai" className="text-blue-600 hover:underline">
-                Human vs AI
+                Human vs AI & Gap B →
               </Link>
-              .
-            </p>
+            </div>
           </div>
 
           {/* Row 5 — evidence feed */}

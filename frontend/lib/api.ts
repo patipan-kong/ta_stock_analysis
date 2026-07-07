@@ -3615,3 +3615,25 @@ export const getOpportunityCost = (portfolioId: number, periodDays = 90) =>
   apiFetch<OpportunityCostLedger>(
     `/analytics/evaluation/opportunity-cost?portfolio_id=${portfolioId}&period_days=${periodDays}`,
   );
+
+// AI Evaluation M7 — MUJI Trust Report (UX S9): at most three plain
+// sentences, no letter grades, no jargon. Same verdict source as the
+// Scorecard (S1), a different register.
+export interface TrustReportSentence {
+  en: string;
+  th: string;
+}
+
+export interface TrustReport {
+  portfolio_id: number;
+  period_days: number;
+  status: "ok" | "partial" | "cold_start";
+  as_of: string;
+  sentences: TrustReportSentence[];
+  link: string;
+}
+
+export const getTrustReport = (portfolioId: number, periodDays = 90) =>
+  apiFetch<TrustReport>(
+    `/analytics/evaluation/trust-report?portfolio_id=${portfolioId}&period_days=${periodDays}`,
+  );

@@ -1640,6 +1640,17 @@ function DecisionActionPanel({
             Performance impact tracked. See Attribution panel below.
           </p>
         )}
+
+        {/* AI Evaluation M7 entry point (UX §2.3): "Track this decision" ->
+            the graded execution detail (S4b) for this exact decision. */}
+        <div className="mt-2.5 pt-2.5 border-t border-gray-100">
+          <Link
+            href={`/ai-analytics/execution/${existing.id}`}
+            className="text-xs font-semibold text-blue-600 hover:underline"
+          >
+            Track this decision in AI Evaluation →
+          </Link>
+        </div>
       </section>
     );
   }
@@ -2286,13 +2297,25 @@ function ResultPanel({ result, loading, profiles, portfolioId, onForceRebalance,
       )}
 
       {/* ── Execution ────────────────────────────────────────────────────── */}
-      <SectionLabel id="execution">Execution</SectionLabel>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <SectionLabel id="execution">Execution</SectionLabel>
+        {/* AI Evaluation M7 entry point (UX §2.3): "How did this run turn
+            out?" -> the full graded Report Card for this exact recommendation. */}
+        {result.recommendation_snapshot_id && (
+          <Link
+            href={`/ai-analytics/recommendations/${result.recommendation_snapshot_id}`}
+            className="text-xs font-semibold text-blue-600 hover:underline"
+          >
+            AI Evaluation Report Card →
+          </Link>
+        )}
+      </div>
 
       {/* Primary output: what to trade today — a view derived from the
           recommendation above (action_summary classification joined with
           target_allocations amounts), not a separately stored "execution
           plan". The canonical recommendation is never mutated. */}
-      <ExecutionPlanCard result={result} />
+      <ExecutionPlanCard result={result} portfolioId={portfolioId ?? undefined} />
 
       {/* Act on the plan — record approve/reject/override */}
       {result.recommendation_snapshot_id && portfolioId && (
