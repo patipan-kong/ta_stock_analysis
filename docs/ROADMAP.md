@@ -1,218 +1,276 @@
-#TA Stock Analysis Platform Roadmap (v2)
+# Portfolio Intelligence Roadmap
 
-##Phase 1 — Foundation ✅ COMPLETE
+> Last Updated: 2026-07
+>
+> Current Status:
+>
+> **Phase 2 Complete**
+>
+> Portfolio Intelligence has completed its core investment engine, execution intelligence,
+> AI evaluation, and accounting correctness.
+>
+> Future development shifts from building core infrastructure to expanding platform capabilities.
 
-สร้างแกนกลางของระบบให้เชื่อถือได้
+---
 
-Platform
-✅ Portfolio
-✅ Watchlist
-✅ Workspace
-✅ User Wallet
-✅ Billing
-✅ Settings
-Analysis
-✅ 3-Layer Optimizer
-✅ Deterministic Scoring
-✅ Confidence Capping
-✅ Latency & Cost Tracking
-Infrastructure
-✅ PostgreSQL
-✅ VPS
-✅ Vercel
-✅ Deploy Pipeline
-Portfolio Engine
-✅ Transactions
-✅ Replay Engine
-✅ Snapshots
-✅ Portfolio Metrics Engine
-✅ Ledger Validation
-✅ Ledger Repair
-✅ Benchmark Engine
-✅ Performance History
-✅ Portfolio Calculation Rules
+# Phase 1 — Foundation ✅ COMPLETE
 
-----
+Build a trustworthy investment platform.
 
-## Phase 2 — Investment Intelligence 🟡 ~90%
+## Platform
 
-วิเคราะห์คุณภาพของพอร์ต
+- ✅ Portfolio
+- ✅ Watchlist
+- ✅ Workspace
+- ✅ User Wallet
+- ✅ Billing
+- ✅ Settings
 
-Performance Analytics
-Complete
-✅ Total Return
-✅ Annualized Return
-✅ Volatility
-✅ Max Drawdown
-✅ Sharpe Ratio
-✅ Alpha
-✅ Beta
-✅ Correlation
-✅ Tracking Error
-✅ Information Ratio
-✅ Benchmark Comparison
-✅ Cash Utilization
-Optional Performance Metrics
-⏳ Sortino Ratio
-⏳ Rolling Return
-⏳ Rolling Sharpe
-⏳ Rolling Volatility
+## Infrastructure
 
-Attribution Analytics
-Partially Complete
-✅ Allocation Analytics
-✅ Human vs AI Attribution
-✅ Regime Attribution
-✅ Recommendation Snapshots
-Remaining
-Contribution Analysis
-Position Attribution
-Sector Attribution Timeline
+- ✅ PostgreSQL
+- ✅ VPS Deployment
+- ✅ Vercel
+- ✅ CI/CD Pipeline
 
-Execution Intelligence
-Started
-✅ Recommendation Snapshots
-✅ Shadow Portfolio
-✅ Shadow Portfolio Snapshots
-Remaining
-Paper Trading Lifecycle
-Execution Tracking
+## Portfolio Engine
 
-AI Evaluation
-Started
-✅ Confidence Calibration Foundation
-✅ Signal History
-Remaining
-Signal Accuracy
-Recommendation Score
-AI vs Benchmark
-AI vs Buy & Hold
-Confidence Calibration History
+- ✅ Transactions
+- ✅ Replay Engine
+- ✅ Portfolio Snapshots
+- ✅ Portfolio Metrics Engine
+- ✅ Ledger Validation
+- ✅ Ledger Repair
+- ✅ Benchmark Engine
+- ✅ Performance History
+- ✅ Accounting Rules
 
-----
+---
 
-Stability Validation
-(1-3 วัน)
+# Phase 2 — Investment Intelligence ✅ COMPLETE
 
-↓
+Transform portfolio data into actionable investment intelligence.
 
-Asset Registry Epic
-(Symbol Search, Master Data)
-↓
-Finish Phase 2
-(Rolling Metrics, Attribution)
+## Performance Analytics
 
-## Phase 3 — Architecture Refactor
+- ✅ Total Return
+- ✅ Annualized Return
+- ✅ Volatility
+- ✅ Max Drawdown
+- ✅ Sharpe Ratio
+- ✅ Alpha
+- ✅ Beta
+- ✅ Correlation
+- ✅ Tracking Error
+- ✅ Information Ratio
+- ✅ Benchmark Comparison
+- ✅ Cash Utilization
 
-เปลี่ยนจากระบบที่ "ใช้งานได้" เป็นระบบที่ "ขยายได้"
+### Optional Enhancements
 
-Portfolio Module
-Portfolio Domain
-Replay Engine
-Snapshot Engine
-Ledger
-Metrics
-Benchmark
-Market Data Module
-Price Providers
-Historical Data
-Symbol Resolver
-Cache
-Market Calendar
-Analytics Module
-Shared Analytics
-Statistics
-Risk Metrics
-Attribution
-Benchmark Math
-AI Module
-Optimizer
-Strategy Persona
-Routing
-Prompt Layer
-Common Module
-Event Bus
-Utilities
-Shared Models
+- ⏳ Sortino Ratio
+- ⏳ Rolling Return
+- ⏳ Rolling Sharpe
+- ⏳ Rolling Volatility
 
-----
+---
 
-## Phase 4 — SaaS Platform
+## Portfolio Optimizer
 
-รองรับหลายผู้ใช้และการใช้งานจริง
+- ✅ Three-layer Optimizer
+- ✅ Deterministic Scoring
+- ✅ Confidence Calibration
+- ✅ Funding-aware Execution
+- ✅ Execution Optimization
+- ✅ Recommendation Snapshot
+- ✅ Recommendation Explainability
 
-Multi-workspace
-Credits
-Billing
-Policy Engine
-Usage Reports
-Team Accounts
-RBAC
-API Keys
-Audit Logs
+---
 
-----
+## Execution Intelligence
 
-## Phase 5 — Personal Wealth Platform
+- ✅ Shadow Portfolio
+- ✅ Shadow Portfolio Snapshots
+- ✅ Execution Analysis
+- ✅ Recommendation Report Card
+- ✅ Plan Grading
+- ✅ Horizon Grading
 
-จาก Portfolio → Wealth Management
+---
 
-Asset Tracking
-Stocks
-ETF
-Gold
-Crypto
-Mutual Funds
-Cash
-Property
-Personal Finance
-Income
-Expenses
-Budget
-Cash Flow
-Emergency Fund
-Goal Planning
-Wedding
-Retirement
-House
-Education
-Vacation
-Life Planning
-FIRE
-Financial Independence
-Timeline
-Net Worth Projection
-Debt Management
-Mortgage
-Personal Loan
-Credit Card
-Debt Optimization
-Tax Planning
-ThaiESG
-RMF
-SSF
-Tax Simulation
-Insurance Planning
-Life
-Health
-Critical Illness
-Asset Protection
-Estate Planning
-Beneficiaries
-Wealth Transfer
-Inheritance Simulation
+## AI Evaluation
 
-----
+- ✅ Human vs AI
+- ✅ Opportunity Cost
+- ✅ Three Portfolios
+- ✅ Attribution Waterfall
+- ✅ Trust Report
+- ✅ AI Evaluation Hub
 
-## Phase 6 — Personal AI Wealth Advisor
+---
 
-จาก "Dashboard" → "AI Partner"
+## Accounting Correctness
 
-Natural Language Portfolio Review
-Daily Portfolio Brief
-Life-aware Recommendations
-Goal-aware Rebalancing
-Tax-aware Suggestions
-Risk-aware Coaching
-Scenario Simulation
-Financial Copilot
+- ✅ Deterministic Replay
+- ✅ NAV Conservation
+- ✅ Cash Preservation
+- ✅ Historical Regeneration
+- ✅ Replay Validation
+- ✅ Integration Consistency
+
+---
+
+# Phase 3 — Platform Evolution
+
+Strengthen the platform for long-term scalability.
+
+## Market Data
+
+- Symbol Registry
+- Master Asset Database
+- Market Calendar
+- Multiple Price Providers
+- Historical Data Services
+- Cache Improvements
+
+## Analytics
+
+- Rolling Analytics
+- Position Attribution
+- Sector Attribution Timeline
+- Advanced Risk Metrics
+
+## Architecture
+
+- Domain Modularization
+- Event Bus
+- Shared Analytics Library
+- AI Routing Layer
+- Prompt Layer Cleanup
+- Internal API Simplification
+
+---
+
+# Phase 4 — SaaS Platform
+
+Scale from a personal platform to a production SaaS.
+
+## Multi-user
+
+- Multi-workspace
+- Team Accounts
+- RBAC
+
+## Platform
+
+- Usage Reports
+- Credits
+- Billing
+- API Keys
+- Audit Logs
+
+---
+
+# Phase 5 — Personal Wealth Platform
+
+Expand from portfolio management to complete wealth management.
+
+## Assets
+
+- Stocks
+- ETFs
+- Mutual Funds
+- Gold
+- Crypto
+- Cash
+- Property
+
+## Financial Planning
+
+- Net Worth
+- Income
+- Expenses
+- Budget
+- Cash Flow
+- Emergency Fund
+
+## Goals
+
+- Retirement
+- House
+- Wedding
+- Education
+- Vacation
+- FIRE
+
+## Wealth Planning
+
+- Debt Management
+- Tax Planning
+- Insurance Planning
+- Estate Planning
+
+---
+
+# Phase 6 — Personal AI Wealth Advisor
+
+Transform the platform from dashboards into an intelligent financial partner.
+
+## AI Experience
+
+- Daily Portfolio Brief
+- Natural Language Portfolio Review
+- Portfolio Copilot
+
+## Decision Intelligence
+
+- Goal-aware Recommendations
+- Tax-aware Suggestions
+- Risk-aware Coaching
+- Scenario Simulation
+
+## Learning Engine
+
+- Recommendation Learning
+- Confidence Calibration Learning
+- Strategy Performance Learning
+- Regime Learning
+- Model Evaluation & Auto Calibration
+
+---
+
+# Open Engineering Backlog
+
+These are important engineering improvements but are intentionally
+kept outside the roadmap phases.
+
+## Accounting
+
+- STATIC_FROZEN fallback correction
+- Historical cash timeline fidelity
+
+## Portfolio
+
+- Decision → Transaction linkage
+- System-deferral pricing
+
+## Analytics
+
+- Sector BHB attribution
+- Multi-portfolio analytics
+
+## Platform
+
+- Accessibility (WCAG)
+- UI consistency
+- Performance optimization
+
+---
+
+# Guiding Principles
+
+- Correctness over complexity.
+- Deterministic calculations before AI interpretation.
+- Every recommendation must be explainable.
+- Every evaluation must be reproducible.
+- AI assists decisions but never hides the underlying evidence.
