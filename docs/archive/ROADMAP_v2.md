@@ -1,0 +1,220 @@
+#TA Stock Analysis Platform Roadmap (v2)
+
+##Phase 1 — Foundation ✅ COMPLETE
+
+สร้างแกนกลางของระบบให้เชื่อถือได้
+
+Platform
+✅ Portfolio
+✅ Watchlist
+✅ Workspace
+✅ User Wallet
+✅ Billing
+✅ Settings
+Analysis
+✅ 3-Layer Optimizer
+✅ Deterministic Scoring
+✅ Confidence Capping
+✅ Latency & Cost Tracking
+Infrastructure
+✅ PostgreSQL
+✅ VPS
+✅ Vercel
+✅ Deploy Pipeline
+Portfolio Engine
+✅ Transactions
+✅ Replay Engine
+✅ Snapshots
+✅ Portfolio Metrics Engine
+✅ Ledger Validation
+✅ Ledger Repair
+✅ Benchmark Engine
+✅ Performance History
+✅ Portfolio Calculation Rules
+
+----
+
+Phase 2 — Investment Intelligence ✅ COMPLETE
+
+วิเคราะห์คุณภาพของพอร์ต
+
+Performance Analytics
+Complete
+✅ Total Return
+✅ Annualized Return
+✅ Volatility
+✅ Max Drawdown
+✅ Sharpe Ratio
+✅ Alpha
+✅ Beta
+✅ Correlation
+✅ Tracking Error
+✅ Information Ratio
+✅ Benchmark Comparison
+✅ Cash Utilization
+Optional
+⏳ Sortino Ratio
+⏳ Rolling Metrics
+
+Attribution Analytics
+Complete
+
+✅ Allocation
+✅ Human vs AI
+✅ Regime
+✅ Three Portfolios
+✅ Opportunity Cost
+✅ Attribution Waterfall
+Optional
+⏳ Sector Timeline
+⏳ Position Attribution
+
+Execution Intelligence
+Complete
+✅ Recommendation Snapshot
+✅ Shadow Portfolio
+✅ Recommendation Grading
+✅ Execution Analysis
+✅ Human vs AI
+✅ Opportunity Cost
+✅ Evaluation Hub
+✅ Trust Report
+
+AI Evaluation
+Complete
+✅ Horizon Grading
+✅ Recommendation Grading
+✅ Execution Grading
+✅ Confidence Calibration
+✅ Human vs AI
+✅ Recommendation Report Card
+✅ Three Portfolios
+✅ Trust Report
+
+----
+
+Stability Validation
+(1-3 วัน)
+
+↓
+
+Asset Registry Epic
+(Symbol Search, Master Data)
+↓
+Finish Phase 2
+(Rolling Metrics, Attribution)
+
+## Phase 3 — Architecture Refactor
+
+เปลี่ยนจากระบบที่ "ใช้งานได้" เป็นระบบที่ "ขยายได้"
+
+Portfolio Module
+Portfolio Domain
+Replay Engine
+Snapshot Engine
+Ledger
+Metrics
+Benchmark
+Market Data Module
+Price Providers
+Historical Data
+Symbol Resolver
+Cache
+Market Calendar
+Analytics Module
+Shared Analytics
+Statistics
+Risk Metrics
+Attribution
+Benchmark Math
+AI Module
+Optimizer
+Strategy Persona
+Routing
+Prompt Layer
+Common Module
+Event Bus
+Utilities
+Shared Models
+
+----
+
+## Phase 4 — SaaS Platform
+
+รองรับหลายผู้ใช้และการใช้งานจริง
+
+Multi-workspace
+Credits
+Billing
+Policy Engine
+Usage Reports
+Team Accounts
+RBAC
+API Keys
+Audit Logs
+
+----
+
+## Phase 5 — Personal Wealth Platform
+
+จาก Portfolio → Wealth Management
+
+Asset Tracking
+Stocks
+ETF
+Gold
+Crypto
+Mutual Funds
+Cash
+Property
+Personal Finance
+Income
+Expenses
+Budget
+Cash Flow
+Emergency Fund
+Goal Planning
+Wedding
+Retirement
+House
+Education
+Vacation
+Life Planning
+FIRE
+Financial Independence
+Timeline
+Net Worth Projection
+Debt Management
+Mortgage
+Personal Loan
+Credit Card
+Debt Optimization
+Tax Planning
+ThaiESG
+RMF
+SSF
+Tax Simulation
+Insurance Planning
+Life
+Health
+Critical Illness
+Asset Protection
+Estate Planning
+Beneficiaries
+Wealth Transfer
+Inheritance Simulation
+
+----
+
+## Phase 6 — Personal AI Wealth Advisor
+
+จาก "Dashboard" → "AI Partner"
+
+Natural Language Portfolio Review
+Daily Portfolio Brief
+Life-aware Recommendations
+Goal-aware Rebalancing
+Tax-aware Suggestions
+Risk-aware Coaching
+Scenario Simulation
+Financial Copilot
