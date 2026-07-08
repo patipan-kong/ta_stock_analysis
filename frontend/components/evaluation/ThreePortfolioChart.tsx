@@ -84,7 +84,7 @@ export default function ThreePortfolioChart({ chart }: { chart: ThreePortfoliosC
         <Line type="monotone" dataKey="ideal" name="Ideal" stroke="#8b5cf6" strokeWidth={1.75} strokeDasharray="5 3" dot={false} connectNulls activeDot={{ r: 4 }} />
         <Line type="monotone" dataKey="ai" name="AI Portfolio" stroke="#3b82f6" strokeWidth={2} dot={false} connectNulls activeDot={{ r: 4 }} />
         <Line type="monotone" dataKey="actual" name="You" stroke="#10b981" strokeWidth={2.75} dot={false} connectNulls activeDot={{ r: 5 }} />
-        <Line type="monotone" dataKey="benchmark" name="Benchmark (SET)" stroke="#9ca3af" strokeWidth={1.5} strokeDasharray="2 2" dot={false} connectNulls activeDot={{ r: 4 }} />
+        <Line type="monotone" dataKey="benchmark" name="Benchmark (SET Index)" stroke="#9ca3af" strokeWidth={1.5} strokeDasharray="2 2" dot={false} connectNulls activeDot={{ r: 4 }} />
       </LineChart>
     </ResponsiveContainer>
   );

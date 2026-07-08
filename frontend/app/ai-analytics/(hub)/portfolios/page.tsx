@@ -25,12 +25,18 @@ import AsOfStamp from "@/components/evaluation/AsOfStamp";
 import GapAnnotation from "@/components/evaluation/GapAnnotation";
 import EvaluationColdStart from "@/components/evaluation/EvaluationColdStart";
 import ThreePortfolioChart from "@/components/evaluation/ThreePortfolioChart";
+import ComparisonWindowCard from "@/components/evaluation/ComparisonWindowCard";
 
 const PERIODS = [
   { label: "90D", days: 90 },
   { label: "180D", days: 180 },
   { label: "1Y", days: 365 },
 ];
+
+const ROLLING_WINDOW_TOOLTIP =
+  "Rolling Window compares performance during the selected lookback period. " +
+  "The Performance page instead compares performance since your portfolio began. " +
+  "Both views are correct but answer different questions.";
 
 function pct(n: number | null | undefined, decimals = 1): string {
   if (n == null) return "—";
@@ -39,6 +45,18 @@ function pct(n: number | null | undefined, decimals = 1): string {
 function pnlTone(n: number | null | undefined): string {
   if (n == null) return "text-gray-400";
   return n >= 0 ? "text-green-700" : "text-red-600";
+}
+function periodLongLabel(days: number): string {
+  if (days === 365) return "1 Year";
+  return `${days} Days`;
+}
+// Inclusive day count between two "YYYY-MM-DD" chart dates — used to derive
+// how much of the selected rolling window is backed by real portfolio data,
+// entirely client-side from the same `chart` rows already rendered.
+function daysBetweenInclusive(a: string, b: string): number {
+  const d1 = new Date(`${a}T00:00:00`);
+  const d2 = new Date(`${b}T00:00:00`);
+  return Math.round((d2.getTime() - d1.getTime()) / 86_400_000) + 1;
 }
 
 export default function PortfoliosPage() {
@@ -73,6 +91,20 @@ export default function PortfoliosPage() {
   }
 
   const tp = data?.three_portfolios;
+
+  // Derived, client-side only — no new backend fields. "Comparable history"
+  // is anchored on the `actual` (You) series' first non-null point, since
+  // that's the portfolio's own real start; a rolling window can (and often
+  // does) extend further back into benchmark-only history the portfolio
+  // never lived through (see the Performance-vs-Three-Portfolios benchmark
+  // investigation this card exists to explain).
+  const chart = tp?.chart ?? [];
+  const firstActualRow = chart.find((r) => r.actual != null);
+  const comparisonStart = firstActualRow?.date ?? chart[0]?.date ?? null;
+  const comparisonEnd = chart.length ? chart[chart.length - 1].date : null;
+  const comparableDays =
+    comparisonStart && comparisonEnd ? daysBetweenInclusive(comparisonStart, comparisonEnd) : 0;
+  const selectedPeriodLabel = PERIODS.find((p) => p.days === periodDays)?.label ?? `${periodDays}D`;
 
   return (
     <div className="space-y-5">
@@ -117,10 +149,44 @@ export default function PortfoliosPage() {
 
       {!loading && tp && tp.status === "ok" && (
         <>
+          <ComparisonWindowCard
+            periodLabel={periodLongLabel(periodDays)}
+            comparisonStart={comparisonStart}
+            comparisonEnd={comparisonEnd}
+            comparableDays={comparableDays}
+            periodDays={periodDays}
+          />
+
+          {comparableDays > 0 && comparableDays < 7 && (
+            <div className="flex items-start gap-3 px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-800">
+              <span className="mt-0.5 text-blue-500 shrink-0">ℹ</span>
+              <p>
+                Performance comparison is available, but there is not yet enough history for meaningful conclusions.
+              </p>
+            </div>
+          )}
+          {comparableDays >= 7 && comparableDays < periodDays && (
+            <div className="flex items-start gap-3 px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-800">
+              <span className="mt-0.5 text-blue-500 shrink-0">ℹ</span>
+              <div className="space-y-1">
+                <p className="font-semibold">This portfolio has only {comparableDays} days of history.</p>
+                <p>
+                  The chart automatically compares all available data rather than fabricating missing history.
+                  This is expected for newer portfolios.
+                </p>
+              </div>
+            </div>
+          )}
+
           <div className="bg-white border border-gray-200 rounded-xl p-4">
-            <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide mb-3">
-              Performance (indexed, {periodDays}D)
-            </h3>
+            <div className="flex items-center gap-1.5 mb-3">
+              <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">
+                Rolling Performance Comparison <span className="text-gray-400 normal-case font-medium">· {selectedPeriodLabel}</span>
+              </h3>
+              <span className="text-gray-400 hover:text-gray-600 cursor-help text-xs leading-none" title={ROLLING_WINDOW_TOOLTIP}>
+                ⓘ
+              </span>
+            </div>
             <ThreePortfolioChart chart={tp.chart} />
             <div className="grid grid-cols-3 gap-3 mt-4 pt-3 border-t text-sm">
               <div>
