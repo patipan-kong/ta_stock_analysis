@@ -1,4 +1,4 @@
-# TA Stock Analysis Platform
+     TA Stock Analysis Platform
 
 An AI-powered portfolio analytics and investment research platform.
 
@@ -58,16 +58,6 @@ Deployment
 - VPS
 - PM2
 - Nginx
-
----
-
-## Documentation
-
-- ARCH_SPEC.md
-- PORTFOLIO_CALCULATION_RULES.md
-- ROADMAP.md
-- CHANGELOG.md
-- CLAUDE.md
 
 ---
 

@@ -581,7 +581,7 @@ def compute_three_portfolios(db: Session, portfolio_id: int, period_days: int = 
 
     bench_rows = (
         db.query(BenchmarkPrice.price_date, BenchmarkPrice.close_price)
-        .filter(BenchmarkPrice.symbol == "^GSPC", BenchmarkPrice.price_date >= cutoff)
+        .filter(BenchmarkPrice.symbol == "^SET.BK", BenchmarkPrice.price_date >= cutoff)
         .all()
     )
     bench_dated = {d: v for d, v in bench_rows}

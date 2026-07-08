@@ -123,6 +123,25 @@ Verify that:
 - fallback paths still behave correctly
 
 
+## Capability vs. Quality
+
+Roadmap tracks capabilities.
+
+It does not track perpetual quality improvements.
+
+Examples of perpetual work:
+
+- Performance tuning
+- Prompt optimization
+- Model evaluation
+- Cache tuning
+- Cost optimization
+- Refactoring
+- Test improvements
+
+These activities continue throughout the lifetime of the platform and should be tracked separately from capability evolution.
+
+
 ------------------------------------------------
 
 Never allow critical subsystems to fail silently.
