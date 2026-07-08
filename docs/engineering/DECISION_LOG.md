@@ -1,4 +1,5 @@
 # Decision Log
+What we HAVE decided
 _Why decisions were made. Useful context when revisiting constraints or architecture choices._
 _See [ARCH_SPEC.md](ARCH_SPEC.md) for current specs. See [ROADMAP.md](ROADMAP.md) for phase history._
 
