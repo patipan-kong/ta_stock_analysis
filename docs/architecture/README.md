@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Version** | v1.0 |
+| **Version** | v4.0 |
 | **Last Updated** | 2026-07 |
-| **Documents** | 7 |
+| **Documents** | 10 |
 
 *This directory is the architectural record of the Portfolio Intelligence Platform. This README is its introduction: what the handbook is, how its documents fit together, in what order to read them, and what philosophy binds them. It organizes the existing architecture; it does not extend it.*
 
@@ -45,9 +45,18 @@ Read the documents in the order below. Each one assumes the vocabulary of the on
 *Read sixth because it defines the boundary inside which all accounting truth lives, which the final document must respect.*
 
 **7. [BROKER_ACCOUNT_DOMAIN.md](BROKER_ACCOUNT_DOMAIN.md)** — How real brokerage accounts relate to that boundary: accounts as transaction sources and custody facts, imports as reconciliation, cash meaning owned by the portfolio.
-*Read last because it stands where the two halves meet: the import machinery of documents 3–5 applied to the accounting boundary of document 6.*
+*Read seventh because it stands where the two halves meet: the import machinery of documents 3–5 applied to the accounting boundary of document 6.*
 
-A shorthand for the whole sequence: documents 1–2 define **what things are**, documents 3–5 define **how the world gets in**, and documents 6–7 define **where truth is kept**.
+**8. [TRANSACTION_DOMAIN_MODEL.md](TRANSACTION_DOMAIN_MODEL.md)** — What a Transaction is: the immutable business event, the canonical vocabulary, and the append-only stream from which all accounting, analytics, and evaluation are derived.
+*Read eighth because it is the innermost document: every document before it explains how facts reach the ledger; this one defines the fact itself, and every accounting-related domain stands on it.*
+
+**9. [CORPORATE_ACTION_DOMAIN.md](CORPORATE_ACTION_DOMAIN.md)** — How the world's restructurings (splits, mergers, spin-offs, redemptions) become facts: the adjudication bridge between Asset Identity and Canonical Transactions, owning neither.
+*Read ninth because it is the first pure adjudication domain: it presumes both permanent authorities — the Registry and the ledger — and defines the disciplined path by which one real-world event lands consistently in both.*
+
+**10. [EXECUTION_DOMAIN.md](EXECUTION_DOMAIN.md)** — How intent becomes history: the decision record binding AI recommendations, human judgment, and canonical transactions — the platform's second permanent memory.
+*Read last because it is the second adjudication domain and the intelligence layer's only gate to the ledger: it presumes everything before it, and every evaluation the platform makes about itself stands on its record.*
+
+A shorthand for the whole sequence: documents 1–2 define **what things are**, documents 3–5 define **how the world gets in**, documents 6–8 define **where truth is kept**, and documents 9–10 define **how changes — the world's and the user's — reach the truth**.
 
 ### Document Dependencies
 
@@ -73,11 +82,20 @@ PORTFOLIO_DOMAIN_MODEL          the accounting boundary
         │
         ▼
 BROKER_ACCOUNT_DOMAIN           custody, imports, transaction sources
+        │
+        ▼
+TRANSACTION_DOMAIN_MODEL        the immutable event: the platform's permanent memory
+        │
+        ▼
+CORPORATE_ACTION_DOMAIN         adjudicating the world's restructurings into both authorities
+        │
+        ▼
+EXECUTION_DOMAIN                adjudicating the user's intent into the ledger; the decision record
 ```
 
 An arrow means *"depends on the document above"*: PORTFOLIO_DOMAIN_MODEL depends on ASSET_REGISTRY (a portfolio's Investment Universe is expressed in canonical assets), which in turn depends on PROVIDER_INTERFACE and MARKET_DATA_PLATFORM (identity claims arrive through that pipeline), and so on up to the manifesto.
 
-The practical rule this diagram gives an author: **when writing a new document, find where it attaches to this chain, and read everything above that point first.** A future Corporate Actions document, for example, attaches below ASSET_REGISTRY and PORTFOLIO_DOMAIN_MODEL — so its author reads documents 1–6 before writing a word.
+The practical rule this diagram gives an author: **when writing a new document, find where it attaches to this chain, and read everything above that point first.** A future Tax Engine document, for example, attaches below TRANSACTION_DOMAIN_MODEL and CORPORATE_ACTION_DOMAIN — so its author reads the entire chain before writing a word.
 
 ### Document Type Legend
 
@@ -208,7 +226,7 @@ Seven documents, written months apart, keep arriving at the same small set of co
 
 ## 5. Current Coverage
 
-The handbook currently defines six architecture domains:
+The handbook currently defines ten architecture domains:
 
 - **Platform** — the layer stack, expansion philosophy, and permanence guarantees (PLATFORM_EVOLUTION.md).
 - **Asset** — the universal asset model and its capability vocabulary (UNIVERSAL_ASSET_ARCHITECTURE.md).
@@ -217,6 +235,9 @@ The handbook currently defines six architecture domains:
 - **Asset Identity** — the registry that mints and defends permanent identity (ASSET_REGISTRY.md).
 - **Portfolio** — the strategy, policy, and accounting boundary at the platform's core (PORTFOLIO_DOMAIN_MODEL.md).
 - **Broker** — custody, transaction sources, and the import boundary (BROKER_ACCOUNT_DOMAIN.md).
+- **Transaction** — the immutable business event, canonical vocabulary, and append-only ledger semantics (TRANSACTION_DOMAIN_MODEL.md).
+- **Corporate Actions** — announcements, adjudication, and the consistent landing of structural events in both the Registry and the ledger (CORPORATE_ACTION_DOMAIN.md).
+- **Execution** — the decision record: intent, approval, lifecycle, and the one gate through which recommendations become transactions (EXECUTION_DOMAIN.md).
 
 Together they cover the full path from the outside world to the ledger. What they deliberately do not yet cover is listed in the next section.
 
@@ -226,14 +247,12 @@ Together they cover the full path from the outside world to the ledger. What the
 
 The following domains are expected to receive documents of their own as the platform grows. They are listed here for orientation only — nothing below is designed yet, and nothing in the existing documents should be read as pre-deciding them.
 
-- **Transaction Domain** — the full vocabulary and semantics of ledger events as a domain in its own right.
-- **Corporate Actions** — splits, mergers, spin-offs, and dividends as first-class events affecting identity and accounting together.
 - **Multi Currency** — the platform-wide treatment of FX beyond the boundaries already sketched in the broker and portfolio documents.
 - **Goal Planning** — goals as durable objects connecting portfolios to intent over time.
 - **Tax Engine** — jurisdiction-aware treatment of realized gains, dividends, and tax-advantaged wrappers.
 - **Wealth Domain** — the descriptive layer above portfolios: net worth, allocation across boundaries, household views.
 - **Risk Engine** — risk as a domain concept spanning exposure, concentration, and scenario reasoning.
-- **Execution Engine** — how decisions become orders, and how execution reality feeds back into evaluation.
+- **Execution Analytics** — the study of intent-versus-outcome divergence the Execution Domain preserves: slippage, delay cost, fill quality.
 
 When one of these is written, it joins the reading order at the point where its dependencies are satisfied, and this README is updated.
 
