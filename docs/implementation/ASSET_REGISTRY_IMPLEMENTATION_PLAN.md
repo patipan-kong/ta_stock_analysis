@@ -74,7 +74,7 @@ The migration target, stated as the handbook's own audit: **no engine should be 
 These principles bind every milestone. A milestone plan that violates one is wrong regardless of schedule pressure.
 
 1. **The ledger is never rewritten — it is re-keyed additively.** Transaction rows gain an `asset_id` reference alongside the existing symbol; the symbol column is not dropped until parity is proven and the contract phase (M7) explicitly retires it. This is ADR-001 applied to the migration itself.
-2. **Replay parity is the gate for everything.** Before any consumer switches keys, replay over the full history of every portfolio must produce results identical to a pre-migration golden baseline. Not approximately identical — identical. The existing `verify_snapshots` and `validate_ledger` audit tooling is the enforcement mechanism, extended where needed. Per [ADR-005 — Replay Correctness Baseline](../decisions/ADR-005_REPLAY_CORRECTNESS_BASELINE.md), "identical" means identical to *correct* accounting, not to the current implementation's defects: known correctness defects (e.g. the raw_symbol/canonical_symbol alias-splitting behavior found in M0) must be repaired before golden baselines are captured. **ADR-005 must be accepted before M0's golden baselines are captured, and before M5 — Portfolio Migration begins.**
+2. **Replay parity is the gate for everything.** Before any consumer switches keys, replay over the full history of every portfolio must produce results identical to a pre-migration golden baseline. Not approximately identical — identical. The existing `verify_snapshots` and `validate_ledger` audit tooling is the enforcement mechanism, extended where needed. Per [ADR-005 — Replay Correctness Baseline](../decisions/ADR-005_REPLAY_CORRECTNESS_BASELINE.md), "identical" means identical to *correct* accounting, not to the current implementation's defects: known correctness defects (e.g. the raw_symbol/canonical_symbol alias-splitting behavior found in M0) must be repaired before golden baselines are captured. **ADR-005 must be accepted before M0's golden baselines are captured, and before M5 Track B — Native Ledger Persistence begins.** (M5 Track A — evidence, planning, and bootstrap tooling — never runs replay and is not subject to this gate; see §5.)
 3. **No flag days.** Old world and new world coexist for the entire epic. Every switchover is per-consumer, feature-flagged, reversible, and independently verifiable. There is no moment when the platform is broken-unless-everything-lands.
 4. **Backward compatibility at every seam.** Existing imports, screens, and workflows keep working throughout. Users should be unable to tell the migration is happening except where the product deliberately improves (e.g., ambiguity surfacing on import).
 5. **Backfill is adjudication, not string mapping.** The one-time resolution of historical symbols into minted identities goes through the same evidence-and-verdict discipline as live resolution (ASSET_REGISTRY.md §4). Decisive cases resolve in bulk; every ambiguity is surfaced to a human and the confirmation recorded. **No silent guessing during backfill** — a wrong historical mapping is exactly the multiplicative poison §7 warns about.
@@ -86,7 +86,27 @@ These principles bind every milestone. A milestone plan that violates one is wro
 
 ## 5. Milestone Breakdown
 
-Suggested order: **M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7**, with M3/M4 partially parallelizable after M2, and M5 as the hard gate before M6. Dependencies are noted per milestone. Per Migration Principle 2 (§4) and [ADR-005](../decisions/ADR-005_REPLAY_CORRECTNESS_BASELINE.md), M0's golden baselines may not be captured, and M5 may not begin, until ADR-005 is accepted.
+Suggested order: **M0 → M1 → M2 → M3 → M4 → M5 Track A → {M5 Track B ∥ M6 Compatibility-Layer} → M6 Native → M7**, with M3/M4 partially parallelizable after M2, M5 Track B and M6 Compatibility-Layer mutually independent of each other and safe to run concurrently, and M5 Track B remaining the hard gate before M6 Native Integration. Dependencies are noted per milestone and in the graph below. Per Migration Principle 2 (§4) and [ADR-005](../decisions/ADR-005_REPLAY_CORRECTNESS_BASELINE.md), M0's golden baselines may not be captured, and M5 Track B may not begin, until ADR-005 is accepted.
+
+**Dependency graph (revised 2026-07-09 — see Changelog, §13).** The single chain M0→...→M7 originally suggested above is no longer the actual shape of the remaining work; M5 and M6 each branch into two tracks that proceed on independent schedules:
+
+```
+M0 → M1 → M2 → M3 → M4
+                 │     │
+                 │     └───────────────► M5 Track A  (COMPLETE, 2026-07-09)
+                 │                            │
+                 │                            ├──────────────► M5 Track B ──► M6 Native ──► M7
+                 │                            │                (ledger backfill,    ▲
+                 │                            │                 hard-gated on        │
+                 │                            │                 Track A + ADR-005)   │
+                 └────────────────────────────┴──────────────► M6 Compatibility- ────┘
+                                                                 Layer (independent
+                                                                 of Track B; a shim,
+                                                                 retired at M7 like
+                                                                 every other shim)
+```
+
+M6 Native Integration depends on **both** M5 Track B (hard gate, accounting correctness) and, in practice, benefits from M6 Compatibility-Layer having already converted most non-ledger call sites — but does not structurally require it. M7 requires M5 Track B and M6 Native complete, with their probation periods elapsed, regardless of whether Compatibility-Layer shipped first.
 
 ---
 
@@ -247,41 +267,108 @@ Suggested order: **M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7**, with M
 
 ### M5 — Portfolio Migration (the ledger gets its identity)
 
-**Goal.** Every transaction, holding, and snapshot references an `asset_id` — additively, under audit, with replay parity as the gate. This is the epic's center of gravity and its highest-risk milestone.
+**Status: Split into two tracks by implementation reality (see Changelog, §13). Track A — Complete (2026-07-09). Track B — Not started.**
+
+This milestone's original text specified one continuous scope: adjudicated ledger backfill, full-coverage check, replay parity verification, and engine cutover. Implementation proceeded as four sub-milestones — tracked internally as M5.0–M5.3 — that built the adjudication and bootstrap tooling this scope depends on, but by explicit, documented design choice at each step, never touched `Transaction`, `PortfolioItem`, `PortfolioSnapshot`, or `Watchlist`. That leaves the schema-changing, replay-parity-gated core of the original Definition of Done entirely undone. Rather than mark M5 "complete" on the strength of adjacent tooling — which the M6 Registry Read Path audit (2026-07-09) flagged as exactly the kind of false signal this plan exists to prevent — the two tracks are named explicitly below so neither is mistaken for the other.
+
+#### M5 Track A — Ledger Evidence, Migration Planning & Registry Bootstrap
+
+**Goal.** Build the adjudication and minting tooling Track B will run on: turn raw ledger symbols into evidence, plan a migration against the Registry's current state, execute that plan's already-decisive cases, and bootstrap the Registry from whatever claim shapes the historical ledger contains — all without writing to the ledger itself.
+
+**Scope (as implemented).**
+- **M5.0 — Ledger Evidence Builder.** Turns a raw ledger symbol into a `ResolutionClaim` via the same `build_claim()` M4's provider adapters use (ADR-004 reuse) — the ledger's own evidence-tier citizenship, established once.
+- **M5.1 — Migration Planner.** Runs the M3 resolver in bulk over the ledger's actual symbol population (not a synthetic inventory), producing a `MigrationPlan` that partitions every claim shape into RESOLVED / AMBIGUOUS / CONFLICT / CANDIDATE / UNKNOWN — a dry-run report; commits nothing.
+- **M5.2 — Migration Executor.** Commits the Planner's already-decisive verdicts (attaches identifiers to already-minted assets) under the same dry-run/rollback discipline as every other Registry writer; never invents a mapping the resolver did not already decide.
+- **M5.3 — Registry Bootstrap.** Mints new assets for `UNKNOWN` claim shapes that carry an unambiguous market/exchange signal (`.BK` suffix, DR pattern) per `services/symbol_market_convention.py`'s deliberately conservative rules; quarantines — never guesses — shapes with no such signal or missing currency; leaves duplicate clusters (two `UNKNOWN` shapes sharing a canonical symbol) unminted on both sides pending human adjudication.
+
+**Deliverables (shipped).** `services/symbol_market_convention.py`, `services/bootstrap_planner.py`, `models/registry_bootstrap.py`, Alembic migration `c6e8a0f2d4b6`, `services/registry_bootstrap.py`, `manage.py` CLI wiring; 19 unit tests (`test_bootstrap_planner.py` ×11, `test_registry_bootstrap.py` ×8), all green.
+
+**Bootstrap validation (production-like data, 2026-07-09).** 21 assets minted; 2 duplicate clusters found and correctly left unminted for manual adjudication (not auto-resolved — ASSET_REGISTRY.md §4); 0 shapes quarantined; 21/25 claim shapes resolved (84%); 41/52 transactions resolved to a mintable identity (79%).
+
+**What Track A explicitly does not do.** Per `migration_executor.py`'s own docstring: *"Transaction, PortfolioItem, and PortfolioSnapshot are never imported or touched. Replay, accounting, and the ledger are unreachable from this module."* Confirmed directly against the schema: `PortfolioItem`, `Watchlist`, and `Transaction` retain only a plain `symbol` String column; `PortfolioSnapshot` has no symbol column at all (symbols live inside `holdings_json`/`sector_breakdown_json` text blobs). Track A answers "what asset does this historical symbol refer to?" for the Registry's own benefit; it does not record that answer anywhere the ledger, replay engine, or accounting tooling can see it.
+
+**Risks.** Ambiguity volume turning out larger than the tooling can absorb quietly — see §9's updated "Ambiguity volume" entry for the actual measured result.
+
+**Definition of Done.** Bootstrap run completes against real ledger data; every `UNKNOWN` claim shape is classified as mintable, quarantined, or duplicate-blocked with no silent guessing; test suite green. *(Met, 2026-07-09.)*
+
+**Depends on.** M3 (resolver), M4 (bootstrap reuses `build_claim()`).
+
+**Status: Complete (2026-07-09).**
+
+#### M5 Track B — Native Ledger Persistence (asset_id backfill, replay parity, engine cutover)
+
+**This is the original M5 scope, unchanged, carried forward as this milestone's remaining work:**
+
+**Goal.** Every transaction, holding, and snapshot references an `asset_id` — additively, under audit, with replay parity as the gate. This remains the epic's center of gravity and its highest-risk milestone; nothing in Track A reduces that risk, it only reduces the adjudication backlog Track B must clear before it can start.
 
 **Scope.**
-- **Adjudicated backfill**: run the M3 bulk resolution over the full ledger. Decisive cases map automatically; every ambiguous case is human-adjudicated through the M2 surface; nothing is committed until its verdict is recorded. The Transaction table's existing content is never modified — asset references are added alongside (the parallel-change expand step).
-- **Full-coverage check**: zero ledger rows without an `asset_id` reference at the end of backfill. Unknowns are not skipped — they are minted as honestly-thin identities (absence is data, §7) or escalated.
+- **Adjudicated backfill**: run the M3 bulk resolution over the full ledger, this time writing the result — a new, additive `asset_id` reference on `Transaction`, `PortfolioItem`, and (in whatever additive form its JSON-blob shape allows) `PortfolioSnapshot`. Decisive cases map automatically; every ambiguous case is human-adjudicated through the M2 surface; nothing is committed until its verdict is recorded. The Transaction table's existing content is never modified — asset references are added alongside (the parallel-change expand step).
+- **Full-coverage check**: zero ledger rows without an `asset_id` reference at the end of backfill. Unknowns are not skipped — they are minted as honestly-thin identities (absence is data, §7) or escalated. **Precondition, newly known from Track A's bootstrap run:** Track B cannot reach 100% coverage without first closing Track A's own adjudication backlog — the 2 unresolved duplicate clusters and the 11/52 (21%) transactions with no resolvable claim shape at all. This backlog is Track A/M2 adjudication debt, not Track B's to solve from scratch; it must be cleared, or explicitly and individually waived, before Track B's full-coverage check can pass.
 - **Replay parity verification**: full-history replay for every portfolio, computed via the id-keyed path, compared against the M0 golden baselines. Identical or the milestone stops.
 - **Engine cutover behind flags**: Portfolio Engine, Replay Engine, and the rebuild/validation tooling (`rebuild_portfolio`, `verify_snapshots`, `validate_ledger`) switch to `asset_id` as the operative key, per-portfolio or per-engine flagged, with instant reversion available.
 
 **Deliverables.** Fully backfilled ledger references; adjudication log of every human decision made during backfill (these are permanent Registry mappings, not migration scratch); parity report per portfolio; flagged cutover complete for accounting engines; audit tooling running natively on `asset_id`.
 
-**Risks.** This milestone concentrates the epic's three worst risks — wrong mapping, duplicate identity, replay divergence — and they are addressed in §9. The specific mitigations here: parity is checked per portfolio *before* that portfolio's cutover; the symbol column remains authoritative until parity passes; rollback is a flag flip for as long as M5 is in flight.
+**Risks.** This milestone concentrates the epic's three worst risks — wrong mapping, duplicate identity, replay divergence — and they are addressed in §9. The specific mitigations here: parity is checked per portfolio *before* that portfolio's cutover; the symbol column remains authoritative until parity passes; rollback is a flag flip for as long as Track B is in flight.
 
-**Definition of Done.** 100% ledger coverage; replay parity **bit-identical** for every portfolio against golden baselines; `verify_snapshots` and `validate_ledger` clean on the id-keyed path; accounting engines running id-keyed in production for a probation period (suggested: two weekly cycles) with zero drift.
+**Definition of Done.** Track A's adjudication backlog (2 duplicate clusters, 11 unresolved transactions as of the 2026-07-09 bootstrap run) cleared or explicitly waived per-row; 100% ledger coverage; replay parity **bit-identical** for every portfolio against golden baselines; `verify_snapshots` and `validate_ledger` clean on the id-keyed path; accounting engines running id-keyed in production for a probation period (suggested: two weekly cycles) with zero drift.
 
-**Depends on.** M3 (resolver), M4 (price joins by `asset_id` — replay needs id-keyed valuation). **Hard gate for:** M6.
+**Depends on.** M5 Track A (adjudication tooling and the Registry population it produced), M3 (resolver), M4 (price joins by `asset_id` — replay needs id-keyed valuation). **Hard gate for:** M6 Native Integration — **not** for M6 Compatibility-Layer Integration, which does not depend on Track B (see below).
+
+**Status: Not started.**
 
 ---
 
 ### M6 — Analytics & Intelligence Integration
 
-**Goal.** Everything downstream of accounting — analytics, attribution, timing intelligence, the optimizer pipeline, the decision record, AI evaluation — reads `asset_id`, with symbols surviving only as render-time display lookups.
+**Status: Split into two tracks (see Changelog, §13) — a read-time Compatibility-Layer track that can proceed now without waiting on M5 Track B, and the original Native Integration track, still hard-gated on M5 Track B.**
+
+The M6 Registry Read Path audit (2026-07-09, see [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md)) inventoried every symbol read across Portfolio, Transactions, Snapshots, Watchlist, Optimizer, Execution, Shadow Portfolio, Attribution, and AI Evaluation, and confirmed this milestone's original hard gate (M5, now M5 Track B) is not satisfied. Rather than defer all read-path improvement until Track B lands — a schedule with no fixed date — that audit specified a non-schema-changing track delivering most of this milestone's *practical* value early. Both tracks are named here so this plan matches what the audit found.
+
+#### M6 Compatibility-Layer Integration
+
+**Goal.** Every non-ledger read path — optimizer internals, execution sizing/planning, factor exposure, shadow portfolios, calibration, the recommendation write path, AI evaluation, human idea intake, watchlist — becomes Registry-informed for identity and classification facts, via a new read-time `resolve_asset()` adapter wrapping the already-complete M1–M3 Registry/Resolver (ADR-004 reuse). Symbol-string behavior is preserved unchanged for any symbol the Registry has not yet resolved (`Unresolved` is a first-class, non-guessing return value, per ASSET_REGISTRY.md §4).
+
+**Scope.** Full detail — the per-module Current → Target → Effort → Dependencies table and the 7-phase refactoring order — is specified in [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md) §§3–5. Summary:
+- New module `services/registry_lookup.py` (`resolve_asset()`, `Unresolved`, TTL cache) — zero existing files touched to introduce it.
+- Retirement of 5 independently-duplicated `.BK`-variant matching shims (`basket_simulation.py`, `execution_plan.py`, `position_sizing.py`, `allocation_engine.py`, `idea_review.py`) in favor of the one adapter.
+- Additive `asset_id` alongside `symbol` in the recommendation write path (`snapshot_writer.py`, `main.py`'s `POST /analyze/optimizer`) for **new** rows only — existing `RecommendationSnapshot`/`SignalHistory`/`RecommendationGrade` rows are never rewritten (Design Invariant 1, OPTIMIZER_PHILOSOPHY.md §14.1).
+- Optimizer internal dict-keys (`score_map`, `pc_map`, `alloc_map` in `agents/optimizer.py`) migrate to `asset_id`-keyed in-memory structures; the AI L1/L2/L3 prompt/response JSON contract stays symbol-shaped (explicit non-goal, judgment/arithmetic boundary per OPTIMIZER_PHILOSOPHY.md §6).
+- A structural fix separating `policy_engine.py`'s free-text violation strings from `execution_optimizer.classify_reason`'s substring-search recovery of them.
+- Explicitly excluded: `services/portfolio_rebuilder.py`'s replay loop and `services/ledger_validator.py`'s CHECK functions — those remain Track B's territory; the adapter must never be called from either.
+
+**Deliverables.** `services/registry_lookup.py` and its test suite; the 5 shims retired; recommendation write-path carrying `asset_id` for new rows; optimizer internals re-keyed; `policy_engine`/`execution_optimizer` structural fix; unit tests per the read-path plan's §7 (regression, unresolved-symbol fallback behavior, consensus-math parity, immutability audit, no-accounting-drift).
+
+**Risks.** Named directly by the read-path audit as pre-existing correctness bugs this track also happens to fix: (1) `execution_analyzer.py:88-181` joining a frozen recommendation symbol against the live, mutable `Transaction.symbol` — **not fully closed by this track**, since it requires `Transaction` itself to carry `asset_id` (Track B); (2) `execution_optimizer.classify_reason`'s fragile substring coupling; (3) the 5-file `.BK`-shim duplication (ADR-004 violation in the wild). Standard risk: a partial rollout leaving some consumers `asset_id`-aware and others symbol-only simultaneously — mitigated the same way as elsewhere in this plan, per-consumer flags and the `Unresolved`-fallback discipline (Migration Principle 3).
+
+**Definition of Done.** All 7 phases of the read-path plan's refactoring order shipped; regression suite green throughout; consensus-math parity proven byte-identical; zero `UPDATE`s against any FROZEN table verified by mechanical grep audit; `verify_snapshots`/`validate_ledger` clean before and after every phase (this track never touches ledger-adjacent code, so a clean run is the expected, not aspirational, outcome).
+
+**Depends on.** M2, M3 (the Registry/Resolver this track wraps). **Not dependent on M5 Track B.** **Does not, by itself, satisfy M6 Native Integration's Definition of Done** (below) — it is additive and read-time only; the ledger itself remains symbol-keyed until Track B.
+
+**Status: Phase 1, step 1 shipped (2026-07-09).** `services/registry_lookup.py` (`AssetView`, `Unresolved`, `resolve_asset()`, `resolve_many()`, thread-safe TTL cache) landed with 18 unit tests, all green, alongside the full pre-existing Registry test family (133 tests total) — see Changelog §13. This is deliberately narrower than the read-path plan's own Phase 1 definition (§5, steps 1–3): step 1 (the module itself) is done; step 2 (wiring into `GET /watchlist` as the lowest-stakes pilot consumer) was explicitly not started — this shipment's own brief stopped short of touching any call site, so as not to conflate "the adapter exists and is tested" with "a consumer depends on it." No existing file was modified to ship this; `resolve_asset()` has zero callers today. Phases 2–7 not started.
+
+#### M6 Native Integration
+
+**This is the original M6 scope, unchanged, and remains hard-gated as originally specified:**
+
+**Goal.** Everything downstream of accounting — analytics, attribution, timing intelligence, the optimizer pipeline, the decision record, AI evaluation — reads `asset_id` *natively from the ledger*, with symbols surviving only as render-time display lookups. This supersedes the Compatibility-Layer track once it lands: the same call sites the Compatibility Layer touched are revisited so they read the now-native `asset_id` directly instead of resolving one at read time.
 
 **Scope.**
 - Analytics dimensions (sector, region, class) re-attached to Registry classification — dated facts, so period analytics can see classification *as it stood then* (§8).
 - The recommendation/decision/evaluation chain re-keyed: recommendations, execution decisions, shadow tracking, attribution, and grading reference assets by identity. Frozen historical records are **not** rewritten — they gain resolution through the same additive mapping the ledger got, preserving the AI Evaluation domain's never-retro-edit rule.
 - Presentation: `display_symbol` looked up at render time; screens stop passing symbols through business layers.
 - Parity verification for headline analytics (returns, attribution, human-vs-AI results) against M0 baselines.
+- Retirement of the M6 Compatibility-Layer adapter's read-time resolution calls in favor of native `asset_id` columns, wherever Track B has made that column available — this does not wait for M7; a consumer converts as soon as its data is native, same as every other per-consumer cutover in this plan.
 
 **Deliverables.** Id-keyed analytics and evaluation flows; analytics parity report; display-symbol lookup at the presentation boundary; classification-history support in period analytics.
 
 **Risks.** Long tail of minor consumers discovered late (mitigate: the M0 census is the checklist; anything not on it is a census defect to record). Analytics differences that are *corrections* rather than regressions — e.g., a DR previously conflated with its underlying now correctly distinct (mitigate: parity report distinguishes "identical," "explained improvement," and "unexplained divergence"; only the third blocks).
 
-**Definition of Done.** Census checklist fully dispositioned; analytics parity clean or explained; no business-layer symbol passing in the migrated flows; AI evaluation results stable across the cutover.
+**Definition of Done.** Census checklist fully dispositioned; analytics parity clean or explained; no business-layer symbol passing in the migrated flows; AI evaluation results stable across the cutover; every call site the Compatibility-Layer track touched now reads native `asset_id` rather than calling `resolve_asset()` at read time.
 
-**Depends on.** M5 (hard gate).
+**Depends on.** M5 Track B (hard gate, unchanged). M6 Compatibility-Layer Integration is not a structural dependency but is expected to precede it in practice, since it is the lower-risk path most consumers will already be on.
+
+**Status: Blocked on M5 Track B.**
 
 ---
 
@@ -290,18 +377,18 @@ Suggested order: **M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7**, with M
 **Goal.** The coexistence machinery is removed, the old world is retired, and the end state is audited against the architecture's own test.
 
 **Scope.**
-- Remove dual-key reads, compatibility shims, and migration flags; retire symbol columns from ledger-adjacent storage once every consumer is confirmed id-keyed (symbols persist *in the Registry's evidence tier*, where they now belong — retirement means removal as *keys*, never as *evidence*).
+- Remove dual-key reads, compatibility shims (including M6 Compatibility-Layer's `resolve_asset()` call sites not already retired during M6 Native Integration), and migration flags; retire symbol columns from ledger-adjacent storage once every consumer is confirmed id-keyed (symbols persist *in the Registry's evidence tier*, where they now belong — retirement means removal as *keys*, never as *evidence*).
 - The final audit: **no engine can tell what any asset is called** (ASSET_REGISTRY.md §10) — a mechanical sweep for symbol access below the resolution boundary and presentation surface, plus review sign-off per engine.
 - Golden baselines re-cut on the end state, becoming the new reference for future epics.
 - Documentation: architecture handbook README coverage note, decision log entries for any judgment calls made during migration, and an operations note for the ongoing adjudication workflow (ambiguity surfacing is now a permanent, low-volume operational activity, not a migration artifact).
 
-**Deliverables.** Contracted schema; audit report; refreshed baselines; documentation set; epic retrospective with the unknowns-vs-actuals comparison (M0's estimates vs. reality — calibration data for the next epic's planning).
+**Deliverables.** Contracted schema; audit report; refreshed baselines; documentation set; epic retrospective with the unknowns-vs-actuals comparison (M0's estimates vs. reality, including how M5/M6's track split compared to the single-milestone plan originally written — calibration data for the next epic's planning).
 
-**Risks.** Premature contraction (mitigate: contraction requires the M5/M6 probation periods complete plus one explicit go decision; there is no schedule pressure that justifies contracting early, because coexistence is cheap and un-deletion is not).
+**Risks.** Premature contraction (mitigate: contraction requires the M5 Track B and M6 Native probation periods complete plus one explicit go decision; there is no schedule pressure that justifies contracting early, because coexistence is cheap and un-deletion is not).
 
-**Definition of Done.** No symbol-keyed business path remains; audit clean; validators clean; baselines refreshed; retrospective written.
+**Definition of Done.** No symbol-keyed business path remains, including no remaining `resolve_asset()` call sites from M6 Compatibility-Layer; audit clean; validators clean; baselines refreshed; retrospective written.
 
-**Depends on.** M5 and M6 complete, probation periods elapsed.
+**Depends on.** M5 Track B and M6 Native Integration complete, probation periods elapsed. (M5 Track A and M6 Compatibility-Layer are prerequisites of those, not independent gates on M7.)
 
 ---
 
@@ -333,6 +420,8 @@ Coexistence rules during the middle stations:
 - **One direction of authority at a time.** For any given record family, either the symbol or the `asset_id` is operative — never "whichever the code path happens to read." The flag defines which; the other is passively maintained.
 - **New identity features wait.** Capabilities the old world cannot express (relationships, multi-listing distinction, classification history) are not *exposed* to users until the flows that would render them are id-keyed — otherwise the two worlds visibly disagree.
 - **Coexistence is temporary by declaration.** Every shim ships with its removal milestone named (M7). The compatibility layer is scaffolding, and scaffolding left standing becomes architecture by accident.
+
+**2026-07-09 addendum — two compatibility layers, not one.** The "Compatibility layer" station above was originally scoped as symbol ↔ `asset_id` mapping totality for M1–M4's own live flows (provider data, resolver evidence). The M6 Registry Read Path audit found a second, distinct compatibility need: **non-ledger consumers** (optimizer, execution, analytics, evaluation) that want Registry-informed reads *before* M5 Track B makes the ledger itself id-keyed. `resolve_asset()` (M6 Compatibility-Layer Integration, §5) is that second layer — read-time, additive, `Unresolved`-safe, and, like every other shim in this plan, named for removal at M7 once M6 Native Integration makes it redundant. It does not change the four-station diagram or its order; it is scaffolding *within* stations 2–3, scoped to consumers that do not require ledger-level replay parity to benefit from Registry-informed reads.
 
 ---
 
@@ -374,7 +463,7 @@ Ordered by severity × likelihood. The first two are the reason this plan is sha
 - **Broken replay.** Any divergence between symbol-keyed and id-keyed replay. *Mitigations:* golden baselines cut before anything moves; parity as a hard per-portfolio gate; flags making reversion instant during the entire coexistence period.
 - **Historical corruption.** The migration itself damaging ledger data. *Mitigations:* the ledger's existing columns are never written by any migration step; all changes additive until M7; backups per the platform's existing rebuild/backup discipline before each backfill wave; `validate_ledger` bracketing every wave.
 - **Provider inconsistencies.** Vendor data contradicting itself or the inventory mid-migration. *Mitigations:* conflicts are first-class Registry findings, not migration blockers; the architecture's quarantine-and-adjudicate path absorbs them as ordinary weather.
-- **Ambiguity volume.** The human adjudication workload turning out far larger than estimated. *Mitigations:* the M3 dry-run measures it *before* M5 commits to a schedule; if large, adjudication becomes a scheduled workstream with the decisive majority migrating first.
+- **Ambiguity volume.** The human adjudication workload turning out far larger than estimated. *Mitigations:* the M3 dry-run measures it *before* M5 Track B commits to a schedule; if large, adjudication becomes a scheduled workstream with the decisive majority migrating first. *Status (2026-07-09):* M5 Track A's bootstrap run against production-like data found the workload is small — 2 duplicate clusters and 11 unresolved transactions out of 52 — confirming the dry-run/quarantine discipline correctly separates the decisive majority from genuine ambiguity, rather than volume being a live concern. That backlog is now the named precondition on Track B's Definition of Done (§5).
 - **Migration rollback.** Needing to retreat after a cutover. *Mitigations:* until M7, rollback is a flag flip plus dual-write catch-up — no data repair, because the old keys were passively maintained. After M7's contraction, rollback is a restore-from-backup event; this is precisely why M7 is gated on probation periods and an explicit go decision.
 - **Scope creep into adjacent epics.** The Registry touching corporate actions, multi-currency, or new asset classes "while we're in here." *Mitigation:* §12 is the contract; anything on that list found mid-epic is written down for its own epic and not built.
 
@@ -428,10 +517,37 @@ Explicitly deferred to later epics. Each depends on the Registry and none may sn
 
 ---
 
+## 13. Changelog
+
+Modifications to this plan since its initial authoring, most recent first. Migration Principle 3 (§4 — "no flag days... every switchover is per-consumer, feature-flagged, reversible") applies to this document too: milestone text is revised in place when reality diverges from prediction, with the original scope preserved verbatim inside the revision rather than deleted, so a reader can always see what was originally intended alongside what actually happened. This is the first entry; no changelog existed before this revision.
+
+**2026-07-09 — M5/M6 reconciliation after the M5.3 Registry Bootstrap and the M6 Registry Read Path audit.**
+- Split **M5** into **Track A** (Ledger Evidence Builder, Migration Planner, Migration Executor, Registry Bootstrap — built and shipped as "M5.0–M5.3," Status: Complete) and **Track B** (the original M5 scope: adjudicated ledger backfill, full-coverage check, replay parity, engine cutover — Status: Not started). *Reason:* Track A's own implementation docstrings state explicitly that `Transaction`, `PortfolioItem`, and `PortfolioSnapshot` are never touched; treating "M5.0–M5.3 shipped" as "M5 done" would have been a false signal to every milestone depending on M5's hard gate.
+- Recorded M5 Track A's bootstrap validation numbers permanently in this plan: 21 assets minted, 2 duplicate clusters correctly left unminted, 0 quarantined, 21/25 claim shapes resolved, 41/52 transactions resolved (2026-07-09 run against production-like data).
+- Added an explicit precondition to Track B's Definition of Done: Track A's adjudication backlog (2 duplicate clusters, 11 unresolved transactions as of the above run) must be cleared or explicitly waived before Track B's full-coverage check can pass. This precondition did not previously exist because Track A was not yet a distinct concept when M5's original text was written.
+- Split **M6** into **Compatibility-Layer Integration** (new track; a read-time `resolve_asset()` adapter over the existing M1–M3 Registry/Resolver, non-schema-changing, depends only on M2/M3, independent of M5 Track B — full detail in [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md)) and **Native Integration** (the original M6 scope, unchanged, still hard-gated on M5 Track B). *Reason:* the read-path audit found the majority of read-path work (optimizer internals, execution sizing, analytics, evaluation, watchlist, idea intake) does not actually require ledger-level `asset_id` to become Registry-informed — only the ledger-adjacent paths (replay, `execution_analyzer.py`'s frozen-vs-live join) do.
+- Updated the milestone order (§5) from a single chain to a branching order, and added a dependency graph making the M5/M6 branching explicit.
+- Added a 2026-07-09 addendum to §6 (Compatibility Strategy) distinguishing the M1–M4 provider/resolver compatibility layer from the new M6 read-time compatibility layer — both are colloquially "a compatibility layer" but serve different consumers and different gates.
+- Updated M6 Native Integration's Definition of Done to include retiring the Compatibility-Layer track's `resolve_asset()` call sites once native `asset_id` columns become available per consumer — previously implicit (M7 retires everything eventually) but now stated at M6, since a consumer can convert as soon as its own data is native without waiting for the full M7 contraction phase.
+- Updated §4 Migration Principle 2 and the §9 "Ambiguity volume" risk entry to reference Track A/Track B by name and to record the measured 2026-07-09 backlog numbers.
+- Added [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md) to Related Documents.
+- **No architectural decision was changed. No canonical model was changed. No database schema was changed by this revision.** This is a planning-document update only, per the requesting brief's own constraint; every milestone's original scope text is preserved verbatim within its revised section.
+
+**2026-07-09 — M6 Compatibility-Layer Integration, Phase 1 step 1 shipped: Registry Lookup Foundation.**
+- Added `backend/services/registry_lookup.py`: `AssetView` (immutable read projection — `asset_id`, `canonical_symbol`, `display_symbol`, `market`, `exchange`, `currency`, `asset_type`, `classification`), `Unresolved` (first-class non-exceptional not-found/ambiguous/conflict value), `resolve_asset(db, query)` (dispatches on `str` vs `int`/`AssetId` rather than the two separately-named signatures the requesting brief sketched — documented in the module's own docstring, since every other Registry-facing function in this codebase takes `db` as an explicit first argument and this module did not want to be the one exception), `resolve_many(db, queries)`, and a thread-safe, configurable-TTL, configurable-max-size, positive-and-negative-caching in-process cache (`configure_cache()`, `invalidate_cache()`).
+- Reuses `identity_resolver.resolve()` for all symbol lookups rather than reimplementing its current-preempts-historical precedence rule (ADR-004) — verified by a dedicated test pair: a `PROVIDER_SYMBOL` value reused by a second, newer asset resolves decisively to the current holder, while a value that is only ever historical (no current claimant) is correctly reported `Unresolved` rather than guessed, since a lone historical `PROVIDER_SYMBOL` match falls under `DEFAULT_POLICY.resolved_threshold` by construction (M3's own weights, unmodified).
+- Added `backend/tests/test_registry_lookup.py`: 18 tests covering resolved/unknown/historical lookups, cache hit/expiry/invalidation/max-size eviction, `asset_id`-keyed lookup, `resolve_many()`, no-ORM-leakage, and cache-level thread safety. Full pre-existing Asset Registry test family (`test_registry_service.py`, `test_identity_resolver.py`, `test_bootstrap_planner.py`, `test_registry_bootstrap.py`, `test_migration_executor.py`, `test_migration_planner.py`, `test_asset_registry.py`, `test_provider_adapter.py`, `test_ledger_evidence_builder.py`) re-run together with the new suite: 133 passed, 0 failed.
+- Expanded `docs/architecture/REGISTRY_INTEGRATION_GUIDE.md` from its existing DO/DON'T stub into a full usage guide for `resolve_asset()` — the developer-facing companion to this module.
+- Updated the M6 Compatibility-Layer Integration section's Status line (above) to distinguish "the module is built and tested" from "a consumer depends on it" — no existing file was modified, so `resolve_asset()` has zero callers as of this entry. Read-path plan Phase 1 step 2 (wiring `GET /watchlist` as the pilot consumer) remains open.
+- **No database schema was changed. No existing file was modified. No business logic in Portfolio, Optimizer, Analytics, Execution, or Evaluation was touched.** This shipment is purely additive — one new module, one new test file, and documentation.
+
+---
+
 ## Related Documents
 
 - [ASSET_REGISTRY.md](../architecture/ASSET_REGISTRY.md) — the frozen architecture this plan implements
-- [ADR-005 — Replay Correctness Baseline](../decisions/ADR-005_REPLAY_CORRECTNESS_BASELINE.md) — resolves what "replay parity" means for M0's golden baselines and the M5 gate
+- [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md) — the detailed read-path audit and 7-phase refactoring order behind M6 Compatibility-Layer Integration (§5)
+- [ADR-005 — Replay Correctness Baseline](../decisions/ADR-005_REPLAY_CORRECTNESS_BASELINE.md) — resolves what "replay parity" means for M0's golden baselines and the M5 Track B gate
 - [Architecture Handbook README](../architecture/README.md) — reading order and the document dependency chain
 - [ENGINEERING_PRINCIPLES.md](../engineering/ENGINEERING_PRINCIPLES.md) / [DECISION_LOG.md](../engineering/DECISION_LOG.md) — the ADRs (ledger immutability, no compensation, one implementation per rule) this plan's principles instantiate
 - [AI_EVALUATION_IMPLEMENTATION_PLAN.md](AI_EVALUATION_IMPLEMENTATION_PLAN.md) — the previous epic's plan; the milestone register and testing discipline here follow its precedent
