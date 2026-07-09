@@ -37,6 +37,10 @@ Audit the transaction ledger (read-only):
     python manage.py validate_ledger --portfolio 4 --price-check
     python manage.py validate_ledger --portfolio 4 --price-check --price-threshold 50
 
+Simulate an Asset Registry migration (read-only — never writes):
+    python manage.py plan_migration --portfolio 4
+    python manage.py plan_migration --all
+
 Generate a deterministic repair plan (read-only — writes a JSON file only):
     python manage.py generate_repair_plan --portfolio 4
     python manage.py generate_repair_plan --portfolio 4 --output repair_plan.json
@@ -132,6 +136,8 @@ from services.ledger_repair_plan import (
     generate_repair_plan,
     write_repair_plan,
 )
+from services.migration_planner import plan_migration
+from services.migration_report import MigrationSummary, build_migration_report
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────
@@ -2737,6 +2743,169 @@ async def _cmd_validate_ledger(args: argparse.Namespace) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Migration planner: plan_migration
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_claim_shape_entry(entry) -> None:
+    shape, result = entry.shape, entry.result
+    print(f"\n  {shape.raw_symbol} / {shape.canonical_symbol or '—'}   currency={shape.currency or '—'}")
+    print(f"    transactions : {list(entry.transaction_ids)}")
+    print(f"    portfolios   : {list(entry.portfolio_ids)}")
+    print(f"    verdict      : {result.verdict.value}")
+    for candidate in result.candidates:
+        print(f"    candidate asset_id={candidate.asset_id}  score={candidate.score:.1f}")
+        for contribution in candidate.contributions:
+            print(
+                f"        + {contribution.identifier_type.value}:{contribution.identifier_value} "
+                f"({'current' if contribution.is_current else 'historical'}) weight={contribution.applied_weight:.1f}"
+            )
+
+
+def _print_migration_summary(summary: MigrationSummary) -> None:
+    s = summary.statistics
+    tv, cv = s.transaction_verdicts, s.claim_shape_verdicts
+
+    print(f"\n{_hr()}")
+    print("Migration Summary")
+    print(_hr())
+    print(f"  Portfolios scanned            : {list(summary.portfolios_scanned)}")
+    print(f"  Total transactions            : {s.total_transactions}")
+    print(f"  Cash-only (no identity claim) : {s.cash_only_transactions}")
+    print(f"  Identity-bearing              : {s.identity_bearing_transactions}")
+    print()
+    print("  Transaction-level verdicts")
+    print(f"    Resolved  : {tv.resolved:<6}  Candidate : {tv.candidate:<6}")
+    print(f"    Ambiguous : {tv.ambiguous:<6}  Conflict  : {tv.conflict:<6}  Unknown : {tv.unknown}")
+    print()
+    print(f"  Resolution %                  : {s.resolution_pct:.1f}%")
+    print(f"  Decisive %                    : {s.decisive_pct:.1f}%")
+    print()
+    print("  Claim-shape-level verdicts (distinct identity questions)")
+    print(f"    Resolved  : {cv.resolved:<6}  Candidate : {cv.candidate:<6}")
+    print(f"    Ambiguous : {cv.ambiguous:<6}  Conflict  : {cv.conflict:<6}  Unknown : {cv.unknown}")
+    print()
+    print(f"  Assets created (expected)     : {s.assets_created_expected}  (estimate — see Caveats)")
+    print(f"  Assets reused                 : {s.assets_reused}")
+    print(f"  Manual adjudications required : {s.manual_adjudications_required}")
+    print(f"  Potential duplicates          : {s.potential_duplicates}")
+    print(f"  Potential merge candidates    : {s.potential_merge_candidates}")
+
+    if summary.ambiguity_report.entries:
+        print(f"\n{_hr()}")
+        print(f"Ambiguity Report  ({len(summary.ambiguity_report.entries)} claim shape(s))")
+        print(_hr())
+        for entry in summary.ambiguity_report.entries:
+            _print_claim_shape_entry(entry)
+
+    if summary.conflict_report.entries:
+        print(f"\n{_hr()}")
+        print(f"Conflict Report  ({len(summary.conflict_report.entries)} claim shape(s))")
+        print(_hr())
+        for entry in summary.conflict_report.entries:
+            _print_claim_shape_entry(entry)
+        if summary.conflict_report.potential_merge_candidates:
+            print("\n  Potential merge candidates:")
+            for pmc in summary.conflict_report.potential_merge_candidates:
+                print(
+                    f"    asset_id={pmc.asset_ids[0]} <-> asset_id={pmc.asset_ids[1]}  "
+                    f"({len(pmc.transaction_ids)} transaction(s))"
+                )
+
+    if summary.potential_duplicate_clusters:
+        print(f"\n{_hr()}")
+        print(f"Potential Duplicates  ({len(summary.potential_duplicate_clusters)} cluster(s))")
+        print(_hr())
+        for cluster in summary.potential_duplicate_clusters:
+            print(
+                f"  canonical_symbol={cluster.canonical_symbol}  raw_symbols={list(cluster.raw_symbols)}  "
+                f"({len(cluster.transaction_ids)} transaction(s))"
+            )
+
+    print(f"\n{_hr()}")
+    print(f"Coverage Report  ({len(summary.coverage_report.rows)} claim shape(s))")
+    print(_hr())
+    print(f"  {'Symbol':<16}{'Canonical':<16}{'Currency':<10}{'Verdict':<12}{'Txns':<6}Portfolios")
+    for row in sorted(summary.coverage_report.rows, key=lambda r: r.shape.raw_symbol):
+        print(
+            f"  {row.shape.raw_symbol:<16}{(row.shape.canonical_symbol or '—'):<16}"
+            f"{(row.shape.currency or '—'):<10}{row.verdict.value:<12}{row.transaction_count:<6}"
+            f"{list(row.portfolio_ids)}"
+        )
+    print("\n  By currency:")
+    for currency, breakdown in summary.coverage_report.by_currency:
+        print(
+            f"    {currency:<10} resolved={breakdown.resolved} candidate={breakdown.candidate} "
+            f"ambiguous={breakdown.ambiguous} conflict={breakdown.conflict} unknown={breakdown.unknown}"
+        )
+    print("\n  By provider:")
+    for provider, breakdown in summary.coverage_report.by_provider:
+        print(
+            f"    {provider:<20} resolved={breakdown.resolved} candidate={breakdown.candidate} "
+            f"ambiguous={breakdown.ambiguous} conflict={breakdown.conflict} unknown={breakdown.unknown}"
+        )
+
+    print(f"\n{_hr()}")
+    print("Caveats")
+    print(_hr())
+    for caveat in s.caveats:
+        print(f"  - {caveat}")
+    print(_hr())
+
+
+def _cmd_plan_migration(args: argparse.Namespace) -> int:
+    """Read-only Asset Registry migration dry run. Never modifies the
+    database. identity_resolver.resolve() does write RegistryFinding rows
+    internally for AMBIGUOUS/CONFLICT verdicts (see services/migration_
+    planner.py's module docstring) — the "no writes" guarantee here is
+    structural: plan_migration() never commits its session and always
+    rolls it back before returning, regardless of outcome."""
+    db = SessionLocal()
+    t_start = time.monotonic()
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        portfolio_ids: list[int] | None
+        if getattr(args, "all", False):
+            portfolios = db.query(Portfolio).filter_by(workspace_id=ws_id).all()
+            if not portfolios:
+                print("ERROR: No portfolios found in workspace.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id for p in portfolios]
+        elif getattr(args, "portfolio", None):
+            p = db.query(Portfolio).filter_by(id=args.portfolio, workspace_id=ws_id).first()
+            if p is None:
+                print(f"ERROR: Portfolio {args.portfolio} not found.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id]
+        else:
+            print("ERROR: Specify --portfolio ID  or  --all", file=sys.stderr)
+            return 1
+
+        print(f"\n{_hr()}")
+        print("Migration Planner  —  Dry Run")
+        print("(read-only — no database mutation; session is rolled back, never committed)")
+        print(_hr())
+
+        plan = plan_migration(db, portfolio_ids=portfolio_ids)
+        summary = build_migration_report(plan)
+        _print_migration_summary(summary)
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+    elapsed = time.monotonic() - t_start
+    print(f"\n  Completed in {elapsed:.2f}s — DRY RUN, no rows written.")
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Apply repairs: apply_repair
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -3608,6 +3777,42 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── plan_migration ────────────────────────────────────────────────────────
+    plan = sub.add_parser(
+        "plan_migration",
+        help="Read-only Asset Registry migration dry run (Milestone M5.1)",
+        description=textwrap.dedent("""\
+            Simulates the complete Asset Registry migration for the given
+            portfolios without writing a single row.
+
+            NEVER mutates the database. NEVER writes to the Registry. NEVER
+            touches the Ledger, Replay, or Snapshots. The session is always
+            rolled back, never committed — even though identity_resolver.
+            resolve() itself durably records RegistryFinding rows for
+            AMBIGUOUS/CONFLICT verdicts, that write never survives this
+            command (see services/migration_planner.py).
+
+            Classifies every transaction as RESOLVED / CANDIDATE / AMBIGUOUS /
+            CONFLICT / UNKNOWN (or cash-only, reported separately), and
+            reports Statistics, an Ambiguity Report, a Conflict Report, a
+            Coverage Report, and potential duplicate/merge candidates.
+
+            Answers: "if we migrate today, what exactly would happen?"
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    plan.add_argument(
+        "--portfolio", "-p",
+        type=int,
+        metavar="ID",
+        help="Portfolio ID to plan the migration for",
+    )
+    plan.add_argument(
+        "--all",
+        action="store_true",
+        help="Plan the migration across every portfolio in the workspace",
+    )
+
     return parser
 
 
@@ -3639,6 +3844,9 @@ def main() -> None:
         sys.exit(exit_code)
     elif args.command == "validate_ledger":
         exit_code = asyncio.run(_cmd_validate_ledger(args))
+        sys.exit(exit_code)
+    elif args.command == "plan_migration":
+        exit_code = _cmd_plan_migration(args)
         sys.exit(exit_code)
     elif args.command == "apply_repair":
         exit_code = asyncio.run(_cmd_apply_repair(args))
