@@ -41,6 +41,11 @@ Simulate an Asset Registry migration (read-only — never writes):
     python manage.py plan_migration --portfolio 4
     python manage.py plan_migration --all
 
+Execute an approved Asset Registry migration plan (defaults to dry run):
+    python manage.py execute_migration --portfolio 4
+    python manage.py execute_migration --portfolio 4 --commit
+    python manage.py execute_migration --portfolio 4 --commit --run-id <uuid>   # resume
+
 Generate a deterministic repair plan (read-only — writes a JSON file only):
     python manage.py generate_repair_plan --portfolio 4
     python manage.py generate_repair_plan --portfolio 4 --output repair_plan.json
@@ -64,6 +69,7 @@ import sys
 import os
 import time
 import textwrap
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -138,6 +144,7 @@ from services.ledger_repair_plan import (
 )
 from services.migration_planner import plan_migration
 from services.migration_report import MigrationSummary, build_migration_report
+from services.migration_executor import ExecutionOutcome, ExecutionReport, execute_migration
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────
@@ -2906,6 +2913,106 @@ def _cmd_plan_migration(args: argparse.Namespace) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Migration executor: execute_migration
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_execution_report(report: ExecutionReport) -> None:
+    s = report.summary
+    print(f"\n{_hr()}")
+    print("Execution Report")
+    print(_hr())
+    print(f"  Run ID                 : {report.run_id}")
+    print(f"  Mode                   : {'DRY RUN' if report.dry_run else 'LIVE'}")
+    print(f"  Completed              : {s.completed}")
+    print(f"  Blocked                : {s.blocked}")
+    print(f"  Skipped (not resolved) : {s.skipped_not_resolved}")
+    print(f"  Skipped (already done) : {s.skipped_already_done}")
+    print(f"  Identifiers attached   : {s.total_identifiers_attached}")
+
+    blocked_steps = [st for st in report.steps if st.outcome == ExecutionOutcome.BLOCKED]
+    if blocked_steps:
+        print(f"\n{_hr()}")
+        print(f"Blocked  ({len(blocked_steps)} claim shape(s))")
+        print(_hr())
+        for st in blocked_steps:
+            print(f"\n  {st.shape.raw_symbol} / {st.shape.canonical_symbol or '—'}   currency={st.shape.currency or '—'}")
+            print(f"    resolved_asset_id             : {st.resolved_asset_id}")
+            print(f"    identifiers attached (partial): {st.identifiers_attached}")
+            print(f"    detail                        : {st.detail}")
+    print(_hr())
+
+
+def _cmd_execute_migration(args: argparse.Namespace) -> int:
+    """Executes an approved Asset Registry migration plan (Milestone M5.2).
+
+    Re-computes the MigrationPlan fresh on every invocation (the same
+    read-only plan_migration() used by `plan_migration`) so a resumed run
+    always sees current Registry/ledger state rather than a stale plan.
+    Only RESOLVED claim shapes are ever acted on; AMBIGUOUS/CONFLICT/UNKNOWN
+    shapes are always skipped and reported, never auto-resolved.
+
+    Defaults to a dry run (--commit is required to persist changes).
+    """
+    db = SessionLocal()
+    t_start = time.monotonic()
+    report: ExecutionReport | None = None
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        portfolio_ids: list[int] | None
+        if getattr(args, "all", False):
+            portfolios = db.query(Portfolio).filter_by(workspace_id=ws_id).all()
+            if not portfolios:
+                print("ERROR: No portfolios found in workspace.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id for p in portfolios]
+        elif getattr(args, "portfolio", None):
+            p = db.query(Portfolio).filter_by(id=args.portfolio, workspace_id=ws_id).first()
+            if p is None:
+                print(f"ERROR: Portfolio {args.portfolio} not found.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id]
+        else:
+            print("ERROR: Specify --portfolio ID  or  --all", file=sys.stderr)
+            return 1
+
+        run_id = args.run_id or str(uuid.uuid4())
+        dry_run = not getattr(args, "commit", False)
+        resuming = bool(args.run_id)
+
+        if not dry_run and not getattr(args, "yes", False):
+            action = "Resuming" if resuming else "Starting"
+            print(f"\n{action} a LIVE migration execution — run_id={run_id}")
+            print("This will attach identifier evidence to the Registry (asset_identifiers).")
+            confirm = input("Proceed? [y/N] ").strip().lower()
+            if confirm != "y":
+                print("Aborted.")
+                return 1
+
+        print(f"\n{_hr()}")
+        print(f"Migration Executor  —  run_id={run_id}  {'(RESUME)' if resuming else '(NEW RUN)'}  {'(DRY RUN)' if dry_run else '(LIVE)'}")
+        print(_hr())
+
+        plan = plan_migration(db, portfolio_ids=portfolio_ids)
+        report = execute_migration(db, plan, run_id=run_id, dry_run=dry_run)
+        _print_execution_report(report)
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+    elapsed = time.monotonic() - t_start
+    print(f"\n  Completed in {elapsed:.2f}s.")
+    return 1 if report.summary.blocked > 0 else 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Apply repairs: apply_repair
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -3813,6 +3920,59 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Plan the migration across every portfolio in the workspace",
     )
 
+    # ── execute_migration ────────────────────────────────────────────────────
+    execute = sub.add_parser(
+        "execute_migration",
+        help="Execute an approved Asset Registry migration plan (Milestone M5.2)",
+        description=textwrap.dedent("""\
+            Consumes a freshly-computed MigrationPlan (services.migration_planner,
+            unmodified) and durably attaches identifier evidence to the Registry
+            for every RESOLVED claim shape. Never resolves identities, never
+            merges assets, never invents mappings — AMBIGUOUS / CONFLICT / UNKNOWN
+            claim shapes are always skipped and reported, never auto-resolved.
+
+            Defaults to a dry run (--commit is required to persist changes).
+            Every claim shape is checkpointed (MigrationExecutionCheckpoint) as
+            it completes or blocks, keyed by --run-id — re-running with the same
+            --run-id resumes: already-COMPLETED shapes are skipped, BLOCKED
+            shapes are retried, and any newly-RESOLVED shapes (e.g. from
+            transactions added since the last run) are picked up. Omit --run-id
+            to start a new run; the generated run_id is printed so it can be
+            passed to a later --run-id to resume.
+
+            No replay changes. No analytics changes. No optimizer changes.
+            Transaction / PortfolioItem / PortfolioSnapshot are never touched —
+            only asset_identifiers and migration_execution_checkpoints gain rows.
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    execute.add_argument(
+        "--portfolio", "-p",
+        type=int,
+        metavar="ID",
+        help="Portfolio ID to execute the migration for",
+    )
+    execute.add_argument(
+        "--all",
+        action="store_true",
+        help="Execute the migration across every portfolio in the workspace",
+    )
+    execute.add_argument(
+        "--run-id",
+        metavar="UUID",
+        help="Resume a specific prior run; omit to start a new run",
+    )
+    execute.add_argument(
+        "--commit",
+        action="store_true",
+        help="Persist changes to the database (default is a dry run)",
+    )
+    execute.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip the confirmation prompt when --commit is used",
+    )
+
     return parser
 
 
@@ -3847,6 +4007,9 @@ def main() -> None:
         sys.exit(exit_code)
     elif args.command == "plan_migration":
         exit_code = _cmd_plan_migration(args)
+        sys.exit(exit_code)
+    elif args.command == "execute_migration":
+        exit_code = _cmd_execute_migration(args)
         sys.exit(exit_code)
     elif args.command == "apply_repair":
         exit_code = asyncio.run(_cmd_apply_repair(args))
