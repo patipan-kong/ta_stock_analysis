@@ -46,6 +46,11 @@ Execute an approved Asset Registry migration plan (defaults to dry run):
     python manage.py execute_migration --portfolio 4 --commit
     python manage.py execute_migration --portfolio 4 --commit --run-id <uuid>   # resume
 
+Bootstrap the empty Asset Registry from UNKNOWN ledger claims (defaults to dry run):
+    python manage.py bootstrap_registry --portfolio 4
+    python manage.py bootstrap_registry --portfolio 4 --commit
+    python manage.py bootstrap_registry --portfolio 4 --commit --run-id <uuid>   # resume
+
 Generate a deterministic repair plan (read-only — writes a JSON file only):
     python manage.py generate_repair_plan --portfolio 4
     python manage.py generate_repair_plan --portfolio 4 --output repair_plan.json
@@ -145,6 +150,8 @@ from services.ledger_repair_plan import (
 from services.migration_planner import plan_migration
 from services.migration_report import MigrationSummary, build_migration_report
 from services.migration_executor import ExecutionOutcome, ExecutionReport, execute_migration
+from services.bootstrap_planner import BootstrapPlan, build_bootstrap_plan
+from services.registry_bootstrap import BootstrapOutcome, BootstrapReport, bootstrap_registry
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────
@@ -3013,6 +3020,127 @@ def _cmd_execute_migration(args: argparse.Namespace) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Registry bootstrap: bootstrap_registry
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_bootstrap_report(report: BootstrapReport) -> None:
+    s = report.summary
+    print(f"\n{_hr()}")
+    print("Bootstrap Report")
+    print(_hr())
+    print(f"  Run ID                       : {report.run_id}")
+    print(f"  Mode                         : {'DRY RUN' if report.dry_run else 'LIVE'}")
+    print(f"  Minted                       : {s.minted}")
+    print(f"  Blocked                      : {s.blocked}")
+    print(f"  Skipped (already done)       : {s.skipped_already_done}")
+    print(f"  Identifiers attached         : {s.total_identifiers_attached}")
+    print(f"  Duplicate clusters (blocked) : {s.duplicate_blocked_clusters}")
+    print(f"  Quarantined (no convention)  : {s.quarantined}")
+
+    blocked_steps = [st for st in report.steps if st.outcome == BootstrapOutcome.BLOCKED]
+    if blocked_steps:
+        print(f"\n{_hr()}")
+        print(f"Blocked  ({len(blocked_steps)} claim shape(s))")
+        print(_hr())
+        for st in blocked_steps:
+            print(f"\n  {st.shape.raw_symbol} / {st.shape.canonical_symbol or '—'}   currency={st.shape.currency or '—'}")
+            print(f"    detail : {st.detail}")
+
+    if report.duplicate_blocked:
+        print(f"\n{_hr()}")
+        print(f"Duplicate Clusters — Manual Resolution Required  ({len(report.duplicate_blocked)} cluster(s))")
+        print(_hr())
+        for cluster in report.duplicate_blocked:
+            print(
+                f"  canonical_symbol={cluster.canonical_symbol}  raw_symbols={list(cluster.raw_symbols)}  "
+                f"({len(cluster.transaction_ids)} transaction(s))"
+            )
+        print("\n  Resolve by hand via registry_service.mint_asset()/attach_identifier() — never auto-resolved.")
+
+    if report.quarantined:
+        print(f"\n{_hr()}")
+        print(f"Quarantined — No Market/Exchange Convention  ({len(report.quarantined)} shape(s))")
+        print(_hr())
+        for q in report.quarantined:
+            print(f"  {q.shape.raw_symbol:<16} currency={q.shape.currency or '—':<6} reason={q.reason}")
+
+    print(_hr())
+
+
+def _cmd_bootstrap_registry(args: argparse.Namespace) -> int:
+    """Populates the empty Asset Registry from UNKNOWN ledger claims
+    (Milestone M5.3). Consumes a freshly-computed BootstrapPlan (services.
+    bootstrap_planner, unmodified) and mints exactly its `mintable`
+    candidates via registry_service.mint_asset(). Duplicate-cluster and
+    quarantined shapes are never auto-resolved — they are reported for
+    manual review.
+
+    Re-computes the MigrationPlan and BootstrapPlan fresh on every
+    invocation, so a resumed run always sees current Registry/ledger state.
+
+    Defaults to a dry run (--commit is required to persist changes).
+    """
+    db = SessionLocal()
+    t_start = time.monotonic()
+    report: BootstrapReport | None = None
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        portfolio_ids: list[int] | None
+        if getattr(args, "all", False):
+            portfolios = db.query(Portfolio).filter_by(workspace_id=ws_id).all()
+            if not portfolios:
+                print("ERROR: No portfolios found in workspace.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id for p in portfolios]
+        elif getattr(args, "portfolio", None):
+            p = db.query(Portfolio).filter_by(id=args.portfolio, workspace_id=ws_id).first()
+            if p is None:
+                print(f"ERROR: Portfolio {args.portfolio} not found.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id]
+        else:
+            print("ERROR: Specify --portfolio ID  or  --all", file=sys.stderr)
+            return 1
+
+        run_id = args.run_id or str(uuid.uuid4())
+        dry_run = not getattr(args, "commit", False)
+        resuming = bool(args.run_id)
+
+        if not dry_run and not getattr(args, "yes", False):
+            action = "Resuming" if resuming else "Starting"
+            print(f"\n{action} a LIVE registry bootstrap — run_id={run_id}")
+            print("This will mint new Assets and attach identifier evidence to the Registry.")
+            confirm = input("Proceed? [y/N] ").strip().lower()
+            if confirm != "y":
+                print("Aborted.")
+                return 1
+
+        print(f"\n{_hr()}")
+        print(f"Registry Bootstrap  —  run_id={run_id}  {'(RESUME)' if resuming else '(NEW RUN)'}  {'(DRY RUN)' if dry_run else '(LIVE)'}")
+        print(_hr())
+
+        plan = plan_migration(db, portfolio_ids=portfolio_ids)
+        bootstrap_plan = build_bootstrap_plan(plan)
+        report = bootstrap_registry(db, bootstrap_plan, run_id=run_id, dry_run=dry_run)
+        _print_bootstrap_report(report)
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+    elapsed = time.monotonic() - t_start
+    print(f"\n  Completed in {elapsed:.2f}s.")
+    return 1 if report.summary.blocked > 0 else 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Apply repairs: apply_repair
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -3973,6 +4101,66 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip the confirmation prompt when --commit is used",
     )
 
+    # ── bootstrap_registry ───────────────────────────────────────────────────
+    bootstrap = sub.add_parser(
+        "bootstrap_registry",
+        help="Populate the empty Asset Registry from UNKNOWN ledger claims (Milestone M5.3)",
+        description=textwrap.dedent("""\
+            Consumes a freshly-computed BootstrapPlan (services.bootstrap_planner,
+            unmodified over services.migration_planner's MigrationPlan) and mints
+            exactly its `mintable` UNKNOWN claim shapes into new canonical Assets
+            via registry_service.mint_asset(). This is a one-time bootstrap
+            process: it creates canonical Assets, it does not migrate ledger data.
+
+            Duplicate-cluster shapes (two UNKNOWN shapes sharing a canonical_symbol)
+            and quarantined shapes (no known market/exchange convention, or no
+            currency recorded) are NEVER auto-minted or auto-resolved — both are
+            reported for manual review via registry_service.mint_asset()/
+            attach_identifier() directly.
+
+            Defaults to a dry run (--commit is required to persist changes).
+            Every mint attempt is checkpointed (RegistryBootstrapCheckpoint) as it
+            completes or blocks, keyed by --run-id — re-running with the same
+            --run-id resumes: already-MINTED shapes are skipped, BLOCKED shapes
+            are retried. Omit --run-id to start a new run; the generated run_id is
+            printed so it can be passed to a later --run-id to resume.
+
+            No replay changes. No transaction/portfolio changes. No analytics
+            changes. Only assets, asset_identifiers, registry_findings, and
+            registry_bootstrap_checkpoints gain rows.
+
+            After bootstrapping, re-run `plan_migration` to confirm Resolved
+            increased and Unknown decreased for the minted symbols.
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bootstrap.add_argument(
+        "--portfolio", "-p",
+        type=int,
+        metavar="ID",
+        help="Portfolio ID to bootstrap the registry for",
+    )
+    bootstrap.add_argument(
+        "--all",
+        action="store_true",
+        help="Bootstrap the registry across every portfolio in the workspace",
+    )
+    bootstrap.add_argument(
+        "--run-id",
+        metavar="UUID",
+        help="Resume a specific prior run; omit to start a new run",
+    )
+    bootstrap.add_argument(
+        "--commit",
+        action="store_true",
+        help="Persist changes to the database (default is a dry run)",
+    )
+    bootstrap.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip the confirmation prompt when --commit is used",
+    )
+
     return parser
 
 
@@ -4010,6 +4198,9 @@ def main() -> None:
         sys.exit(exit_code)
     elif args.command == "execute_migration":
         exit_code = _cmd_execute_migration(args)
+        sys.exit(exit_code)
+    elif args.command == "bootstrap_registry":
+        exit_code = _cmd_bootstrap_registry(args)
         sys.exit(exit_code)
     elif args.command == "apply_repair":
         exit_code = asyncio.run(_cmd_apply_repair(args))
