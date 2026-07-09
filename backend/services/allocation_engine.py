@@ -353,6 +353,7 @@ def suggest_risk_budget(
     """
     from models.database import AnalysisCache, Portfolio, PortfolioItem, Watchlist
     from services.basket_simulation import _resolve_symbol_sectors
+    from services.registry_symbol_matching import match_known_symbols
 
     symbols = [s.strip().upper() for s in symbols if s.strip()]
     if not symbols:
@@ -378,9 +379,11 @@ def suggest_risk_budget(
     watchlist_items = (
         db.query(Watchlist).filter(Watchlist.workspace_id == workspace_id).all()
     )
-    symbol_sectors = _resolve_symbol_sectors(symbols, portfolio_items, watchlist_items)
+    symbol_sectors = _resolve_symbol_sectors(db, symbols, portfolio_items, watchlist_items)
 
-    # AnalysisCache lookup
+    # AnalysisCache lookup. bk_variants keeps the SQL filter wide enough to
+    # catch a row stored under the alternate spelling; the actual symbol ->
+    # row matching decision is Registry-backed (registry_symbol_matching).
     bk_variants = {f"{s}.BK" for s in symbols if "." not in s}
     cache_rows = (
         db.query(AnalysisCache)
@@ -390,11 +393,11 @@ def suggest_risk_budget(
         )
         .all()
     )
-    cache_map: dict[str, AnalysisCache] = {}
-    for r in cache_rows:
-        cache_map[r.symbol] = r
-        if r.symbol.endswith(".BK"):
-            cache_map.setdefault(r.symbol[:-3], r)
+    cache_row_by_symbol: dict[str, AnalysisCache] = {r.symbol: r for r in cache_rows}
+    cache_matched = match_known_symbols(db, symbols, cache_row_by_symbol.keys())
+    cache_map: dict[str, AnalysisCache] = {
+        sym: cache_row_by_symbol[matched] for sym, matched in cache_matched.items()
+    }
 
     recommendations: list[dict] = []
     for sym in symbols:

@@ -209,7 +209,7 @@ def suggest_basket_allocation(
     watchlist_items = (
         db.query(Watchlist).filter(Watchlist.workspace_id == workspace_id).all()
     )
-    symbol_sectors = _resolve_symbol_sectors(symbols, portfolio_items, watchlist_items)
+    symbol_sectors = _resolve_symbol_sectors(db, symbols, portfolio_items, watchlist_items)
 
     return compute_portfolio_construction(
         portfolio_id=portfolio_id,

@@ -2,7 +2,7 @@
 
 Companion documents: [ASSET_REGISTRY.md](ASSET_REGISTRY.md) (frozen architecture), [ASSET_REGISTRY_IMPLEMENTATION_PLAN.md](../implementation/ASSET_REGISTRY_IMPLEMENTATION_PLAN.md) (M0–M7 milestone plan), [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](../implementation/M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md) (the audit and refactoring order this module implements Phase 1 of).
 
-**Status (2026-07-09): `services/registry_lookup.py` exists and is tested. Nothing calls it yet.** This guide describes the module as it stands today, ahead of any consumer wiring — read it as "how to use this when you do wire a consumer to it," not as a description of current platform behavior.
+**Status (2026-07-09): `services/registry_lookup.py` exists, is tested, and now has real callers.** `basket_simulation.py`, `execution_plan.py`, `position_sizing.py`, `allocation_engine.py`, `idea_review.py`, and `portfolio_construction.py` all resolve symbols through it now, via the shared `services/registry_symbol_matching.py` adapter described in §"Matching two spellings of one instrument" below. No other consumer has been wired yet.
 
 ---
 
@@ -101,6 +101,25 @@ Mirrors the existing 30-minute TTL cache pattern already used by `services/analy
 
 ---
 
+## Matching two spellings of one instrument
+
+Don't call `resolve_asset()` directly to answer "is this bare ticker the same instrument as that `.BK`-suffixed one?" — that question comes up constantly (a portfolio holding stored as `"BH.BK"`, a user-submitted idea spelled `"BH"`, an `AnalysisCache` row that might be under either spelling) and answering it correctly needs more than one `resolve_asset()` call plus a fallback for symbols the Registry hasn't resolved yet. Use the shared adapter instead:
+
+```python
+from services.registry_symbol_matching import match_known_symbols
+
+# symbols: the spellings you're querying with (e.g. user-submitted ideas)
+# known:   the spellings already on file (e.g. portfolio holding symbols)
+matches = match_known_symbols(db, symbols=["BH"], known=["BH.BK"])
+# -> {"BH": "BH.BK"}
+```
+
+It tries `resolve_asset()` on both sides first — a genuine Registry match (same `asset_id`) always wins, and a genuine Registry **conflict** (both sides resolve, to *different* asset_ids) is never overridden by string-guessing, since that would silently paper over exactly the kind of "these are different instruments" verdict ASSET_REGISTRY.md §5 exists to protect (a DR and its underlying, for instance). Only for symbols the Registry has not resolved does it fall back to the legacy bare/`.BK` suffix heuristic — this is what keeps every currently-working `.BK`-variant match unchanged for the (currently large) population of symbols the Registry hasn't adjudicated yet.
+
+`basket_simulation.py`, `execution_plan.py`, `position_sizing.py`, `allocation_engine.py`, `idea_review.py`, and `portfolio_construction.py` all call this instead of hand-rolling their own suffix matching — see `docs/implementation/M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md` §2.3 item 3 for the correctness risk this replaced (five independent, silently-diverging implementations of the same question).
+
+---
+
 ## Where NOT to call this from
 
 Never from `services/portfolio_rebuilder.py`'s replay loop or `services/ledger_validator.py`'s CHECK functions. Those are the accounting-critical, deterministic-replay paths the M5 Track B milestone owns — introducing a Registry lookup there before Track B's replay-parity gate exists would be exactly the "silent behavior change during coexistence" Migration Principle 3 forbids. This module is for analytics, optimizer internals, evaluation, and CRUD/display paths only.
@@ -109,4 +128,6 @@ Never from `services/portfolio_rebuilder.py`'s replay loop or `services/ledger_v
 
 ## Current status
 
-`services/registry_lookup.py` and its 18-test suite (`backend/tests/test_registry_lookup.py`) shipped 2026-07-09 as Phase 1, step 1 of the M6 Compatibility-Layer Integration track (see [ASSET_REGISTRY_IMPLEMENTATION_PLAN.md](../implementation/ASSET_REGISTRY_IMPLEMENTATION_PLAN.md) §13 Changelog). **No existing file was modified and no call site has been wired to it yet** — Phase 1 step 2 (piloting on `GET /watchlist`) and Phases 2–7 (retiring the five `.BK`-variant shims, the recommendation write-path root fix, optimizer internals, the policy/execution structural fix, shadow portfolios/factor engine/calibration, and classification consolidation) remain open, in the order specified by [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](../implementation/M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md) §5.
+`services/registry_lookup.py` and its 18-test suite (`backend/tests/test_registry_lookup.py`) shipped 2026-07-09 as Phase 1, step 1 of the M6 Compatibility-Layer Integration track. `services/registry_symbol_matching.py` and its two test suites (`backend/tests/test_registry_symbol_matching.py`, `backend/tests/test_registry_symbol_matching_integration.py`) shipped the same day as Phase 2, retiring the five duplicated `.BK`-variant shims (see [ASSET_REGISTRY_IMPLEMENTATION_PLAN.md](../implementation/ASSET_REGISTRY_IMPLEMENTATION_PLAN.md) §13 Changelog for both). `resolve_asset()` now has real callers for the first time, all routed through `match_known_symbols()`.
+
+Still open: Phase 1 step 2 (piloting `resolve_asset()` directly on `GET /watchlist`) and Phases 3–7 (the recommendation write-path root fix, optimizer internals, the policy/execution structural fix, shadow portfolios/factor engine/calibration, and classification consolidation), in the order specified by [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](../implementation/M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md) §5.

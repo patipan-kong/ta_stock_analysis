@@ -238,7 +238,7 @@ def simulate_basket(
     watchlist_items = (
         db.query(Watchlist).filter(Watchlist.workspace_id == workspace_id).all()
     )
-    symbol_sectors = _resolve_symbol_sectors(symbols, portfolio_items, watchlist_items)
+    symbol_sectors = _resolve_symbol_sectors(db, symbols, portfolio_items, watchlist_items)
 
     return compute_basket_simulation(
         portfolio_id=portfolio_id,
@@ -280,35 +280,43 @@ def _load_settings(db: Session, ws: int) -> tuple[dict, dict]:
 
 
 def _resolve_symbol_sectors(
+    db: Session,
     symbols: list[str],
     portfolio_items: list,
     watchlist_items: list,
 ) -> dict[str, str]:
     """Map each basket symbol to its sector using DB only (no network calls).
 
-    Priority: portfolio holding → watchlist → "Other"
-    Handles .BK suffix mismatch so "BH" matches a holding stored as "BH.BK".
+    Priority: portfolio holding → watchlist → "Other". Same-instrument
+    spelling differences (e.g. "BH" vs "BH.BK") are resolved through the
+    Registry compatibility layer first, falling back to the legacy bare/.BK
+    suffix heuristic for any symbol the Registry hasn't resolved yet — see
+    services/registry_symbol_matching.py (M6 plan §4.2, §4.4).
     """
-    holdings_sector: dict[str, str] = {}
-    for item in portfolio_items:
-        if item.sector:
-            holdings_sector[item.symbol] = item.sector
-            if item.symbol.endswith(".BK"):
-                holdings_sector.setdefault(item.symbol[:-3], item.sector)
-            else:
-                holdings_sector.setdefault(item.symbol + ".BK", item.sector)
+    from services.registry_symbol_matching import match_known_symbols
 
-    watchlist_sector: dict[str, str] = {}
-    for item in watchlist_items:
-        if item.sector:
-            watchlist_sector[item.symbol] = item.sector
-            if item.symbol.endswith(".BK"):
-                watchlist_sector.setdefault(item.symbol[:-3], item.sector)
-
-    return {
-        sym: (holdings_sector.get(sym) or watchlist_sector.get(sym) or "Other")
-        for sym in symbols
+    portfolio_sector_by_symbol = {
+        item.symbol: item.sector for item in portfolio_items if item.sector
     }
+    watchlist_sector_by_symbol = {
+        item.symbol: item.sector for item in watchlist_items if item.sector
+    }
+
+    portfolio_match = match_known_symbols(db, symbols, portfolio_sector_by_symbol.keys())
+    watchlist_match = match_known_symbols(db, symbols, watchlist_sector_by_symbol.keys())
+
+    result: dict[str, str] = {}
+    for sym in symbols:
+        matched = portfolio_match.get(sym)
+        if matched:
+            result[sym] = portfolio_sector_by_symbol[matched]
+            continue
+        matched = watchlist_match.get(sym)
+        if matched:
+            result[sym] = watchlist_sector_by_symbol[matched]
+            continue
+        result[sym] = "Other"
+    return result
 
 
 def _sector_limit(sector: str, sector_limits: dict[str, float]) -> float:
