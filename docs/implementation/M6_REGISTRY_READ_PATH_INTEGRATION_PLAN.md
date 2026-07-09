@@ -274,9 +274,9 @@ Ordered for minimum blast radius first, per Migration Principle 6 (expand → ve
 5. Repoint `execution_plan.py`, `position_sizing.py`, `allocation_engine.py`, `idea_review.py` at the single implementation; delete their local copies. **Done.** Each file's hand-rolled bare/`.BK` dual-indexing was replaced by a call to `match_known_symbols()`; `idea_review.py` had four separate instances of the pattern (`_get_sector`, the `AnalysisCache` lookup, the holdings lookup, and the `known_symbols`/`symbols_with_db_sector` yfinance-skip gate) and all four were retired.
 6. Regression: existing execution/sizing/idea-review test suites green with identical outputs on the same fixtures (this phase is a pure refactor — output must not change for any already-resolved symbol). **Done, with one documented exception.** `test_basket_simulation.py` and `test_position_sizing.py` exercise only the pure `compute_*` functions, which this phase did not touch, so they were unaffected by construction; `test_risk_budget_allocation.py` and `test_portfolio_construction.py` passed unchanged. `execution_plan.py` and `idea_review.py` had no pre-existing test files, so new integration tests (`backend/tests/test_registry_symbol_matching_integration.py`) were written to cover their refactored DB-loading wrappers directly. The one documented output change: the shared fallback is symmetric where a few of the retired shims were asymmetric (see the changelog entry) — additive-only (can only add a match, never remove one), and no existing caller was found to depend on the asymmetry.
 
-**Phase 3 — Recommendation write-path root fix (highest leverage).**
-7. `main.py`'s `POST /analyze/optimizer` scores_map construction and `snapshot_writer.py` gain additive `asset_id` alongside `symbol` for every entry, for rows written **after** this change ships. No backfill of existing `RecommendationSnapshot`/`SignalHistory` rows (Design Invariant 1).
-8. `plan_grader.read_snapshot_plan_inputs` and `optimizer_action_summary.build_action_summary` gain an `asset_id`-aware read path with symbol-only fallback for pre-change rows.
+**Phase 3 — Recommendation write-path root fix (highest leverage). Step 7 shipped 2026-07-09; step 8 not started.**
+7. `main.py`'s `POST /analyze/optimizer` scores_map construction and `snapshot_writer.py` gain additive `asset_id` alongside `symbol` for every entry, for rows written **after** this change ships. No backfill of existing `RecommendationSnapshot`/`SignalHistory` rows (Design Invariant 1). **Done.** New module `services/registry_recommendation_context.py` (`build_registry_context()`, `enrich_scores_map_for_snapshot()`) resolves every symbol in a run's `scores_map` through `registry_lookup.resolve_asset()` and returns a *new* dict — same keys/values, plus an additive `"registry": {resolved, asset_id, canonical_symbol, market, exchange}` (or `{resolved: false, reason}`) per entry — never mutating the live `scores_map` that feeds the AI prompt, `portfolio_data`/`watchlist_data`, timing enrichment, and `execution_penalty`. `main.py`'s single call site (`POST /analyze/optimizer`, immediately before `write_recommendation_snapshot()`) was changed from `scores_map=scores_map` to `scores_map=enrich_scores_map_for_snapshot(db, scores_map)` — a one-line change, already inside the existing failure-swallowing `try/except` around the snapshot write, so a total Registry failure degrades to writing the unenriched map exactly as before. `snapshot_writer.py` itself needed **zero code change** — `scores_map_json=_j(scores_map)` was already a generic passthrough serializer, so it carries the new `"registry"` key for free. `SignalHistory` (no free-form JSON column) is **not** enriched — see the Phase 3 note below and the Technical Debt Register.
+8. `plan_grader.read_snapshot_plan_inputs` and `optimizer_action_summary.build_action_summary` gain an `asset_id`-aware read path with symbol-only fallback for pre-change rows. **Not started** — this is read-side work, out of scope for a write-path-only phase; both functions already tolerate the new `"registry"` key transparently (they index specific fields like `current_price`, never validate the full key set), so nothing broke, but neither reads the new field yet.
 
 **Phase 4 — Optimizer internals + consensus scoring.**
 9. `agents/optimizer.py` internal dict-keys (`score_map`, `pc_map`, `alloc_map`) migrate to `asset_id`-keyed where resolvable, retaining `symbol`/`display_symbol` as data fields, not keys. AI prompt/response contract untouched (§3.2).
@@ -296,6 +296,27 @@ Ordered for minimum blast radius first, per Migration Principle 6 (expand → ve
 
 ---
 
+### Phase 3 Migration Report (2026-07-09)
+
+Per the requesting brief's own deliverable #4 ("migration report summarizing migrated entry points, unresolved paths, remaining work"):
+
+**Every place a Recommendation is created, as audited this phase.** `RecommendationSnapshot` and `SignalHistory` are the only two models this codebase's architecture (`docs/architecture/ARCHITECTURE.md`) names as recommendation records, and both are written from exactly **one** call site: `main.py`'s `POST /analyze/optimizer` endpoint, after the 3-layer optimizer (`agents/optimizer.py`) returns and `OptimizerHistory` is committed. There is no second endpoint, background job, or script in production code that creates a Recommendation. (`backend/scripts/copy_portfolio.py` and `backend/scripts/seed_historical_analytics.py` also construct `RecommendationSnapshot`/`SignalHistory` rows, but as administrative data-copy/seeding tools operating on already-decided data, not as recommendation-generation logic — out of scope, unchanged.)
+
+**Migrated entry points:**
+- `main.py`'s `scores_map` → `RecommendationSnapshot.scores_map_json`, via `services/registry_recommendation_context.py`, as described in Phase 3 step 7 above. This is the recommendation-creation write path.
+
+**Audited and explicitly excluded, with reasoning (per the brief's "do not assume the list is complete" instruction):**
+- **`SignalHistory`** — same optimizer run, same `scores_map` data, but the model has fixed typed columns and no free-form JSON field. Attaching `asset_id` would require a schema migration, which this phase's own brief forbids ("No schema migration is permitted"). Registry resolution still runs once per optimizer run (shared via `scores_map`'s enrichment pass) and is logged, but is not persisted onto `SignalHistory` rows. Flagged in the Technical Debt Register below.
+- **Shadow Portfolio recommendation generation** (`services/decision_memory/shadow_tracker.py`'s `create_recommendation_shadow()`, `create_active_model_shadow()`, `create_static_frozen_shadow()`) — audited and determined **not** to be a Recommendation-creation path: these functions consume an *already-written*, frozen `RecommendationSnapshot.projected_allocations_json` to build a paper-trading mirror for later grading; they do not independently generate a recommendation. This is exactly the read-path plan's own Phase 6 ("Shadow portfolios... Yes for new shadows going forward"), a distinct, later phase — not touched here, consistent with the brief's "No Analytics migration" / "No Execution... changes" constraints.
+- **Strategy output** (L1/L2/L3 outputs, consensus, portfolio DNA, style drift) — all persisted through the same single `write_recommendation_snapshot()` call already covered above; there is no separate creation point for "strategy output" independent of the `RecommendationSnapshot` write.
+
+**Unresolved paths / remaining work:**
+- Step 8 (read-side `asset_id`-awareness in `plan_grader.py`/`optimizer_action_summary.py`) — not started, distinct phase (read path, not write path).
+- `SignalHistory` asset_id association — blocked on a schema change (M5 Track B / a future, explicitly-authorized migration).
+- `backend/scripts/copy_portfolio.py` / `seed_historical_analytics.py` — not updated; they copy/seed pre-existing `scores_map_json` blobs verbatim (copy) or construct synthetic ones for tests (seed), so nothing about this phase requires them to change, but a future full-coverage audit should confirm they don't need the same enrichment for their own data-quality purposes.
+
+---
+
 ## 6. Technical Debt Register
 
 Legacy lookups/logic that become removable — fully or partly — once the compatibility layer (and eventually M5) lands:
@@ -310,6 +331,7 @@ Legacy lookups/logic that become removable — fully or partly — once the comp
 | `THAI_SECTOR_MAP` / `_DR_SECTOR_MAP` as the *primary* classification source | `main.py:366+` | Phase 7 — demoted to seed/fallback data, not deleted (still correct data, just no longer the authority) |
 | `idea_review.py`'s hand-rolled `_symbol_matches`/`bk_variants` block (~50 lines) | `services/idea_review.py:279-431` | **Removed 2026-07-09 (Phase 2).** Four separate instances of the pattern in this file alone were retired. |
 | `execution_optimizer.classify_reason`'s substring search | `services/optimizer/execution_optimizer.py:106-125` | Phase 5 |
+| `SignalHistory` has no `asset_id`/registry-metadata column — the same optimizer run's Registry resolution (computed once for `RecommendationSnapshot.scores_map_json`, Phase 3) is not persisted onto these rows | `models/database.py:286-310` (`SignalHistory`), write site `main.py:2448` | Only after a schema migration (M5 Track B or an explicitly-authorized additive column) — forbidden this phase by "No schema migration is permitted" |
 
 None of these are proposed for deletion in this report — they are flagged as the concrete payoff a future cleanup phase (M7-equivalent for this read-path work) can point to.
 

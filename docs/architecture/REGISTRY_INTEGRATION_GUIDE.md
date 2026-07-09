@@ -2,7 +2,7 @@
 
 Companion documents: [ASSET_REGISTRY.md](ASSET_REGISTRY.md) (frozen architecture), [ASSET_REGISTRY_IMPLEMENTATION_PLAN.md](../implementation/ASSET_REGISTRY_IMPLEMENTATION_PLAN.md) (M0–M7 milestone plan), [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](../implementation/M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md) (the audit and refactoring order this module implements Phase 1 of).
 
-**Status (2026-07-09): `services/registry_lookup.py` exists, is tested, and now has real callers.** `basket_simulation.py`, `execution_plan.py`, `position_sizing.py`, `allocation_engine.py`, `idea_review.py`, and `portfolio_construction.py` all resolve symbols through it now, via the shared `services/registry_symbol_matching.py` adapter described in §"Matching two spellings of one instrument" below. No other consumer has been wired yet.
+**Status (2026-07-09): `services/registry_lookup.py` exists, is tested, and now has real callers.** `basket_simulation.py`, `execution_plan.py`, `position_sizing.py`, `allocation_engine.py`, `idea_review.py`, and `portfolio_construction.py` all resolve symbols through it now, via the shared `services/registry_symbol_matching.py` adapter described in §"Matching two spellings of one instrument" below. The Recommendation write path (`main.py`'s `POST /analyze/optimizer` → `RecommendationSnapshot.scores_map_json`) is also wired, via `services/registry_recommendation_context.py`, described in §"Recommendation write-path metadata" below. No other consumer has been wired yet.
 
 ---
 
@@ -120,6 +120,26 @@ It tries `resolve_asset()` on both sides first — a genuine Registry match (sam
 
 ---
 
+## Recommendation write-path metadata
+
+The Recommendation record (`RecommendationSnapshot`, one row per optimizer run) is the highest-leverage single place to attach Registry identity, because every downstream evaluation consumer reads it. `services/registry_recommendation_context.py` resolves every symbol in a run's `scores_map` and returns an *additive-only* enriched copy, never mutating the input:
+
+```python
+from services.registry_recommendation_context import enrich_scores_map_for_snapshot
+
+# scores_map: {symbol: {...existing fields...}}, unchanged by this call
+enriched = enrich_scores_map_for_snapshot(db, scores_map)
+# enriched[symbol] == {**scores_map[symbol], "registry": {...}}
+# enriched[symbol]["registry"] is either
+#   {"resolved": True, "asset_id": ..., "canonical_symbol": ..., "market": ..., "exchange": ...}
+# or
+#   {"resolved": False, "reason": "..."}
+```
+
+`main.py`'s `POST /analyze/optimizer` calls this exactly once, immediately before `services.decision_memory.snapshot_writer.write_recommendation_snapshot()`, and only for the copy that gets persisted into `RecommendationSnapshot.scores_map_json` — the live `scores_map` that feeds the AI prompt, `portfolio_data`/`watchlist_data`, timing enrichment, and `execution_penalty` is never touched, so this integration cannot change AI behavior or any existing API response (OPTIMIZER_PHILOSOPHY.md §6's judgment/arithmetic boundary: identity resolution never reaches the AI's input). `SignalHistory` (the other per-run record written alongside `RecommendationSnapshot`) has no free-form JSON column and so cannot carry this metadata without a schema change — out of scope until one is authorized; see `docs/implementation/M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md`'s Phase 3 Migration Report and Technical Debt Register.
+
+---
+
 ## Where NOT to call this from
 
 Never from `services/portfolio_rebuilder.py`'s replay loop or `services/ledger_validator.py`'s CHECK functions. Those are the accounting-critical, deterministic-replay paths the M5 Track B milestone owns — introducing a Registry lookup there before Track B's replay-parity gate exists would be exactly the "silent behavior change during coexistence" Migration Principle 3 forbids. This module is for analytics, optimizer internals, evaluation, and CRUD/display paths only.
@@ -128,6 +148,6 @@ Never from `services/portfolio_rebuilder.py`'s replay loop or `services/ledger_v
 
 ## Current status
 
-`services/registry_lookup.py` and its 18-test suite (`backend/tests/test_registry_lookup.py`) shipped 2026-07-09 as Phase 1, step 1 of the M6 Compatibility-Layer Integration track. `services/registry_symbol_matching.py` and its two test suites (`backend/tests/test_registry_symbol_matching.py`, `backend/tests/test_registry_symbol_matching_integration.py`) shipped the same day as Phase 2, retiring the five duplicated `.BK`-variant shims (see [ASSET_REGISTRY_IMPLEMENTATION_PLAN.md](../implementation/ASSET_REGISTRY_IMPLEMENTATION_PLAN.md) §13 Changelog for both). `resolve_asset()` now has real callers for the first time, all routed through `match_known_symbols()`.
+`services/registry_lookup.py` and its 18-test suite (`backend/tests/test_registry_lookup.py`) shipped 2026-07-09 as Phase 1, step 1 of the M6 Compatibility-Layer Integration track. `services/registry_symbol_matching.py` and its two test suites (`backend/tests/test_registry_symbol_matching.py`, `backend/tests/test_registry_symbol_matching_integration.py`) shipped the same day as Phase 2, retiring the five duplicated `.BK`-variant shims. `services/registry_recommendation_context.py` and its test suite (`backend/tests/test_registry_recommendation_context.py`) shipped the same day as Phase 3 step 7, wiring the Recommendation write path (see [ASSET_REGISTRY_IMPLEMENTATION_PLAN.md](../implementation/ASSET_REGISTRY_IMPLEMENTATION_PLAN.md) §13 Changelog for all three). `resolve_asset()` now has real callers across symbol matching and recommendation persistence.
 
-Still open: Phase 1 step 2 (piloting `resolve_asset()` directly on `GET /watchlist`) and Phases 3–7 (the recommendation write-path root fix, optimizer internals, the policy/execution structural fix, shadow portfolios/factor engine/calibration, and classification consolidation), in the order specified by [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](../implementation/M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md) §5.
+Still open: Phase 1 step 2 (piloting `resolve_asset()` directly on `GET /watchlist`), Phase 3 step 8 (read-side `asset_id`-awareness in `plan_grader.py`/`optimizer_action_summary.py`), and Phases 4–7 (optimizer internals, the policy/execution structural fix, shadow portfolios/factor engine/calibration, and classification consolidation), in the order specified by [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](../implementation/M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md) §5.

@@ -2474,6 +2474,7 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     _snap_id: int | None = None
     try:
         from services.decision_memory.snapshot_writer import write_recommendation_snapshot
+        from services.registry_recommendation_context import enrich_scores_map_for_snapshot
         total_mv = sum(
             (h.get("shares") or 0) * (h.get("current_price") or h.get("avg_cost") or 0)
             for h in portfolio_data
@@ -2486,7 +2487,7 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
             optimizer_result=result,
             persona=persona,
             total_portfolio_value=total_mv,
-            scores_map=scores_map,
+            scores_map=enrich_scores_map_for_snapshot(db, scores_map),
         )
         if _snap_id:
             result["recommendation_snapshot_id"] = _snap_id
