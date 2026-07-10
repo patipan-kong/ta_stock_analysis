@@ -134,7 +134,13 @@ export interface WatchlistItem {
   is_dr?: boolean;
   parent_symbol?: string | null;
   upside_reference_price?: number | null;
+  /** Additive Asset Registry metadata (Watchlist Registry Pilot). Never required by clients. */
+  registry?: WatchlistRegistryView;
 }
+
+export type WatchlistRegistryView =
+  | { resolved: true; asset_id: number; canonical_symbol: string; market: string; exchange: string }
+  | { resolved: false; reason: string };
 
 export interface SectorBreakdownItem {
   sector: string;

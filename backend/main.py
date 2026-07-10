@@ -43,6 +43,7 @@ from services.data_fetcher import (
 )
 from services.scorer import compute_scores
 from services.ai_client import call_ai
+from services import registry_lookup
 from services.json_utils import safe_parse_json
 from services.portfolio_transactions import (
     execute_buy, execute_sell,
@@ -1067,12 +1068,30 @@ class WatchlistCreate(BaseModel):
     symbol: str
 
 
+def _registry_view_dict(result: "registry_lookup.AssetView | registry_lookup.Unresolved") -> dict:
+    """Projects a registry_lookup result into the additive JSON shape used
+    across Registry-aware read paths (see services/registry_recommendation_context.py's
+    _view_to_dict/_unresolved_to_dict for the identical, independently-shipped shape).
+    Never raises — resolve_asset()/resolve_many() already never raise for an
+    ordinary not-found/ambiguous result."""
+    if isinstance(result, registry_lookup.AssetView):
+        return {
+            "resolved": True,
+            "asset_id": int(result.asset_id),
+            "canonical_symbol": result.canonical_symbol,
+            "market": result.market,
+            "exchange": result.exchange,
+        }
+    return {"resolved": False, "reason": result.reason}
+
+
 def _watchlist_row(
     item: Watchlist,
     cached: dict,
     fa_info_item: dict | None = None,
     price_info: dict | None = None,
     parent_price: dict | None = None,
+    registry_view: dict | None = None,
 ) -> dict:
     def _c(attr, default=None):
         return getattr(cached[item.symbol], attr, default) if item.symbol in cached else default
@@ -1110,6 +1129,7 @@ def _watchlist_row(
         "is_dr":        is_dr,
         "parent_symbol": parent_sym,
         "upside_reference_price": upside_price if is_dr else None,
+        "registry": registry_view or {"resolved": False, "reason": "not evaluated"},
     }
 
 
@@ -1146,12 +1166,21 @@ async def list_watchlist(db: Session = Depends(get_db)) -> list[dict]:
     if dr_parents:
         pp_list = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, s) for s in dr_parents])
         parent_prices = dict(zip(dr_parents, pp_list))
+    try:
+        registry_map = registry_lookup.resolve_many(db, symbols)
+    except Exception as exc:
+        _log.warning(
+            "watchlist: Registry resolution failed for %d symbol(s) — degrading to unresolved: %s",
+            len(symbols), exc,
+        )
+        registry_map = {}
     return [
         _watchlist_row(
             item, cached,
             fa_info.get(item.symbol),
             price_map.get(item.symbol),
             parent_prices.get(fa_info.get(item.symbol, {}).get("parent_symbol", ""), {}),
+            _registry_view_dict(registry_map[item.symbol]) if item.symbol in registry_map else None,
         )
         for item in items
     ]
@@ -1180,7 +1209,12 @@ async def add_watchlist(body: WatchlistCreate, db: Session = Depends(get_db)) ->
             AnalysisCache.symbol == symbol,
         ).all()
     }
-    return _watchlist_row(item, cached)
+    try:
+        registry_view = _registry_view_dict(registry_lookup.resolve_asset(db, symbol))
+    except Exception as exc:
+        _log.warning("watchlist: Registry resolution failed for symbol=%r — degrading to unresolved: %s", symbol, exc)
+        registry_view = None
+    return _watchlist_row(item, cached, registry_view=registry_view)
 
 
 @app.delete("/watchlist/{symbol}")
