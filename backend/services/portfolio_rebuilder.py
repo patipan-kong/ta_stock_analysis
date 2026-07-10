@@ -88,6 +88,7 @@ from services.data_fetcher import fetch_history
 from services.ledger_repair import apply_repair_overlay, load_active_repairs
 from services.ledger_validator import FindingSeverity, LedgerValidationReport, validate_portfolio_ledger
 from services.portfolio_metrics import compute_period_metrics
+from services.replay_key import replay_key
 from services.symbol_normalization import get_yfinance_symbol
 from services.symbol_resolver import is_dr
 from services.transaction_canonicalizer import CanonicalTransaction, canonicalize_transactions
@@ -127,6 +128,18 @@ class _HoldingState:
     shares:   Decimal
     avg_cost: Decimal       # fee-inclusive per share
     sector:   str | None = None
+    # DR-safe symbol for yfinance price lookups (TDD Stage 0). ``symbol`` is now
+    # the ReplayKey (asset_id → canonical_symbol → raw_symbol), and
+    # canonical_symbol fully resolves DR certificates to their US underlying
+    # ticker (NVDA01.BK → NVDA per get_yfinance_symbol()). That collapse is
+    # correct for replay identity/merging but wrong for price fetching — a DR
+    # trades on SET at ~1/10 the US price in THB, not the US ticker's own
+    # price. price_symbol preserves the raw, DR-detectable form (set once, at
+    # holding creation, from ctx.raw_symbol) so _build_price_matrix's existing
+    # is_dr() branch keeps firing correctly. Falls back to `symbol` when unset
+    # (non-DR case: canonical_symbol and raw_symbol already agree or the
+    # difference doesn't matter to yfinance).
+    price_symbol: str | None = None
 
 
 @dataclass
@@ -141,10 +154,11 @@ class _PortfolioState:
             cash_balance            = self.cash_balance,
             holdings                = {
                 sym: _HoldingState(
-                    symbol   = h.symbol,
-                    shares   = h.shares,
-                    avg_cost = h.avg_cost,
-                    sector   = h.sector,
+                    symbol       = h.symbol,
+                    shares       = h.shares,
+                    avg_cost     = h.avg_cost,
+                    sector       = h.sector,
+                    price_symbol = h.price_symbol,
                 )
                 for sym, h in self.holdings.items()
             },
@@ -343,7 +357,7 @@ def _apply_transaction(state: _PortfolioState, ctx: CanonicalTransaction) -> Non
         eff_price = amount / shares
         state.cash_balance -= amount
 
-        sym = ctx.raw_symbol
+        sym = replay_key(ctx)
         if sym in state.holdings:
             h = state.holdings[sym]
             new_shares = h.shares + shares
@@ -354,10 +368,11 @@ def _apply_transaction(state: _PortfolioState, ctx: CanonicalTransaction) -> Non
                 h.sector = ctx.sector
         else:
             state.holdings[sym] = _HoldingState(
-                symbol   = sym,
-                shares   = shares,
-                avg_cost = eff_price,
-                sector   = ctx.sector,
+                symbol       = sym,
+                shares       = shares,
+                avg_cost     = eff_price,
+                sector       = ctx.sector,
+                price_symbol = ctx.raw_symbol,
             )
 
     elif tx_type == "SELL":
@@ -369,7 +384,7 @@ def _apply_transaction(state: _PortfolioState, ctx: CanonicalTransaction) -> Non
         pnl = ctx.realized_pnl if ctx.realized_pnl is not None else 0.0
         state.cumulative_realized_pnl += _d(pnl)
 
-        sym = ctx.raw_symbol
+        sym = replay_key(ctx)
         if sym in state.holdings:
             h          = state.holdings[sym]
             new_shares = h.shares - shares
@@ -379,7 +394,7 @@ def _apply_transaction(state: _PortfolioState, ctx: CanonicalTransaction) -> Non
                 h.shares = new_shares
 
     elif tx_type == "INITIAL_POSITION":
-        sym    = ctx.raw_symbol
+        sym    = replay_key(ctx)
         shares = ctx.shares
         avg    = ctx.price_per_share
         if not sym or shares <= 0:
@@ -394,15 +409,16 @@ def _apply_transaction(state: _PortfolioState, ctx: CanonicalTransaction) -> Non
                 h.sector = ctx.sector
         else:
             state.holdings[sym] = _HoldingState(
-                symbol   = sym,
-                shares   = shares,
-                avg_cost = avg,
-                sector   = ctx.sector,
+                symbol       = sym,
+                shares       = shares,
+                avg_cost     = avg,
+                sector       = ctx.sector,
+                price_symbol = ctx.raw_symbol,
             )
         # INITIAL_POSITION does NOT affect cash balance
 
     elif tx_type == "QUANTITY_CORRECTION":
-        sym = ctx.raw_symbol
+        sym = replay_key(ctx)
         if not sym or sym not in state.holdings:
             return
         delta = ctx.qty_correction_delta  # pre-parsed Decimal with sign
@@ -1515,8 +1531,14 @@ async def rebuild_portfolio(
                     f"({rebuild_dates[0]} → {rebuild_dates[-1]})..."
                 )
 
-                # Collect all symbols that appear in the rebuild window
-                all_symbols: set[str] = set(final_state.holdings)
+                # Collect all symbols that appear in the rebuild window.
+                # Use price_symbol (DR-safe raw form), not the holdings dict
+                # key (ReplayKey) — canonical_symbol collapses DR certificates
+                # to their US underlying ticker, which _build_price_matrix's
+                # is_dr() branch must not receive (see _HoldingState.price_symbol).
+                all_symbols: set[str] = {
+                    (h.price_symbol or sym) for sym, h in final_state.holdings.items()
+                }
                 for snap in existing_snaps:
                     if snap.snapshot_date in set(rebuild_dates) and snap.holdings_json:
                         try:
@@ -1555,9 +1577,12 @@ async def rebuild_portfolio(
                         )
                         continue
 
+                    # price_row stays keyed by the holdings dict key (ReplayKey)
+                    # for _build_snapshot_day; the price_matrix lookup itself
+                    # uses each holding's DR-safe price_symbol.
                     price_row = {
-                        sym: price_matrix.get(sym, {}).get(snap_date)
-                        for sym in state_at.holdings
+                        sym: price_matrix.get(h.price_symbol or sym, {}).get(snap_date)
+                        for sym, h in state_at.holdings.items()
                     }
 
                     # Determine the "previous" for return calculation

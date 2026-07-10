@@ -382,18 +382,54 @@ def test_qcorr_unknown_symbol_is_no_op():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 23. raw_symbol used as holdings key (preserves DB symbol form for reconciliation)
+# 23. ReplayKey used as holdings key (Stage 0 / ADR-005) — DR price_symbol preserved
 # ══════════════════════════════════════════════════════════════════════════════
 
-def test_raw_symbol_used_as_holdings_key():
-    """Holdings keys use raw_symbol so they match PortfolioItem.symbol in the DB.
-
-    canonical_symbol resolves DR tickers (NVDA01.BK → NVDA) in ways that would
-    break both reconciliation and price-matrix lookups.  raw_symbol preserves
-    the exact form stored at transaction time.
+def test_replay_key_used_as_holdings_key():
+    """Holdings keys use replay_key(ctx) (canonical_symbol at Stage 0), not
+    raw_symbol — the ADR-005 fix. See test_kbank_and_kbank_bk_merge_into_one_holding
+    for the alias-merge case this exists to enable.
     """
     s = _state(100_000.0)
-    # Simulate a DR stock: raw="NVDA01.BK", canonical="NVDA"
+    tx = _ctx(
+        transaction_type = "BUY",
+        raw_symbol       = "KBANK",
+        canonical_symbol = "KBANK.BK",
+        shares           = 10.0,
+        total_amount     = 5_000.0,
+    )
+    _apply_transaction(s, tx)
+    assert "KBANK.BK" in s.holdings     # canonical_symbol (ReplayKey) used as key
+    assert "KBANK" not in s.holdings    # raw_symbol NOT used as key
+
+
+def test_kbank_and_kbank_bk_merge_into_one_holding():
+    """The ADR-005 regression case: two raw spellings of the same instrument
+    must merge into a single holding once replay keys by ReplayKey.
+    """
+    s = _state(100_000.0)
+    _apply_transaction(s, _ctx(
+        id=1, transaction_type="BUY", raw_symbol="KBANK", canonical_symbol="KBANK.BK",
+        shares=100.0, total_amount=14_000.0,
+    ))
+    _apply_transaction(s, _ctx(
+        id=2, transaction_type="BUY", raw_symbol="KBANK.BK", canonical_symbol="KBANK.BK",
+        shares=50.0, total_amount=7_100.0,
+    ))
+    assert list(s.holdings.keys()) == ["KBANK.BK"]
+    h = s.holdings["KBANK.BK"]
+    assert h.shares == Decimal("150.0")
+    assert h.avg_cost == (Decimal("14000.0") + Decimal("7100.0")) / Decimal("150.0")
+
+
+def test_dr_holding_keyed_by_canonical_but_price_symbol_preserves_raw_form():
+    """DR certificates (NVDA01.BK) resolve via canonical_symbol to the US
+    underlying ticker (NVDA) — correct for replay identity, but yfinance must
+    still be asked for the DR's own THB price, not the US ticker's USD price.
+    _HoldingState.price_symbol carries the raw, DR-detectable form so
+    _build_price_matrix's is_dr() branch keeps firing correctly post Stage 0.
+    """
+    s = _state(100_000.0)
     tx = _ctx(
         transaction_type = "BUY",
         raw_symbol       = "NVDA01.BK",
@@ -402,8 +438,26 @@ def test_raw_symbol_used_as_holdings_key():
         total_amount     = 5_000.0,
     )
     _apply_transaction(s, tx)
-    assert "NVDA01.BK" in s.holdings    # raw_symbol used as key
-    assert "NVDA" not in s.holdings     # canonical_symbol NOT used
+    assert "NVDA" in s.holdings              # ReplayKey (canonical_symbol) is the key
+    assert "NVDA01.BK" not in s.holdings     # raw_symbol is NOT the key
+    assert s.holdings["NVDA"].price_symbol == "NVDA01.BK"   # but preserved for price fetch
+
+
+def test_price_symbol_falls_back_to_holdings_key_when_not_dr():
+    """Non-DR holdings: price_symbol is simply the raw_symbol seen at creation,
+    which for ordinary Thai equities is either identical to the ReplayKey or
+    an equally valid yfinance ticker (KBANK vs KBANK.BK — both resolve fine).
+    """
+    s = _state(100_000.0)
+    tx = _ctx(
+        transaction_type = "BUY",
+        raw_symbol       = "AOT.BK",
+        canonical_symbol = "AOT.BK",
+        shares           = 100.0,
+        total_amount     = 7_500.0,
+    )
+    _apply_transaction(s, tx)
+    assert s.holdings["AOT.BK"].price_symbol == "AOT.BK"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

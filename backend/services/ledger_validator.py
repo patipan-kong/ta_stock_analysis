@@ -44,6 +44,7 @@ from sqlalchemy.orm import Session
 from models.database import Portfolio, PortfolioItem, PortfolioSnapshot, Transaction
 from services.data_fetcher import fetch_history
 from services.ledger_repair import apply_repair_overlay
+from services.replay_key import replay_key
 from services.transaction_canonicalizer import (
     CanonicalTransaction,
     canonicalize_transactions,
@@ -250,11 +251,22 @@ def _check_symbol_aliases(
     portfolio_id: int,
     ctxs: list[CanonicalTransaction],
 ) -> list[LedgerFinding]:
-    """CHECK 2 — Multiple raw symbols resolve to the same canonical yfinance ticker.
+    """CHECK 2 — Multiple raw symbols resolve to the same ReplayKey.
 
     e.g. KBANK and KBANK.BK both map to KBANK.BK;
          NVDA01 and NVDA01.BK both map to NVDA.
-    Replay treats them as separate holdings, creating phantom positions.
+
+    CRITICAL, not WARNING (ADR-005 / TDD Stage 0). Replay
+    (portfolio_rebuilder.py) now keys holdings state by replay_key(ctx), so an
+    aliased pair merges into one holding instead of two phantom positions —
+    that part of the defect is fixed. What remains is that the merge itself
+    changes previously-reported per-symbol numbers (shares, avg_cost) for any
+    portfolio where this fires, which ADR-005's "Consequences" section
+    requires to be individually reviewed and documented (DECISION_LOG.md)
+    before that portfolio's rebuild is trusted or a golden baseline is
+    captured from it. This finding is the mechanical gate for that review —
+    it blocks commit (rebuild_portfolio Stage 5) until resolved, exactly as
+    DUP_INITIAL_POSITION already does for its own CRITICAL condition.
     """
     canon_to_raw:    dict[str, set[str]]  = defaultdict(set)
     canon_to_tx_ids: dict[str, list[int]] = defaultdict(list)
@@ -262,7 +274,7 @@ def _check_symbol_aliases(
     for ctx in ctxs:
         if not ctx.raw_symbol:
             continue
-        canon = ctx.canonical_symbol or ctx.raw_symbol
+        canon = replay_key(ctx)
         canon_to_raw[canon].add(ctx.raw_symbol)
         canon_to_tx_ids[canon].append(ctx.id)
 
@@ -273,7 +285,7 @@ def _check_symbol_aliases(
         raw_list = sorted(raw_set)
         findings.append(LedgerFinding(
             check_id          = "SYMBOL_ALIAS",
-            severity          = FindingSeverity.WARNING,
+            severity          = FindingSeverity.CRITICAL,
             portfolio_id      = portfolio_id,
             transaction_ids   = canon_to_tx_ids[canon],
             symbol            = raw_list[0],
@@ -281,16 +293,18 @@ def _check_symbol_aliases(
             title             = f"Symbol alias: multiple raw forms resolve to '{canon}'",
             explanation       = (
                 f"Raw symbols {raw_list} in portfolio {portfolio_id} all resolve "
-                f"to the canonical ticker '{canon}'. "
-                "Replay treats each raw symbol as a distinct holding, which may "
-                "produce duplicate positions or incorrect share balances. "
-                "This typically results from legacy symbol storage without .BK "
-                "suffix or from a symbol rename."
+                f"to the same ReplayKey '{canon}'. "
+                "Replay now merges these into a single holding (ADR-005), which "
+                "changes previously-reported per-symbol shares/avg_cost for this "
+                "portfolio relative to any prior rebuild that treated them as "
+                "separate positions. This typically results from legacy symbol "
+                "storage without the .BK suffix, or from a symbol rename."
             ),
             recommendation    = (
-                "Verify all raw symbols refer to the same instrument. "
-                "Normalise older transactions to the canonical form, then run "
-                "rebuild_portfolio."
+                "Verify all raw symbols refer to the same instrument, then "
+                "review the resulting merged holding before trusting this "
+                "portfolio's rebuild output. Document the review in "
+                "DECISION_LOG.md per ADR-005, then run rebuild_portfolio."
             ),
             details={
                 "canonical_symbol":  canon,

@@ -226,7 +226,9 @@ class TestDuplicateInitialPosition:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestSymbolAliases:
-    def test_kbank_with_and_without_bk_is_warning(self):
+    def test_kbank_with_and_without_bk_is_critical(self):
+        # Stage 0 (ADR-005): replay now merges these under one ReplayKey, so
+        # the finding is a hard gate (CRITICAL), not an advisory WARNING.
         txs = _canonical([
             _tx(1, "INITIAL_POSITION", "KBANK",    shares=100, date_str="2024-01-01"),
             _tx(2, "BUY",              "KBANK.BK", shares=50,  date_str="2024-06-01"),
@@ -235,11 +237,11 @@ class TestSymbolAliases:
         assert len(findings) == 1
         f = findings[0]
         assert f.check_id == "SYMBOL_ALIAS"
-        assert f.severity == FindingSeverity.WARNING
+        assert f.severity == FindingSeverity.CRITICAL
         assert "KBANK" in f.details["raw_symbols"]
         assert "KBANK.BK" in f.details["raw_symbols"]
 
-    def test_dr_with_and_without_bk_is_warning(self):
+    def test_dr_with_and_without_bk_is_critical(self):
         # NVDA01 and NVDA01.BK both resolve to NVDA
         txs = _canonical([
             _tx(1, "INITIAL_POSITION", "NVDA01",    shares=10, date_str="2024-01-01"),
