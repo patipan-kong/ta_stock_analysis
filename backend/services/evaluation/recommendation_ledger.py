@@ -257,32 +257,15 @@ def get_report_card(db: Session, portfolio_id: int, snapshot_id: int) -> dict[st
 
     execution_section: dict[str, Any] = {"status": "no_decision_recorded"}
     if decision_row and inputs is not None:
-        from models.database import Transaction
         from services.evaluation.execution_analyzer import compute_execution_analysis
+        from services.evaluation.execution_ledger import _linked_transactions, _recommendation_prices
 
-        recommendation_prices: dict[str, float] = {}
-        if snap.scores_map_json:
-            try:
-                scores_map = json.loads(snap.scores_map_json)
-                for sym, s in scores_map.items():
-                    if isinstance(s, dict) and s.get("current_price"):
-                        recommendation_prices[sym] = float(s["current_price"])
-            except Exception:
-                pass
-
-        tx_rows = (
-            db.query(Transaction)
-            .filter_by(execution_decision_id=decision_row.id)
-            .all()
-        )
-        linked_transactions = [
-            {"symbol": t.symbol, "shares": t.shares, "price_per_share": t.price_per_share, "total_amount": t.total_amount}
-            for t in tx_rows
-        ]
+        plan_symbols = [a.get("symbol") for a in (inputs["target_allocations"] or []) if a.get("symbol")]
 
         analysis = compute_execution_analysis(
             inputs["target_allocations"], inputs["cash_available"], inputs["violations"],
-            recommendation_prices, linked_transactions,
+            _recommendation_prices(snap),
+            _linked_transactions(db, decision_row.id, known_symbols=plan_symbols),
         )
         execution_section = {
             "status": "ok",

@@ -17,6 +17,11 @@ get_report_card
      execution section "no_decision_recorded", verdict is plan-only
   7. Snapshot with a decision but no linked transactions -> execution
      section reads "unavailable" from the analyzer, never fabricated
+  8. Snapshot with a decision whose linked transaction is a .BK-variant
+     spelling of the plan symbol -> execution_ledger's Registry-aware
+     _linked_transactions (reused here per M6 Phase 4, replacing this
+     module's former inline duplicate) links them instead of reporting
+     no_linked_transaction.
 """
 from __future__ import annotations
 
@@ -29,10 +34,21 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import models.asset  # noqa: F401 — registers Asset* tables on Base.metadata
+import models.registry_finding  # noqa: F401 — registers RegistryFinding table
+
 from services.evaluation.recommendation_ledger import (  # noqa: E402
     get_report_card,
     list_recommendations_ledger,
 )
+from services import registry_lookup as lookup  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_registry_cache():
+    lookup.invalidate_cache()
+    yield
+    lookup.invalidate_cache()
 
 
 @pytest.fixture()
@@ -204,3 +220,39 @@ def test_report_card_decision_without_linked_transactions_is_unavailable(db, ws_
     assert card["execution"]["status"] == "ok"
     assert card["execution"]["analysis"]["status"] == "unavailable"
     assert card["execution"]["analysis"]["score"] is None
+
+
+def test_report_card_bk_variant_transaction_links_via_registry_aware_matching(db, ws_portfolio):
+    """Plan says "BH"; the linked Transaction was recorded as "BH.BK". Before
+    M6 Phase 4 this call site built its own linked_transactions list inline
+    with no symbol normalization, so this would have read as
+    no_linked_transaction. Now it reuses execution_ledger's
+    _linked_transactions (registry-aware, legacy .BK fallback), matching
+    execution_ledger.py's own test of the same fix."""
+    from models.database import Transaction, UserExecutionDecision
+
+    ws, portfolio = ws_portfolio
+    allocations = [
+        {"symbol": "BH", "action": "BUY", "allocation_change_percent": 3.0,
+         "current_weight": 0.0, "estimated_amount": 30_000, "sector": "Healthcare"},
+    ]
+    snap = _seed_snapshot(db, ws, portfolio, days_ago=2, allocations=allocations)
+
+    dec = UserExecutionDecision(
+        workspace_id=ws.id, recommendation_snapshot_id=snap.id, portfolio_id=portfolio.id,
+        decision="APPROVED", executed_at=datetime.utcnow(), created_at=datetime.utcnow(),
+    )
+    db.add(dec)
+    db.commit()
+    db.refresh(dec)
+
+    db.add(Transaction(
+        workspace_id=ws.id, portfolio_id=portfolio.id, symbol="BH.BK",
+        transaction_type="BUY", shares=300, price_per_share=100.0, total_amount=30_000,
+        transaction_date=datetime.utcnow(), execution_decision_id=dec.id,
+    ))
+    db.commit()
+
+    card = get_report_card(db, portfolio.id, snap.id)
+    assert card["execution"]["analysis"]["symbols"]["BH"]["executed_amount"] == 30_000.0
+    assert card["execution"]["analysis"]["symbols"]["BH"]["note"] is None
