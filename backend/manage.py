@@ -158,6 +158,16 @@ from services.migration_executor import ExecutionOutcome, ExecutionReport, execu
 from services.bootstrap_planner import BootstrapPlan, build_bootstrap_plan
 from services.registry_bootstrap import BootstrapOutcome, BootstrapReport, bootstrap_registry
 from services.registry_classification_seed import SeedReport, seed_sector_classification
+from services.registry_replay_parity import (
+    GoldenBaseline,
+    ParityReport,
+    RegressionReport,
+    capture_golden_baseline,
+    compare_against_baseline,
+    generate_regression_report,
+    load_baseline,
+    save_baseline,
+)
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────
@@ -2845,6 +2855,135 @@ async def _cmd_validate_ledger(args: argparse.Namespace) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Golden Baseline: golden_baseline  (M5 Track B Stage 1)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_baseline_summary(baseline: GoldenBaseline) -> None:
+    print(f"  Portfolio {baseline.portfolio_id} \"{baseline.portfolio_name}\"")
+    print(f"    transactions replayed : {baseline.transactions_replayed}")
+    print(f"    holdings              : {baseline.reconstructed_holdings_count}")
+    print(f"    cash                  : {baseline.reconstructed_cash}")
+    print(f"    snapshots processed   : {baseline.snapshots_processed}")
+    print(f"    validator severity    : {baseline.validator_overall_severity}")
+    print(f"    content hash          : {baseline.content_hash}")
+
+
+def _print_parity_report(report: ParityReport, baseline_hash: str) -> None:
+    status = "IDENTICAL" if report.is_bit_identical else "DIFFERS"
+    print(f"  [{status}] portfolio {report.portfolio_id}  baseline_hash={baseline_hash[:12]}")
+    for d in report.holding_diffs:
+        print(f"    HOLDING  {d.symbol}.{d.field}: {d.baseline_value!r} -> {d.rebuilt_value!r}  [{d.status.value}]")
+    for d in report.snapshot_diffs:
+        print(f"    SNAPSHOT {d.date}.{d.field}: {d.baseline_value!r} -> {d.rebuilt_value!r}  [{d.status.value}]")
+    for d in report.validator_diffs:
+        print(f"    VALIDATOR {d.finding_key}: {d.baseline_severity} -> {d.rebuilt_severity}  [{d.status.value}]")
+
+
+def _print_regression_report(report: RegressionReport) -> None:
+    print(f"\n{_hr()}")
+    print("Golden Baseline — Regression Report (Stage 1)")
+    print(_hr())
+    print(f"  generated_at              : {report.generated_at}")
+    print(f"  portfolio_count           : {report.portfolio_count}")
+    print(f"  portfolios_bit_identical  : {report.portfolios_bit_identical}")
+    print(f"  portfolios_with_diffs     : {report.portfolios_with_diffs}")
+    print()
+    for e in report.entries:
+        status = "IDENTICAL" if e.is_bit_identical else "DIFFERS"
+        print(
+            f"  [{status:9}] portfolio {e.portfolio_id} \"{e.portfolio_name}\"  "
+            f"hash={e.baseline_hash[:12]}  "
+            f"holding_diffs={e.holding_diff_count} "
+            f"snapshot_diffs={e.snapshot_diff_count} "
+            f"validator_diffs={e.validator_diff_count}"
+        )
+
+
+async def _cmd_golden_baseline(args: argparse.Namespace) -> int:
+    """Golden Baseline capture / determinism verification (read-only).
+
+    Never writes to the database — every replay is dry_run=True. Baseline
+    storage (--capture) is a plain JSON file per portfolio under
+    --baseline-dir, outside the operational DB (Migration Principle 7).
+    """
+    db      = SessionLocal()
+    t_start = time.monotonic()
+    baseline_dir    = getattr(args, "baseline_dir", "golden_baselines")
+    skip_snapshots  = getattr(args, "skip_snapshots", False)
+
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        if getattr(args, "all", False):
+            portfolios = db.query(Portfolio).filter_by(workspace_id=ws_id).all()
+            if not portfolios:
+                print("ERROR: No portfolios found in workspace.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id for p in portfolios]
+        elif getattr(args, "portfolio", None):
+            p = db.query(Portfolio).filter_by(id=args.portfolio, workspace_id=ws_id).first()
+            if p is None:
+                print(f"ERROR: Portfolio {args.portfolio} not found.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id]
+        else:
+            print("ERROR: Specify --portfolio ID  or  --all", file=sys.stderr)
+            return 1
+
+        print(f"\n{_hr()}")
+        print("Golden Baseline  (read-only — every replay is dry_run=True)")
+        print(_hr())
+
+        if getattr(args, "capture", False):
+            for pid in portfolio_ids:
+                print(f"  Capturing portfolio {pid}...")
+                baseline = await capture_golden_baseline(
+                    db, portfolio_id=pid, workspace_id=ws_id, skip_snapshots=skip_snapshots,
+                )
+                path = save_baseline(baseline, baseline_dir=baseline_dir)
+                _print_baseline_summary(baseline)
+                print(f"    saved -> {path}")
+            return 0
+
+        if getattr(args, "compare_stored", False):
+            any_diff = False
+            for pid in portfolio_ids:
+                stored = load_baseline(pid, baseline_dir=baseline_dir)
+                if stored is None:
+                    print(f"  ERROR: no stored baseline for portfolio {pid} in {baseline_dir} "
+                          f"— run --capture first.", file=sys.stderr)
+                    any_diff = True
+                    continue
+                rebuilt = await rebuild_portfolio(
+                    db, portfolio_id=pid, workspace_id=ws_id,
+                    dry_run=True, skip_snapshots=skip_snapshots, backup=False,
+                )
+                parity = compare_against_baseline(stored, rebuilt)
+                _print_parity_report(parity, stored.content_hash)
+                any_diff = any_diff or not parity.is_bit_identical
+            return 1 if any_diff else 0
+
+        # Default action: verify determinism and print a regression report.
+        report = await generate_regression_report(
+            db, workspace_id=ws_id, portfolio_ids=portfolio_ids, skip_snapshots=skip_snapshots,
+        )
+        _print_regression_report(report)
+        elapsed = time.monotonic() - t_start
+        print(f"\n  elapsed: {elapsed:.2f}s")
+        return 0 if report.portfolios_with_diffs == 0 else 1
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Migration planner: plan_migration
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -3961,6 +4100,60 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── golden_baseline ─────────────────────────────────────────────────────────
+    baseline = sub.add_parser(
+        "golden_baseline",
+        help="Golden Baseline capture and replay-determinism verification (M5 Track B Stage 1)",
+        description=textwrap.dedent("""\
+            Golden Baseline Capture — M5 Track B Stage 1.
+
+            Read-only. Every replay is dry_run=True; nothing is ever written
+            to the database. Reference:
+            docs/implementation/M5_TRACK_B_NATIVE_INTEGRATION_TDD.md §7 Stage 1.
+
+            Actions
+            -------
+              (default)         Replay each portfolio twice and prove the two
+                                 replays are bit-identical (holdings, cash, NAV,
+                                 and validator findings). Prints a regression
+                                 report: portfolio count, replay parity,
+                                 validator parity, baseline hash.
+
+              --capture          Capture a golden baseline for each portfolio
+                                 and save it to --baseline-dir as JSON
+                                 (portfolio_<id>.json). This becomes the fixed
+                                 parity reference for later migration stages.
+
+              --compare-stored    Load a previously captured baseline and
+                                 compare it against a fresh replay right now.
+                                 Requires --capture to have been run first.
+
+            Exit codes
+            ----------
+              0  no diffs found (deterministic replay, matches stored baseline)
+              1  a diff was found, or a requested stored baseline is missing
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    baseline.add_argument("--portfolio", "-p", type=int, metavar="ID", help="Portfolio ID")
+    baseline.add_argument("--all", action="store_true", help="All portfolios in the workspace")
+    baseline.add_argument(
+        "--capture", action="store_true",
+        help="Capture and save a golden baseline for each selected portfolio.",
+    )
+    baseline.add_argument(
+        "--compare-stored", action="store_true",
+        help="Compare a freshly-run replay against the previously saved baseline.",
+    )
+    baseline.add_argument(
+        "--baseline-dir", default="golden_baselines", metavar="DIR",
+        help="Directory for baseline JSON storage (default: golden_baselines)",
+    )
+    baseline.add_argument(
+        "--skip-snapshots", action="store_true",
+        help="Skip NAV/snapshot replay (faster; omits snapshot truth from the baseline).",
+    )
+
     # ── apply_repair ──────────────────────────────────────────────────────────
     apply = sub.add_parser(
         "apply_repair",
@@ -4309,6 +4502,9 @@ def main() -> None:
         sys.exit(exit_code)
     elif args.command == "validate_ledger":
         exit_code = asyncio.run(_cmd_validate_ledger(args))
+        sys.exit(exit_code)
+    elif args.command == "golden_baseline":
+        exit_code = asyncio.run(_cmd_golden_baseline(args))
         sys.exit(exit_code)
     elif args.command == "plan_migration":
         exit_code = _cmd_plan_migration(args)
