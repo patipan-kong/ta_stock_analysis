@@ -219,3 +219,149 @@ Polygon
 Morningstar
 
 Provider-specific identifiers.
+
+
+## Ledger
+
+The append-only record of financial events.
+
+The single source of truth.
+
+Every balance, holding, snapshot, and metric
+is a derivation of ledger events.
+
+
+## Canonical Ledger Event
+
+The one form in which facts enter the platform.
+
+Every input source — manual entry, file, broker API, document —
+is translated into canonical events before reaching accounting.
+
+"Many doors, one hallway."
+
+
+## Derivation
+
+Any state computed from the ledger.
+
+Holdings. Cash balances. Snapshots. Metrics.
+
+Disposable.
+
+Rebuildable.
+
+Never an independent source of truth.
+
+
+## Provenance
+
+Where a fact came from.
+
+Every ingested event records its source, time, and adapter.
+
+Preserved forever.
+
+
+## Proposal
+
+An automated input awaiting human confirmation.
+
+Machines propose.
+
+The human confirms truth.
+
+Auto-acceptance exists only as explicit, revocable, per-source delegation.
+
+
+## Witness
+
+An external party that informs the platform.
+
+Providers witness prices.
+
+Brokers witness trades.
+
+Witnesses inform; they never overwrite.
+
+No witness is an authority.
+
+
+## Gate
+
+One of exactly three doorways through which recorded state changes.
+
+1. Ingestion gate — facts become truth
+2. Decision gate — intent becomes action
+3. Configuration gate — learning becomes future behavior
+
+Everything else is derivation and display.
+
+
+## Observer Plane
+
+Where Trust & Evaluation lives.
+
+Beside the pipeline, not in it.
+
+Reads records.
+
+Writes only its own.
+
+Nothing operational depends on it.
+
+
+## Domain
+
+A boundary of ownership and meaning.
+
+Not a module.
+
+Not a team.
+
+Not a deployment unit.
+
+Every concept has exactly one domain home.
+
+
+## Platform Domains
+
+The nine domains of the constitution:
+
+- Asset Foundation — what things are
+- Market Intelligence — what things are worth
+- Ledger & Accounting — what happened
+- Connectivity & Ingestion — how facts enter
+- Portfolio Intelligence — what it means
+- Decision Intelligence — what to do
+- Trust & Evaluation — was it right
+- Wealth Intelligence — the whole financial life
+- Experience Platform — how a person meets it
+
+Defined in `docs/architecture/platform_architecture.md`.
+
+
+## Asset Definition
+
+The description of an asset class's behavior.
+
+Unit semantics. Valuation cadence. Flow types. Lifecycle vocabulary.
+
+Engines consume descriptions.
+
+They never contain asset-class branches.
+
+"Assets are plugins."
+
+
+## Domain Constitution
+
+A document that governs one domain's interior.
+
+`OPTIMIZER_PHILOSOPHY.md` — Decision Intelligence.
+
+`PORTFOLIO_CALCULATION_RULES.md` — accounting semantics.
+
+Supreme inside the boundary.
+
+Subordinate to the Platform Architecture at the boundary.

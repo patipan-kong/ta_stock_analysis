@@ -501,6 +501,20 @@ Lessons Learned
 
 ---
 
+## Platform Architecture Constitution v1.1 — Governance Hierarchy and Canonical Vocabulary (Additive Amendment)
+
+**Date:** 2026-07-10
+**Problem:** Constitution v1 (`docs/architecture/platform_architecture.md`, ratified the same day) defined the laws, layers, and nine domains, and §10 defined its own amendment process and pairwise precedence with the two Domain Constitutions — but it did not state a complete precedence hierarchy across all of the platform's written artifacts (constitution, domain constitutions, ADRs, design documents, implementation docs, source code), leaving conflicts between levels to be resolved ad hoc. Separately, the platform had a vocabulary document (`docs/GLOSSARY.md`) referenced by the Architecture Handbook as shared vocabulary, but nothing designated it canonical or governed how terms are added, reserved, or redefined — and the constitution had introduced load-bearing terms (the nine domain names, the three gates, witness/authority, observer plane, provenance, proposal, derivation) that the glossary did not contain.
+**Decision:**
+- Added **§11 Architecture Governance** to the constitution: a six-level precedence hierarchy (Platform Architecture → Domain Constitutions → ADRs → Technical Design Documents → Implementation Documentation → Source Code) with six governance rules (G1–G6): higher states intent / lower states reality; lower may refine but never weaken; silence delegates downward; conflict is a defect resolved upward, never by recency; each level amends by its own mechanism (ADRs superseded, never edited — Law 2 applied to the platform's record of itself); code is never precedent.
+- Added **§12 Canonical Vocabulary** to the constitution: `docs/GLOSSARY.md` is designated the canonical vocabulary (Law 9 applied to language) with four rules (V1–V4): one term, one meaning, one home; new nouns registered before relied upon; constitutional terms are reserved and changing their *meaning* is a §10 amendment; the glossary is not a governance level but the shared language of all six.
+- **Deliberately did not create a second vocabulary document.** The review brief proposed "a separate canonical vocabulary (Glossary) document"; a glossary already existed, and creating another would have violated the very one-home-per-concept rule being codified. The existing `docs/GLOSSARY.md` was extended **append-only** with the constitution's missing terms (Ledger, Canonical Ledger Event, Derivation, Provenance, Proposal, Witness, Gate, Observer Plane, Domain, Platform Domains, Asset Definition, Domain Constitution); no existing entry was modified.
+- Both amendments are purely additive: Sections 1–10 (Constitution v1) are byte-identical to ratification; a version line in the preamble records v1 → v1.1.
+**Reasoning:** §10's amendment discipline is only enforceable if everyone agrees which document outranks which — the governance hierarchy makes the constitution's authority explicit rather than implied, and G6 ("code is never precedent") closes the most common erosion path, where implementation drift is retroactively accepted as design. The vocabulary rules exist because a platform that lets one word mean different things in different documents will eventually let it mean different things in different engines; reserving the constitutional terms prevents the domain names and gate vocabulary from being diluted by casual reuse.
+**Impact:** `docs/architecture/platform_architecture.md` (+§11, +§12, +version line in preamble — no existing section modified), `docs/GLOSSARY.md` (+12 entries, append-only), `docs/architecture/README.md` (handbook version v5.0 → v5.1 per its own material-revision rule). No code change, no schema change, no behavior change.
+
+---
+
 ## AI Evaluation Progress
 
 M0 ✅

@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Version** | v4.0 |
+| **Version** | v5.1 |
 | **Last Updated** | 2026-07 |
-| **Documents** | 10 |
+| **Documents** | 11 |
 
 *This directory is the architectural record of the Portfolio Intelligence Platform. This README is its introduction: what the handbook is, how its documents fit together, in what order to read them, and what philosophy binds them. It organizes the existing architecture; it does not extend it.*
 
@@ -25,6 +25,9 @@ These documents describe intent, not current code. Where the code and the handbo
 ## 2. Reading Order
 
 Read the documents in the order below. Each one assumes the vocabulary of the ones before it.
+
+**0. [platform_architecture.md](platform_architecture.md)** — The constitution. The platform's purpose, the fifteen laws, the layer model, the nine domains and their boundaries, and how the architecture absorbs the evolution toward a wealth platform without redesign.
+*Read zeroth because it is the document every other document is bound by: the laws are stated here once, and the rest of the handbook elaborates regions inside its boundaries.*
 
 **1. [PLATFORM_EVOLUTION.md](PLATFORM_EVOLUTION.md)** — The manifesto. Why the platform is entering an expansion era, what the layer stack is, and what must never change.
 *Read first because it defines the map every other document is a region of.*
@@ -63,6 +66,9 @@ A shorthand for the whole sequence: documents 1–2 define **what things are**, 
 The reading order is not arbitrary — it follows the dependency chain between the documents. Each document assumes the vocabulary of everything above it:
 
 ```
+platform_architecture           the constitution: laws, domains, boundaries
+        │
+        ▼
 PLATFORM_EVOLUTION              the map: layers, philosophy, permanence
         │
         ▼
@@ -103,7 +109,7 @@ The `docs/` tree contains more than this handbook, and the names can look simila
 
 ```
 ARCHITECTURE       what things ARE — boundaries, ownership, meaning
-     │             → this handbook: the 7 domain documents in docs/architecture/
+     │             → this handbook: the domain documents in docs/architecture/
      │               (changes rarely; a boundary move is a major event)
      ▼
 DOMAIN RULES       what the platform has DECIDED — rules and their reasons
@@ -226,8 +232,9 @@ Seven documents, written months apart, keep arriving at the same small set of co
 
 ## 5. Current Coverage
 
-The handbook currently defines ten architecture domains:
+The handbook currently defines eleven architecture domains:
 
+- **Constitution** — the platform's purpose, laws, layer model, and the nine product domains with their boundaries and dependency rules (platform_architecture.md).
 - **Platform** — the layer stack, expansion philosophy, and permanence guarantees (PLATFORM_EVOLUTION.md).
 - **Asset** — the universal asset model and its capability vocabulary (UNIVERSAL_ASSET_ARCHITECTURE.md).
 - **Market Data** — the pipeline from outside claim to canonical fact (MARKET_DATA_PLATFORM.md).

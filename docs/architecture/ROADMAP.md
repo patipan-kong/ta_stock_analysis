@@ -1,15 +1,35 @@
 # Portfolio Intelligence Roadmap
 
-> Last Updated: 2026-07
+> Last Updated: 2026-07 (v2.0 — aligned with the constitutional domains)
 >
 > Current Status:
 >
-> **Phase 2 Complete**
+> **Phase 3 in progress**
 >
-> Portfolio Intelligence has completed its core investment engine, execution intelligence,
-> AI evaluation, and accounting correctness.
+> Phases 1–2 are complete: core investment engine, execution intelligence,
+> AI evaluation, and accounting correctness. The Asset Registry — Phase 3's
+> identity keystone — completed 2026-07.
 >
-> Future development shifts from building core infrastructure to expanding platform capabilities.
+> This roadmap states **what will be built, and in what order**. Why the
+> platform is designed this way is stated once, in
+> [platform_architecture.md](platform_architecture.md) (the constitution);
+> this document is subordinate to it (constitution §11) and uses its domain
+> vocabulary (§6, [GLOSSARY.md](../GLOSSARY.md)).
+
+---
+
+## Phase Map
+
+Each phase advances one transition of the constitution's evolution arc (§9).
+
+| Phase | Constitutional stage | Primary domains |
+|---|---|---|
+| 1 — Foundation ✅ | Portfolio Platform | Ledger & Accounting, Experience Platform |
+| 2 — Investment Intelligence ✅ | Investment Intelligence | Portfolio Intelligence, Decision Intelligence, Trust & Evaluation |
+| 3 — Platform Evolution | → Multi-Asset Platform (groundwork) | Asset Foundation, Market Intelligence, Portfolio Intelligence |
+| 4 — SaaS Platform | (operational widening) | Experience Platform |
+| 5 — Personal Wealth Platform | → Wealth Platform | Asset Foundation, Connectivity & Ingestion, Wealth Intelligence |
+| 6 — Personal AI Wealth Advisor | → AI Wealth Advisor | Experience Platform, Decision Intelligence, Trust & Evaluation |
 
 ---
 
@@ -51,6 +71,8 @@ Build a trustworthy investment platform.
 
 Transform portfolio data into actionable investment intelligence.
 
+_Recorded as achieved. Section names predate the constitution and are preserved as history. The optional analytics formerly pending here now live in Phase 3 under Portfolio Intelligence._
+
 ## Performance Analytics
 
 - ✅ Total Return
@@ -65,15 +87,6 @@ Transform portfolio data into actionable investment intelligence.
 - ✅ Information Ratio
 - ✅ Benchmark Comparison
 - ✅ Cash Utilization
-
-### Optional Enhancements
-
-- ⏳ Sortino Ratio
-- ⏳ Rolling Return
-- ⏳ Rolling Sharpe
-- ⏳ Rolling Volatility
-
----
 
 ## Portfolio Optimizer
 
@@ -120,34 +133,33 @@ Transform portfolio data into actionable investment intelligence.
 
 ---
 
-# Phase 3 — Platform Evolution
+# Phase 3 — Platform Evolution (in progress)
 
-Strengthen the platform for long-term scalability.
+Lay the identity, valuation, and analytics groundwork the multi-asset
+platform stands on.
 
-## Market Data
+## Asset Foundation
 
-- Symbol Registry
-- Master Asset Database
+- ✅ Asset Registry — permanent identity, adjudication, classification
+  consolidation, read-path adoption (completed 2026-07)
+- Registry-Native Integration — ledger references and optimizer internals
+  keyed to permanent identity
+- Asset Definitions
+- Asset Search
+- Corporate Actions
+
+## Market Intelligence
+
+- Multiple Price Providers — provider independence behind one boundary
 - Market Calendar
-- Multiple Price Providers
-- Historical Data Services
-- Cache Improvements
+- Historical Services
 
-## Analytics
+## Portfolio Intelligence
 
-- Rolling Analytics
+- Rolling Analytics — rolling return, Sharpe, volatility
+- Advanced Risk Metrics — including Sortino
 - Position Attribution
 - Sector Attribution Timeline
-- Advanced Risk Metrics
-
-## Architecture
-
-- Domain Modularization
-- Event Bus
-- Shared Analytics Library
-- AI Routing Layer
-- Prompt Layer Cleanup
-- Internal API Simplification
 
 ---
 
@@ -155,13 +167,13 @@ Strengthen the platform for long-term scalability.
 
 Scale from a personal platform to a production SaaS.
 
-## Multi-user
+## Experience Platform — Multi-user
 
 - Multi-workspace
 - Team Accounts
 - RBAC
 
-## Platform
+## Experience Platform — Operations
 
 - Usage Reports
 - Credits
@@ -175,17 +187,29 @@ Scale from a personal platform to a production SaaS.
 
 Expand from portfolio management to complete wealth management.
 
-## Assets
+## Asset Foundation — Asset Classes
 
-- Stocks
+Each class arrives as an asset definition, never as engine surgery
+(constitution §9).
+
+- ✅ Stocks
 - ETFs
 - Mutual Funds
 - Gold
 - Crypto
-- Cash
+- Cash (multi-currency)
 - Property
 
-## Financial Planning
+## Connectivity & Ingestion
+
+The doors through which a whole financial life enters
+(architected in [BROKER_ACCOUNT_DOMAIN.md](BROKER_ACCOUNT_DOMAIN.md)).
+
+- File & Statement Import
+- Broker Account Integration
+- Import Review & Reconciliation
+
+## Wealth Intelligence — Financial Planning
 
 - Net Worth
 - Income
@@ -194,7 +218,7 @@ Expand from portfolio management to complete wealth management.
 - Cash Flow
 - Emergency Fund
 
-## Goals
+## Wealth Intelligence — Goals
 
 - Retirement
 - House
@@ -203,7 +227,7 @@ Expand from portfolio management to complete wealth management.
 - Vacation
 - FIRE
 
-## Wealth Planning
+## Wealth Intelligence — Wealth Planning
 
 - Debt Management
 - Tax Planning
@@ -216,7 +240,7 @@ Expand from portfolio management to complete wealth management.
 
 Transform the platform from dashboards into an intelligent financial partner.
 
-## AI Experience
+## Experience Platform — AI Experience
 
 - Daily Portfolio Brief
 - Natural Language Portfolio Review
@@ -229,7 +253,10 @@ Transform the platform from dashboards into an intelligent financial partner.
 - Risk-aware Coaching
 - Scenario Simulation
 
-## Learning Engine
+## Trust & Evaluation — Learning
+
+Learning consumes the evaluation record and changes future behavior only
+through the configuration gate (constitution §7.2).
 
 - Recommendation Learning
 - Confidence Calibration Learning
@@ -241,8 +268,11 @@ Transform the platform from dashboards into an intelligent financial partner.
 
 # Open Engineering Backlog
 
-These are important engineering improvements but are intentionally
-kept outside the roadmap phases.
+These are important engineering improvements but are intentionally kept
+outside the roadmap phases: the roadmap tracks product capabilities;
+perpetual engineering quality work is tracked here
+([ENGINEERING_PRINCIPLES.md](../engineering/ENGINEERING_PRINCIPLES.md),
+"Capability vs. Quality").
 
 ## Accounting
 
@@ -259,6 +289,16 @@ kept outside the roadmap phases.
 - Sector BHB attribution
 - Multi-portfolio analytics
 
+## Architecture
+
+- Domain Modularization
+- Event Bus
+- Shared Analytics Library
+- AI Routing Layer
+- Prompt Layer Cleanup
+- Internal API Simplification
+- Cache Improvements
+
 ## Platform
 
 - Accessibility (WCAG)
@@ -267,10 +307,11 @@ kept outside the roadmap phases.
 
 ---
 
-# Guiding Principles
+# Governance
 
-- Correctness over complexity.
-- Deterministic calculations before AI interpretation.
-- Every recommendation must be explainable.
-- Every evaluation must be reproducible.
-- AI assists decisions but never hides the underlying evidence.
+This roadmap is an implementation-level artifact under the constitution's
+governance hierarchy ([platform_architecture.md](platform_architecture.md)
+§11). The platform's guiding principles are the constitution's laws (§4)
+and are deliberately not restated here. Where this document and the
+constitution appear to disagree, the constitution states the intent and
+this document states the schedule.
