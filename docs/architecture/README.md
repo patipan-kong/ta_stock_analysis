@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Version** | v5.1 |
+| **Version** | v6.0 |
 | **Last Updated** | 2026-07 |
-| **Documents** | 11 |
+| **Documents** | 12 |
 
 *This directory is the architectural record of the Portfolio Intelligence Platform. This README is its introduction: what the handbook is, how its documents fit together, in what order to read them, and what philosophy binds them. It organizes the existing architecture; it does not extend it.*
 
@@ -32,34 +32,37 @@ Read the documents in the order below. Each one assumes the vocabulary of the on
 **1. [PLATFORM_EVOLUTION.md](PLATFORM_EVOLUTION.md)** — The manifesto. Why the platform is entering an expansion era, what the layer stack is, and what must never change.
 *Read first because it defines the map every other document is a region of.*
 
-**2. [UNIVERSAL_ASSET_ARCHITECTURE.md](UNIVERSAL_ASSET_ARCHITECTURE.md)** — What an Asset is: one universal model spanning stocks, funds, gold, crypto, bonds, cash, and property, described by capabilities rather than branches.
-*Read second because everything downstream — data, identity, portfolios, brokers — is expressed in terms of this Asset.*
+**2. [asset_foundation.md](asset_foundation.md)** — The domain constitution of the root domain: Asset Foundation's charter, its six subdomains, the conceptual model, the definition-contract abstraction, its boundary contracts, and the M6 charter.
+*Read second because it is the first level-2 Domain Constitution: it organizes the asset documents that follow (3, 6, 10) under one boundary and states what none of them may individually decide.*
 
-**3. [MARKET_DATA_PLATFORM.md](MARKET_DATA_PLATFORM.md)** — How information from the outside world becomes trusted canonical data: discovery, resolution, routing, normalization, validation.
-*Read third because it introduces the pipeline through which the universal Asset model is actually fed.*
+**3. [UNIVERSAL_ASSET_ARCHITECTURE.md](UNIVERSAL_ASSET_ARCHITECTURE.md)** — What an Asset is: one universal model spanning stocks, funds, gold, crypto, bonds, cash, and property, described by capabilities rather than branches.
+*Read third because everything downstream — data, identity, portfolios, brokers — is expressed in terms of this Asset.*
 
-**4. [PROVIDER_INTERFACE.md](PROVIDER_INTERFACE.md)** — The contract at the outer edge of that pipeline: providers as witnesses, adapters as translators, and the guarantee that no engine ever knows which vendor supplied its data.
-*Read fourth because it is the detailed close-up of the Market Data Platform's outermost boundary.*
+**4. [MARKET_DATA_PLATFORM.md](MARKET_DATA_PLATFORM.md)** — How information from the outside world becomes trusted canonical data: discovery, resolution, routing, normalization, validation.
+*Read fourth because it introduces the pipeline through which the universal Asset model is actually fed.*
 
-**5. [ASSET_REGISTRY.md](ASSET_REGISTRY.md)** — The authority at the center of the pipeline: how asset identity is minted, defended, and kept permanent, so that one real-world instrument always maps to exactly one internal Asset.
-*Read fifth because identity is the keystone: the documents before it explain why identity is hard; the documents after it depend on identity being solved.*
+**5. [PROVIDER_INTERFACE.md](PROVIDER_INTERFACE.md)** — The contract at the outer edge of that pipeline: providers as witnesses, adapters as translators, and the guarantee that no engine ever knows which vendor supplied its data.
+*Read fifth because it is the detailed close-up of the Market Data Platform's outermost boundary.*
 
-**6. [PORTFOLIO_DOMAIN_MODEL.md](PORTFOLIO_DOMAIN_MODEL.md)** — What a Portfolio is: a strategy, a policy, and an accounting boundary — not a collection of assets. Includes the Investment Universe, policy surface, benchmarks, and the Wealth hierarchy.
-*Read sixth because it defines the boundary inside which all accounting truth lives, which the final document must respect.*
+**6. [ASSET_REGISTRY.md](ASSET_REGISTRY.md)** — The authority at the center of the pipeline: how asset identity is minted, defended, and kept permanent, so that one real-world instrument always maps to exactly one internal Asset.
+*Read sixth because identity is the keystone: the documents before it explain why identity is hard; the documents after it depend on identity being solved.*
 
-**7. [BROKER_ACCOUNT_DOMAIN.md](BROKER_ACCOUNT_DOMAIN.md)** — How real brokerage accounts relate to that boundary: accounts as transaction sources and custody facts, imports as reconciliation, cash meaning owned by the portfolio.
-*Read seventh because it stands where the two halves meet: the import machinery of documents 3–5 applied to the accounting boundary of document 6.*
+**7. [PORTFOLIO_DOMAIN_MODEL.md](PORTFOLIO_DOMAIN_MODEL.md)** — What a Portfolio is: a strategy, a policy, and an accounting boundary — not a collection of assets. Includes the Investment Universe, policy surface, benchmarks, and the Wealth hierarchy.
+*Read seventh because it defines the boundary inside which all accounting truth lives, which the final document must respect.*
 
-**8. [TRANSACTION_DOMAIN_MODEL.md](TRANSACTION_DOMAIN_MODEL.md)** — What a Transaction is: the immutable business event, the canonical vocabulary, and the append-only stream from which all accounting, analytics, and evaluation are derived.
-*Read eighth because it is the innermost document: every document before it explains how facts reach the ledger; this one defines the fact itself, and every accounting-related domain stands on it.*
+**8. [BROKER_ACCOUNT_DOMAIN.md](BROKER_ACCOUNT_DOMAIN.md)** — How real brokerage accounts relate to that boundary: accounts as transaction sources and custody facts, imports as reconciliation, cash meaning owned by the portfolio.
+*Read eighth because it stands where the two halves meet: the import machinery of documents 4–6 applied to the accounting boundary of document 7.*
 
-**9. [CORPORATE_ACTION_DOMAIN.md](CORPORATE_ACTION_DOMAIN.md)** — How the world's restructurings (splits, mergers, spin-offs, redemptions) become facts: the adjudication bridge between Asset Identity and Canonical Transactions, owning neither.
-*Read ninth because it is the first pure adjudication domain: it presumes both permanent authorities — the Registry and the ledger — and defines the disciplined path by which one real-world event lands consistently in both.*
+**9. [TRANSACTION_DOMAIN_MODEL.md](TRANSACTION_DOMAIN_MODEL.md)** — What a Transaction is: the immutable business event, the canonical vocabulary, and the append-only stream from which all accounting, analytics, and evaluation are derived.
+*Read ninth because it is the innermost document: every document before it explains how facts reach the ledger; this one defines the fact itself, and every accounting-related domain stands on it.*
 
-**10. [EXECUTION_DOMAIN.md](EXECUTION_DOMAIN.md)** — How intent becomes history: the decision record binding AI recommendations, human judgment, and canonical transactions — the platform's second permanent memory.
+**10. [CORPORATE_ACTION_DOMAIN.md](CORPORATE_ACTION_DOMAIN.md)** — How the world's restructurings (splits, mergers, spin-offs, redemptions) become facts: the disciplined adjudication path from announcement to consistent consequences in both the Registry and the ledger (interpretation homed in Asset Foundation per document 2).
+*Read tenth because it is the first pure adjudication discipline: it presumes both permanent authorities — the Registry and the ledger — and defines the path by which one real-world event lands consistently in both.*
+
+**11. [EXECUTION_DOMAIN.md](EXECUTION_DOMAIN.md)** — How intent becomes history: the decision record binding AI recommendations, human judgment, and canonical transactions — the platform's second permanent memory.
 *Read last because it is the second adjudication domain and the intelligence layer's only gate to the ledger: it presumes everything before it, and every evaluation the platform makes about itself stands on its record.*
 
-A shorthand for the whole sequence: documents 1–2 define **what things are**, documents 3–5 define **how the world gets in**, documents 6–8 define **where truth is kept**, and documents 9–10 define **how changes — the world's and the user's — reach the truth**.
+A shorthand for the whole sequence: documents 1–3 define **what things are**, documents 4–6 define **how the world gets in**, documents 7–9 define **where truth is kept**, and documents 10–11 define **how changes — the world's and the user's — reach the truth**.
 
 ### Document Dependencies
 
@@ -70,6 +73,9 @@ platform_architecture           the constitution: laws, domains, boundaries
         │
         ▼
 PLATFORM_EVOLUTION              the map: layers, philosophy, permanence
+        │
+        ▼
+asset_foundation                the root domain's constitution: charter, subdomains, M6
         │
         ▼
 UNIVERSAL_ASSET_ARCHITECTURE    what an Asset is
@@ -232,10 +238,11 @@ Seven documents, written months apart, keep arriving at the same small set of co
 
 ## 5. Current Coverage
 
-The handbook currently defines eleven architecture domains:
+The handbook currently defines twelve architecture domains:
 
 - **Constitution** — the platform's purpose, laws, layer model, and the nine product domains with their boundaries and dependency rules (platform_architecture.md).
 - **Platform** — the layer stack, expansion philosophy, and permanence guarantees (PLATFORM_EVOLUTION.md).
+- **Asset Foundation** — the root domain's constitution: charter, six subdomains, the conceptual model, definition contracts, boundary contracts, and the M6 charter (asset_foundation.md).
 - **Asset** — the universal asset model and its capability vocabulary (UNIVERSAL_ASSET_ARCHITECTURE.md).
 - **Market Data** — the pipeline from outside claim to canonical fact (MARKET_DATA_PLATFORM.md).
 - **Provider** — the contract at the outermost boundary of that pipeline (PROVIDER_INTERFACE.md).
