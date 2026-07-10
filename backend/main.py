@@ -44,6 +44,10 @@ from services.data_fetcher import (
 from services.scorer import compute_scores
 from services.ai_client import call_ai
 from services import registry_lookup
+from services.sector_taxonomy import (
+    THAI_SECTOR_MAP, _DR_SECTOR_MAP, _CANONICAL_SECTORS,
+    dr_prefix as _dr_prefix, normalize_sector, static_sector_lookup,
+)
 from services.json_utils import safe_parse_json
 from services.portfolio_transactions import (
     execute_buy, execute_sell,
@@ -364,137 +368,32 @@ def _history_row(r: AnalysisHistory) -> dict:
     }
 
 
-THAI_SECTOR_MAP: dict[str, str] = {
-    # Financial
-    "KBANK.BK": "Financial", "SCB.BK": "Financial", "BBL.BK": "Financial",
-    "KTB.BK": "Financial", "BAY.BK": "Financial", "TISCO.BK": "Financial",
-    "KKP.BK": "Financial", "TCAP.BK": "Financial", "SAWAD.BK": "Financial",
-    "TIDLOR.BK": "Financial", "AEONTS.BK": "Financial", "MBK.BK": "Financial",
-    "ASK.BK": "Financial", "JMT.BK": "Financial", "MUTHOOT.BK": "Financial",
-    # Energy
-    "PTT.BK": "Energy", "PTTEP.BK": "Energy", "PTTGC.BK": "Energy",
-    "TOP.BK": "Energy", "IRPC.BK": "Energy", "BCP.BK": "Energy",
-    "SPRC.BK": "Energy", "ESSO.BK": "Energy",
-    # Utilities
-    "BGRIM.BK": "Utilities", "EA.BK": "Utilities", "GPSC.BK": "Utilities",
-    "RATCH.BK": "Utilities", "EGCO.BK": "Utilities", "GULF.BK": "Utilities",
-    "BANPU.BK": "Utilities", "SPCG.BK": "Utilities",
-    # Technology
-    "ADVANC.BK": "Technology", "TRUE.BK": "Technology", "INTUCH.BK": "Technology",
-    "JASIF.BK": "Technology", "DIF.BK": "Technology", "INTOUCH.BK": "Technology",
-    # Industrial/Transport
-    "AOT.BK": "Industrial", "AAV.BK": "Industrial", "BEM.BK": "Industrial",
-    "BTS.BK": "Industrial", "THAI.BK": "Industrial", "STEC.BK": "Industrial",
-    "ITD.BK": "Industrial", "CK.BK": "Industrial", "WHAUP.BK": "Industrial",
-    # Consumer
-    "CPALL.BK": "Consumer", "BJC.BK": "Consumer", "HMPRO.BK": "Consumer",
-    "MAKRO.BK": "Consumer", "CRC.BK": "Consumer", "MINT.BK": "Consumer",
-    "ERW.BK": "Consumer", "CENTEL.BK": "Consumer", "OSP.BK": "Consumer",
-    "BEAUTY.BK": "Consumer", "OISHI.BK": "Consumer",
-    # Healthcare
-    "BDMS.BK": "Healthcare", "BH.BK": "Healthcare", "BCH.BK": "Healthcare",
-    "PR9.BK": "Healthcare", "VIBHA.BK": "Healthcare", "CHG.BK": "Healthcare",
-    "SVH.BK": "Healthcare", "EKH.BK": "Healthcare",
-    # Real Estate
-    "LH.BK": "Real Estate", "AP.BK": "Real Estate", "SPALI.BK": "Real Estate",
-    "CPN.BK": "Real Estate", "SIRI.BK": "Real Estate", "SC.BK": "Real Estate",
-    "ORI.BK": "Real Estate", "QH.BK": "Real Estate", "LALIN.BK": "Real Estate",
-    "WHA.BK": "Real Estate", "AMATA.BK": "Real Estate",
-    # Consumer
-    "ICHI.BK": "Consumer", "COM7.BK": "Consumer", "CBG.BK": "Consumer",
-    "CPF.BK": "Consumer", "M.BK": "Consumer", "CPAXT.BK": "Consumer",
-    "TU.BK": "Consumer", "PLANB.BK": "Consumer",
-    # Energy
-    "OR.BK": "Energy",
-    # Financial
-    "KTC.BK": "Financial", "BAM.BK": "Financial", "BLA.BK": "Financial",
-    "KGI.BK": "Financial", "ASP.BK": "Financial", "TLI.BK": "Financial",
-    # Healthcare
-    "MEGA.BK": "Healthcare",
-    # Industrial
-    "TOA.BK": "Industrial", "STECON.BK": "Industrial", "PREB.BK": "Industrial",
-    "SYNTEC.BK": "Industrial", "SCC.BK": "Industrial", "BEM.BK": "Industrial",
-    # Technology
-    "PIS.BK": "Technology", "CCET.BK": "Technology",
-    # Utilities
-    "GUNKUL.BK": "Utilities",
-}
-
-# Canonical sector keys must match frontend/lib/sectors.ts SECTOR_COLORS
-_CANONICAL_SECTORS = frozenset({
-    "Technology", "Financial", "Energy", "Healthcare",
-    "Consumer", "Industrial", "Real Estate", "Utilities", "Other",
-})
-
-# ── DR Sector Master Map ──────────────────────────────────────────────────────
-# Authoritative sector for every DR prefix — used instead of yfinance so
-# Chinese-listed DRs (SMIC, CATL, BABA) and renamed underlying tickers (MICRON)
-# are never left as "Other". Key = letters-only DR prefix (e.g. "NVDA", "MICRON").
-_DR_SECTOR_MAP: dict[str, str] = {
-    # ── Technology ─────────────────────────────────────────────────────────
-    "AAPL":    "Technology",   # Apple
-    "NVDA":    "Technology",   # Nvidia
-    "MSFT":    "Technology",   # Microsoft
-    "GOOGL":   "Technology",   # Alphabet / Google
-    "META":    "Technology",   # Meta Platforms
-    "AMD":     "Technology",   # Advanced Micro Devices
-    "INTEL":   "Technology",   # Intel (DR prefix is full name, not INTC)
-    "MICRON":  "Technology",   # Micron Technology (yfinance ticker MU)
-    "ASML":    "Technology",   # ASML Holding (semiconductor equipment)
-    "ORCL":    "Technology",   # Oracle
-    "NFLX":    "Consumer",                 # Netflix (streaming / consumer discretionary)
-    "VRT":     "Technology",   # Vertiv (data centre hardware)
-    "SMIC":    "Technology",   # Semiconductor Manufacturing Intl Corp
-    "BABA":    "Technology",   # Alibaba Group
-    "TSM":     "Technology",   # Taiwan Semiconductor (TSMC)
-    "QCOM":    "Technology",   # Qualcomm
-    # ── Consumer ───────────────────────────────────────────────────────────
-    "AMZN":    "Consumer",     # Amazon (Consumer Discretionary)
-    "TSLA":    "Consumer",     # Tesla (Consumer Discretionary)
-    "ABNB":    "Consumer",     # Airbnb
-    # ── Financial ──────────────────────────────────────────────────────────
-    "AIA":     "Financial",    # AIA Group (insurance)
-    # ── Industrial ─────────────────────────────────────────────────────────
-    "CATL":    "Industrial",   # Contemporary Amperex Technology (batteries)
-}
-
-_DR_PREFIX_RE = re.compile(r"^([A-Z]+)(\d{2,})$")
-
-
-def _dr_prefix(symbol: str) -> str | None:
-    """Extract the letter prefix from a DR symbol.
-
-    NVDA01.BK → 'NVDA', MICRON01 → 'MICRON', NFLX80.BK → 'NFLX'
-    Requires at least 2 trailing digits so Thai single-digit tickers
-    (PR9.BK, COM7.BK) are never mistaken for DRs.
-    Returns None for non-DR symbols.
-    """
-    base = symbol.upper().replace(".BK", "")
-    m = _DR_PREFIX_RE.match(base)
-    return m.group(1) if m else None
-
-
-def normalize_sector(raw: str | None) -> str:
-    """Map raw yfinance/FA sector strings to canonical frontend sector keys."""
-    s = (raw or "").strip()
-    if s in _CANONICAL_SECTORS:
-        return s
-    if "Financial" in s:   # "Financial Services" → "Financial"
-        return "Financial"
-    if "Consumer" in s:    # "Consumer Cyclical", "Consumer Defensive", "Consumer Staples" → "Consumer"
-        return "Consumer"
-    if "Industrial" in s:  # "Industrials" → "Industrial"
-        return "Industrial"
-    # "Services", "Basic Materials", "Communication Services", or any unmapped → "Other"
-    return "Other"
-
-
-def _get_sector(symbol: str, fa_cache: dict | None) -> str:
-    """Resolve sector with priority order:
+def _get_sector(symbol: str, fa_cache: dict | None, db: Session | None = None) -> str:
+    """Resolve sector with priority order (Classification Consolidation,
+    docs/implementation/CLASSIFICATION_CONSOLIDATION.md):
+    0. Asset Registry  — AssetView.classification["SECTOR"], when the
+       Registry has adjudicated this symbol's identity and been seeded
+       with sector data (services/registry_classification_seed.py).
     1. DR stocks  — _DR_SECTOR_MAP (authoritative, no network), then FA cache fallback
     2. Thai .BK   — THAI_SECTOR_MAP first, FA cache as fallback
     3. US stocks  — FA cache (yfinance sector field)
+
+    `db` is optional only so this remains callable in the (currently
+    nonexistent) case of no session in scope; every real call site in this
+    file has a request-scoped session and passes it. Without `db`, behavior
+    is identical to pre-Registry code — steps 1-3 only.
     """
+    if db is not None:
+        try:
+            resolved = registry_lookup.resolve_asset(db, symbol)
+        except Exception:
+            _log.warning("[_get_sector] registry_lookup.resolve_asset failed for %r", symbol, exc_info=True)
+            resolved = None
+        if isinstance(resolved, registry_lookup.AssetView):
+            registry_sector = resolved.classification.get("SECTOR")
+            if registry_sector:
+                return registry_sector
+
     def _from_cache() -> str | None:
         if fa_cache:
             s = fa_cache.get("sector")
@@ -502,34 +401,22 @@ def _get_sector(symbol: str, fa_cache: dict | None) -> str:
                 return normalize_sector(s)
         return None
 
-    base = normalize_dr_symbol(symbol)
-    if base != symbol:
-        # DR symbol — check master map first (reliable for Chinese DRs etc.)
-        prefix = _dr_prefix(symbol)
-        if prefix:
-            mapped = _DR_SECTOR_MAP.get(prefix)
-            if mapped:
-                return mapped
-        return _from_cache() or "Other"
-
-    if symbol.endswith(".BK"):
-        mapped = THAI_SECTOR_MAP.get(symbol)
-        if mapped:
-            return mapped
-        return _from_cache() or "Other"
-
+    is_dr = normalize_dr_symbol(symbol) != symbol
+    mapped = static_sector_lookup(symbol, is_dr=is_dr)
+    if mapped:
+        return mapped
     return _from_cache() or "Other"
 
 
-async def _fetch_sector(symbol: str) -> str:
-    """Resolve sector at add-time. THAI_SECTOR_MAP is free; yfinance is used for DR/US."""
-    sector = _get_sector(symbol, None)
+async def _fetch_sector(symbol: str, db: Session | None = None) -> str:
+    """Resolve sector at add-time. Registry/THAI_SECTOR_MAP are free; yfinance is used for DR/US."""
+    sector = _get_sector(symbol, None, db)
     if sector != "Other":
         return sector
     try:
         normalized = normalize_dr_symbol(symbol)
         info = await asyncio.to_thread(fetch_info, normalized)
-        return _get_sector(symbol, info)
+        return _get_sector(symbol, info, db)
     except Exception:
         return "Other"
 
@@ -990,7 +877,7 @@ async def add_holding(portfolio_id: int, body: HoldingCreate, db: Session = Depe
         raise HTTPException(status_code=409, detail="Symbol already in this portfolio")
 
     sector, price = await asyncio.gather(
-        _fetch_sector(symbol),
+        _fetch_sector(symbol, db),
         asyncio.to_thread(fetch_price_info, symbol),
     )
 
@@ -1200,7 +1087,7 @@ async def add_watchlist(body: WatchlistCreate, db: Session = Depends(get_db)) ->
     db.add(item)
     db.commit()
     db.refresh(item)
-    item.sector = await _fetch_sector(symbol)
+    item.sector = await _fetch_sector(symbol, db)
     db.commit()
     cached = {
         c.symbol: c
@@ -1478,7 +1365,7 @@ async def _fetch_agents(
         #     round(_time.perf_counter() - t, 3),
         # )
     if fund and "error" not in fund and not fund.get("sector"):
-        resolved_sector = _get_sector(symbol, None)
+        resolved_sector = _get_sector(symbol, None, db)
         if resolved_sector != "Other":
             fund["sector"] = resolved_sector
             _set_agent_cache(db, symbol, "fundamental", fund)
@@ -3036,7 +2923,7 @@ async def backfill_sectors(db: Session = Depends(get_db)) -> dict:
 
     async def _resolve(symbol: str) -> str:
         nonlocal last_was_live
-        sector = _get_sector(symbol, None)
+        sector = _get_sector(symbol, None, db)
         if sector != "Other":
             last_was_live = False
             return sector
@@ -3045,7 +2932,7 @@ async def backfill_sectors(db: Session = Depends(get_db)) -> dict:
         try:
             normalized = normalize_dr_symbol(symbol)
             info = await _asyncio.to_thread(fetch_info, normalized)
-            sector = _get_sector(symbol, info)
+            sector = _get_sector(symbol, info, db)
             last_was_live = True
         except Exception:
             sector = "Other"
@@ -3176,7 +3063,7 @@ async def fix_sectors(db: Session = Depends(get_db)) -> dict:
             except Exception:
                 fa_data = None
 
-        sector = _get_sector(sym, fa_data)
+        sector = _get_sector(sym, fa_data, db)
 
         if row and fa_data is not None:
             stored = fa_data.get("sector")
@@ -3826,7 +3713,7 @@ async def transaction_buy(
     tx_date = _parse_tx_date(body.transaction_date)
 
     # Resolve sector for new holdings (may already exist; service handles both paths)
-    sector = await _fetch_sector(symbol)
+    sector = await _fetch_sector(symbol, db)
 
     result = execute_buy(
         db=db,
@@ -3986,7 +3873,7 @@ async def transaction_initial_position(
 
     symbol = _normalize_transaction_symbol(body.symbol)
     tx_date = _parse_tx_date(body.transaction_date)
-    sector = await _fetch_sector(symbol)
+    sector = await _fetch_sector(symbol, db)
 
     try:
         return execute_initial_position(

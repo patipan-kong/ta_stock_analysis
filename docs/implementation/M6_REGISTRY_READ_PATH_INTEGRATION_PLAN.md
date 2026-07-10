@@ -291,8 +291,8 @@ Ordered for minimum blast radius first, per Migration Principle 6 (expand → ve
 12. `shadow_tracker.py` new-shadow creation gains additive `asset_id` in the holdings shape; existing frozen `inception_holdings_json` rows untouched.
 13. `factor_engine.py` and `calibration.py` switch their internal joins to `asset_id` where resolvable.
 
-**Phase 7 — Classification consolidation (independent, can run any time after Phase 1).**
-14. `main.py`'s `THAI_SECTOR_MAP`/`_get_sector`/`/admin/*-sectors` become Registry-classification-backed, with the existing static maps retained as seed data and as the fallback for unresolved symbols.
+**Phase 7 — Classification consolidation (independent, can run any time after Phase 1). Shipped 2026-07-10.**
+14. `main.py`'s `THAI_SECTOR_MAP`/`_get_sector`/`/admin/*-sectors` become Registry-classification-backed, with the existing static maps retained as seed data and as the fallback for unresolved symbols. **Done.** Full audit, migration summary, and technical debt: [CLASSIFICATION_CONSOLIDATION.md](CLASSIFICATION_CONSOLIDATION.md); see the Phase 7 Migration Report below.
 
 **Explicitly not scheduled in this report:** ledger table schema changes, replay engine changes, `ledger_validator.py` changes, `execution_analyzer.py`'s frozen-vs-live join fix. All four require M5.
 
@@ -371,6 +371,22 @@ The Phase 5 brief asked for a fresh audit of everything remaining in `backend/se
 
 ---
 
+### Phase 7 Migration Report (2026-07-10) — Classification Consolidation
+
+Full audit, migration summary, retained fallbacks, technical debt, and future work: [CLASSIFICATION_CONSOLIDATION.md](CLASSIFICATION_CONSOLIDATION.md). Summary for this document's own record:
+
+**Migrated:** `main.py`'s `_get_sector()`/`_fetch_sector()` now check `registry_lookup.resolve_asset(db, symbol).classification["SECTOR"]` before the (unchanged, extracted-not-rewritten) static-map/FA-cache/`"Other"` chain. New `services/registry_classification_seed.py` + `manage.py seed_registry_classification` seed that fact from the static maps for every already-resolvable symbol, without ever overwriting an existing fact.
+
+**Audited and explicitly excluded, with reasoning:** `services/symbol_market_convention.py` (Registry-internal bootstrap logic, not a duplicate); `services/broker_fees.py::resolve_fee_profile` (fee-domain decision, not classification); `main.py::_normalize_transaction_symbol`'s `THAI_SECTOR_MAP`-keyset check (symbol-spelling normalization, not classification); `main.py::/admin/fix-dr-sectors` (a DB-column repair tool consuming the static maps, not a classification source).
+
+**New findings, deliberately not fixed this phase:** three divergent `normalize_sector()` implementations (`agents/optimizer.py`, `services/idea_review.py`, `services/optimizer/policy_engine.py`) — already disagree on some inputs, so unifying them would change behavior, blocked on a canonical-ruleset decision; `idea_review.py`/`basket_simulation.py`'s sector fallback chains not yet Registry-classification-aware (deferred, scope-fence reasoning, not blocked). Both recorded in the Technical Debt Register below.
+
+**Tests:** `backend/tests/test_sector_taxonomy.py` (12), `backend/tests/test_registry_classification_seed.py` (7), `backend/tests/test_main_get_sector_registry.py` (13) — 32 new; `backend/tests/test_watchlist_registry.py` updated for a monkeypatch signature-only change. Full backend suite run before/after via `git stash`: byte-identical 58-failure set in both runs, 1073 → 1105 passed (+32), zero regressions.
+
+**Outcome: All 7 phases named in §5 are now shipped.** M6 Compatibility-Layer Integration is complete. Remaining Asset Registry epic work is M5 Track B (Native Ledger Persistence) and M6 Native Integration.
+
+---
+
 ## 6. Technical Debt Register
 
 Legacy lookups/logic that become removable — fully or partly — once the compatibility layer (and eventually M5) lands:
@@ -382,7 +398,9 @@ Legacy lookups/logic that become removable — fully or partly — once the comp
 | `diagnose_duplicate_tickers` | `services/optimizer/stabilization.py:429,574` | Fully removable once Phase 4 lands — the bug class it detects becomes structurally impossible with `asset_id` keys |
 | `ledger_validator.py` CHECK 2 (`_check_symbol_aliases`) | `services/ledger_validator.py:249-301` | **Only after M5** — this check operates on the ledger itself, not the compatibility layer's scope. Left in place, unaffected by this report. |
 | `services/portfolio_snapshots.py`'s casing-normalization workaround (L358-377, explicitly commented as a workaround) | `services/portfolio_snapshots.py:358-377` | Only after M5 |
-| `THAI_SECTOR_MAP` / `_DR_SECTOR_MAP` as the *primary* classification source | `main.py:366+` | Phase 7 — demoted to seed/fallback data, not deleted (still correct data, just no longer the authority) |
+| `THAI_SECTOR_MAP` / `_DR_SECTOR_MAP` as the *primary* classification source | `main.py:366+` | **Removed 2026-07-10 (Phase 7).** Extracted unchanged into `services/sector_taxonomy.py`, demoted to seed data + fallback for symbols the Registry hasn't resolved/classified — `_get_sector()` now checks `AssetView.classification["SECTOR"]` first. See [CLASSIFICATION_CONSOLIDATION.md](CLASSIFICATION_CONSOLIDATION.md). |
+| Three divergent `normalize_sector()`/`_norm_sector()` implementations (`agents/optimizer.py`, `services/idea_review.py`, `services/optimizer/policy_engine.py`) | `agents/optimizer.py:330-347`, `services/idea_review.py:69-97`, `services/optimizer/policy_engine.py:321-330` | New finding, Phase 7 audit (2026-07-10). Not unified — the three already disagree on some inputs, and reconciling them would change behavior, which this adoption milestone's own mandate forbids. Blocked on a product/engineering decision on the canonical ruleset. See [CLASSIFICATION_CONSOLIDATION.md](CLASSIFICATION_CONSOLIDATION.md) §4. |
+| `idea_review.py`/`basket_simulation.py`'s sector fallback chains not yet Registry-classification-aware (already Registry-aware for identity since Phase 2) | `services/idea_review.py::_get_sector`, `services/basket_simulation.py::_resolve_symbol_sectors` | New finding, Phase 7 audit. Deferred — scope-fence reasoning (Optimizer-adjacent decision-support code), not a blocking dependency; safe to pick up any time. See [CLASSIFICATION_CONSOLIDATION.md](CLASSIFICATION_CONSOLIDATION.md) §4. |
 | `idea_review.py`'s hand-rolled `_symbol_matches`/`bk_variants` block (~50 lines) | `services/idea_review.py:279-431` | **Removed 2026-07-09 (Phase 2).** Four separate instances of the pattern in this file alone were retired. |
 | `execution_optimizer.classify_reason`'s substring search | `services/optimizer/execution_optimizer.py:106-125` | Phase 5 (§5's own numbering — the policy/execution structural fix). Re-confirmed by the 2026-07-10 Execution & Evaluation completion audit: still blocked on `policy_engine.py` gaining a structured `subject_asset_id` field, a business-logic redesign, not a read-path fix. |
 | `execution_penalty.classify_execution`'s regex/hardcoded-ETF-list asset-type inference (see also the identical row above at `services/optimizer/execution_penalty.py:36-205`) | `services/optimizer/execution_penalty.py:94-206` | Found in the 2026-07-10 Execution & Evaluation completion audit: `AssetView.asset_type` could answer this today, but the only call site (`main.py:2177`, `POST /analyze/optimizer`'s synchronous execution-context step) has no `db` session threaded through `compute_portfolio_execution_context`/`classify_execution`. Removable only once that call chain is given a `db` session — a business-logic change to the optimizer's execution-context step, out of this phase's read-path-only scope. |

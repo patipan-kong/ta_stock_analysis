@@ -250,6 +250,7 @@ The pattern across all eight: expansion adds **evidence shapes, statuses, and re
 
 ## Related Documents
 
+- [ASSET_REGISTRY_RETROSPECTIVE.md](ASSET_REGISTRY_RETROSPECTIVE.md) — an engineering retrospective on why this architecture was built this way, what assumptions changed during implementation, and what remains
 - [PLATFORM_EVOLUTION.md](PLATFORM_EVOLUTION.md) — the platform invariants (immutability, boundary normalization, loud degradation) the Registry enforces for identity
 - [UNIVERSAL_ASSET_ARCHITECTURE.md](UNIVERSAL_ASSET_ARCHITECTURE.md) — the Asset model, capability vocabulary, and identity stack the Registry keeps
 - [MARKET_DATA_PLATFORM.md](MARKET_DATA_PLATFORM.md) — the discovery doors and resolution pipeline whose verdicts the Registry alone enters into record
