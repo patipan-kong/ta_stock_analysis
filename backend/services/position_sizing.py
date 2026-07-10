@@ -252,6 +252,7 @@ def suggest_position_sizes(
     )
     from services.optimizer.constraint_resolver import effective_sector_cap, resolve_constraints
     from services.optimizer.strategy_profiles import valid_persona
+    from services.registry_symbol_matching import match_known_symbols
 
     symbols = [s.strip().upper() for s in symbols if s.strip()]
     if not symbols:
@@ -324,9 +325,11 @@ def suggest_position_sizes(
     watchlist_items = (
         db.query(Watchlist).filter(Watchlist.workspace_id == workspace_id).all()
     )
-    symbol_sectors = _resolve_symbol_sectors(symbols, portfolio_items, watchlist_items)
+    symbol_sectors = _resolve_symbol_sectors(db, symbols, portfolio_items, watchlist_items)
 
-    # AnalysisCache for signal + scores
+    # AnalysisCache for signal + scores. bk_variants keeps the SQL filter wide
+    # enough to catch a row stored under the alternate spelling; the actual
+    # symbol -> row matching decision is Registry-backed (see below).
     bk_variants = {f"{s}.BK" for s in symbols if "." not in s}
     cache_rows = (
         db.query(AnalysisCache)
@@ -336,20 +339,21 @@ def suggest_position_sizes(
         )
         .all()
     )
-    cache_map: dict[str, AnalysisCache] = {}
-    for r in cache_rows:
-        cache_map[r.symbol] = r
-        if r.symbol.endswith(".BK"):
-            cache_map.setdefault(r.symbol[:-3], r)
+    cache_row_by_symbol: dict[str, AnalysisCache] = {r.symbol: r for r in cache_rows}
+    cache_matched = match_known_symbols(db, symbols, cache_row_by_symbol.keys())
+    cache_map: dict[str, AnalysisCache] = {
+        sym: cache_row_by_symbol[matched] for sym, matched in cache_matched.items()
+    }
 
     persona = valid_persona(portfolio.strategy_persona or "BALANCED")
 
-    # Normalize current holdings lookup to handle .BK mismatch
-    holdings_mv: dict[str, float] = {}
-    for item in portfolio_items:
-        holdings_mv[item.symbol] = item_mvs.get(item.symbol, 0.0)
-        if item.symbol.endswith(".BK"):
-            holdings_mv.setdefault(item.symbol[:-3], holdings_mv[item.symbol])
+    # Normalize current holdings lookup — Registry-backed with legacy .BK
+    # fallback (see services/registry_symbol_matching.py).
+    item_mv_by_symbol = {item.symbol: item_mvs.get(item.symbol, 0.0) for item in portfolio_items}
+    holdings_matched = match_known_symbols(db, symbols, item_mv_by_symbol.keys())
+    holdings_mv: dict[str, float] = dict(item_mv_by_symbol)
+    for sym, matched in holdings_matched.items():
+        holdings_mv.setdefault(sym, item_mv_by_symbol[matched])
 
     symbol_data: dict[str, dict] = {}
     for sym in symbols:

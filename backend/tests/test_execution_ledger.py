@@ -17,6 +17,18 @@ get_execution_detail
      partial_warning is None (unavailable is not the same as partial)
   7. Decision with a linked transaction covering only some of the plan ->
      partial_warning is a non-empty string
+
+Registry-aware symbol matching (M6 Phase 4 — plan-vs-live-Transaction join)
+  8. A linked Transaction recorded under a .BK-variant spelling of the plan
+     symbol (no Registry data minted at all) now links via the legacy
+     bare/.BK fallback inside match_known_symbols() instead of reading as
+     unmatched.
+  9. A genuine Registry conflict (two distinct minted assets, one per
+     spelling) must never be silently unified — the transaction stays
+     unmatched, exactly as before this change.
+  10. Two symbols with no relationship at all (not a .BK variant, not a
+      Registry match) remain unmatched — regression safety for the
+      unresolved-symbol population.
 """
 from __future__ import annotations
 
@@ -29,10 +41,14 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import models.asset  # noqa: F401 — registers Asset* tables on Base.metadata
+import models.registry_finding  # noqa: F401 — registers RegistryFinding table
+
 from services.evaluation.execution_ledger import (  # noqa: E402
     get_execution_detail,
     list_execution_ledger,
 )
+from services import registry_lookup as lookup  # noqa: E402
 
 
 @pytest.fixture()
@@ -47,6 +63,13 @@ def db():
     session = Session()
     yield session
     session.close()
+
+
+@pytest.fixture(autouse=True)
+def _reset_registry_cache():
+    lookup.invalidate_cache()
+    yield
+    lookup.invalidate_cache()
 
 
 @pytest.fixture()
@@ -65,7 +88,24 @@ def ws_portfolio(db):
     return ws, portfolio
 
 
-def _seed_snapshot_and_decision(db, ws, portfolio, decision_type, allocations, with_transaction=False):
+def _mint_asset(db, canonical_symbol: str, provider_symbol: str | None = None):
+    from services import registry_service as svc
+    from services.asset_domain import AssetClaim, AssetType, IdentifierRecord, IdentifierType
+
+    claim = AssetClaim(
+        canonical_symbol=canonical_symbol, asset_type=AssetType.EQUITY,
+        market="Thailand", exchange="SET", currency="THB",
+    )
+    identifier = IdentifierRecord(
+        identifier_type=IdentifierType.PROVIDER_SYMBOL,
+        value=provider_symbol or canonical_symbol, source="test",
+    )
+    return svc.mint_asset(db, claim, identifiers=[identifier])
+
+
+def _seed_snapshot_and_decision(
+    db, ws, portfolio, decision_type, allocations, with_transaction=False, tx_symbol=None,
+):
     from models.database import OptimizerHistory, RecommendationSnapshot, Transaction, UserExecutionDecision
 
     oh = OptimizerHistory(
@@ -99,7 +139,8 @@ def _seed_snapshot_and_decision(db, ws, portfolio, decision_type, allocations, w
 
     if with_transaction:
         db.add(Transaction(
-            workspace_id=ws.id, portfolio_id=portfolio.id, symbol="CENTEL",
+            workspace_id=ws.id, portfolio_id=portfolio.id,
+            symbol=tx_symbol or allocations[0]["symbol"],
             transaction_type="BUY", shares=300, price_per_share=100.0, total_amount=30_000,
             transaction_date=datetime.utcnow(), execution_decision_id=dec.id,
         ))
@@ -183,3 +224,73 @@ def test_execution_detail_partial_execution_has_warning(db, ws_portfolio):
     assert detail["analysis"]["status"] == "partial"
     assert detail["partial_warning"]
     assert "Partial execution" in detail["partial_warning"]
+
+
+# ── Registry-aware symbol matching (M6 Phase 4) ─────────────────────────────
+
+_ALLOCS_BH_PLAN = [
+    {"symbol": "BH", "action": "BUY", "allocation_change_percent": 3.0,
+     "current_weight": 0.0, "estimated_amount": 30_000, "sector": "Healthcare"},
+]
+
+
+def test_bk_variant_spelling_links_via_legacy_fallback(db, ws_portfolio):
+    """No Registry data minted at all: plan says "BH", the fill is recorded
+    as "BH.BK". match_known_symbols()'s legacy bare/.BK heuristic must still
+    link them — this is the exact correctness gap M6_REGISTRY_READ_PATH_
+    INTEGRATION_PLAN.md §2.3 item 1 named, now fixed at the
+    _linked_transactions boundary rather than inside the pure
+    compute_execution_analysis."""
+    ws, portfolio = ws_portfolio
+    _snap, dec = _seed_snapshot_and_decision(
+        db, ws, portfolio, "APPROVED", _ALLOCS_BH_PLAN, with_transaction=True, tx_symbol="BH.BK",
+    )
+
+    detail = get_execution_detail(db, portfolio.id, dec.id)
+    # status is "partial" here regardless of the matching fix (no funding-
+    # source trade in this plan => funding_fidelity_pct is N/A => is_partial),
+    # exactly like test_fully_matched_exact_fill_scores_high in
+    # test_execution_analyzer.py. What's under test is that the transaction
+    # matched at all.
+    assert detail["analysis"]["status"] in ("ok", "partial")
+    assert detail["analysis"]["symbols"]["BH"]["executed_amount"] == 30_000.0
+    assert detail["analysis"]["symbols"]["BH"]["note"] is None
+
+
+def test_registry_conflict_never_silently_unified(db, ws_portfolio):
+    """Two distinct minted assets, one per spelling ("BH" and "BH.BK") are a
+    genuine Registry conflict, per ASSET_REGISTRY.md §5 (a DR/underlying-
+    style relationship is never the same identity). match_known_symbols()
+    must not paper over that verdict with the .BK heuristic — the linked
+    transaction must remain unmatched, exactly as it would have before this
+    change."""
+    ws, portfolio = ws_portfolio
+    _mint_asset(db, "BH", provider_symbol="BH")
+    _mint_asset(db, "BH.BK", provider_symbol="BH.BK")
+
+    _snap, dec = _seed_snapshot_and_decision(
+        db, ws, portfolio, "APPROVED", _ALLOCS_BH_PLAN, with_transaction=True, tx_symbol="BH.BK",
+    )
+
+    detail = get_execution_detail(db, portfolio.id, dec.id)
+    # linked_transactions is non-empty (a Transaction row exists) but it must
+    # not be matched to the plan's "BH" — the Registry's conflict verdict
+    # wins over the .BK heuristic, so this reads as an unmatched trade
+    # ("partial", not a false "ok").
+    assert detail["analysis"]["status"] == "partial"
+    assert detail["analysis"]["symbols"]["BH"]["note"] == "no_linked_transaction"
+
+
+def test_unrelated_symbols_stay_unmatched(db, ws_portfolio):
+    """A transaction recorded under a wholly unrelated symbol (not a .BK
+    variant, no Registry data at all) must not be linked — regression
+    safety for the unresolved-symbol population this change must leave
+    untouched."""
+    ws, portfolio = ws_portfolio
+    _snap, dec = _seed_snapshot_and_decision(
+        db, ws, portfolio, "APPROVED", _ALLOCS_BUY_ONLY, with_transaction=True, tx_symbol="ADVANC",
+    )
+
+    detail = get_execution_detail(db, portfolio.id, dec.id)
+    assert detail["analysis"]["status"] == "partial"
+    assert detail["analysis"]["symbols"]["CENTEL"]["note"] == "no_linked_transaction"

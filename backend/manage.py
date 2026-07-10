@@ -37,6 +37,20 @@ Audit the transaction ledger (read-only):
     python manage.py validate_ledger --portfolio 4 --price-check
     python manage.py validate_ledger --portfolio 4 --price-check --price-threshold 50
 
+Simulate an Asset Registry migration (read-only — never writes):
+    python manage.py plan_migration --portfolio 4
+    python manage.py plan_migration --all
+
+Execute an approved Asset Registry migration plan (defaults to dry run):
+    python manage.py execute_migration --portfolio 4
+    python manage.py execute_migration --portfolio 4 --commit
+    python manage.py execute_migration --portfolio 4 --commit --run-id <uuid>   # resume
+
+Bootstrap the empty Asset Registry from UNKNOWN ledger claims (defaults to dry run):
+    python manage.py bootstrap_registry --portfolio 4
+    python manage.py bootstrap_registry --portfolio 4 --commit
+    python manage.py bootstrap_registry --portfolio 4 --commit --run-id <uuid>   # resume
+
 Generate a deterministic repair plan (read-only — writes a JSON file only):
     python manage.py generate_repair_plan --portfolio 4
     python manage.py generate_repair_plan --portfolio 4 --output repair_plan.json
@@ -60,6 +74,7 @@ import sys
 import os
 import time
 import textwrap
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -132,6 +147,11 @@ from services.ledger_repair_plan import (
     generate_repair_plan,
     write_repair_plan,
 )
+from services.migration_planner import plan_migration
+from services.migration_report import MigrationSummary, build_migration_report
+from services.migration_executor import ExecutionOutcome, ExecutionReport, execute_migration
+from services.bootstrap_planner import BootstrapPlan, build_bootstrap_plan
+from services.registry_bootstrap import BootstrapOutcome, BootstrapReport, bootstrap_registry
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────
@@ -2737,6 +2757,390 @@ async def _cmd_validate_ledger(args: argparse.Namespace) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Migration planner: plan_migration
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_claim_shape_entry(entry) -> None:
+    shape, result = entry.shape, entry.result
+    print(f"\n  {shape.raw_symbol} / {shape.canonical_symbol or '—'}   currency={shape.currency or '—'}")
+    print(f"    transactions : {list(entry.transaction_ids)}")
+    print(f"    portfolios   : {list(entry.portfolio_ids)}")
+    print(f"    verdict      : {result.verdict.value}")
+    for candidate in result.candidates:
+        print(f"    candidate asset_id={candidate.asset_id}  score={candidate.score:.1f}")
+        for contribution in candidate.contributions:
+            print(
+                f"        + {contribution.identifier_type.value}:{contribution.identifier_value} "
+                f"({'current' if contribution.is_current else 'historical'}) weight={contribution.applied_weight:.1f}"
+            )
+
+
+def _print_migration_summary(summary: MigrationSummary) -> None:
+    s = summary.statistics
+    tv, cv = s.transaction_verdicts, s.claim_shape_verdicts
+
+    print(f"\n{_hr()}")
+    print("Migration Summary")
+    print(_hr())
+    print(f"  Portfolios scanned            : {list(summary.portfolios_scanned)}")
+    print(f"  Total transactions            : {s.total_transactions}")
+    print(f"  Cash-only (no identity claim) : {s.cash_only_transactions}")
+    print(f"  Identity-bearing              : {s.identity_bearing_transactions}")
+    print()
+    print("  Transaction-level verdicts")
+    print(f"    Resolved  : {tv.resolved:<6}  Candidate : {tv.candidate:<6}")
+    print(f"    Ambiguous : {tv.ambiguous:<6}  Conflict  : {tv.conflict:<6}  Unknown : {tv.unknown}")
+    print()
+    print(f"  Resolution %                  : {s.resolution_pct:.1f}%")
+    print(f"  Decisive %                    : {s.decisive_pct:.1f}%")
+    print()
+    print("  Claim-shape-level verdicts (distinct identity questions)")
+    print(f"    Resolved  : {cv.resolved:<6}  Candidate : {cv.candidate:<6}")
+    print(f"    Ambiguous : {cv.ambiguous:<6}  Conflict  : {cv.conflict:<6}  Unknown : {cv.unknown}")
+    print()
+    print(f"  Assets created (expected)     : {s.assets_created_expected}  (estimate — see Caveats)")
+    print(f"  Assets reused                 : {s.assets_reused}")
+    print(f"  Manual adjudications required : {s.manual_adjudications_required}")
+    print(f"  Potential duplicates          : {s.potential_duplicates}")
+    print(f"  Potential merge candidates    : {s.potential_merge_candidates}")
+
+    if summary.ambiguity_report.entries:
+        print(f"\n{_hr()}")
+        print(f"Ambiguity Report  ({len(summary.ambiguity_report.entries)} claim shape(s))")
+        print(_hr())
+        for entry in summary.ambiguity_report.entries:
+            _print_claim_shape_entry(entry)
+
+    if summary.conflict_report.entries:
+        print(f"\n{_hr()}")
+        print(f"Conflict Report  ({len(summary.conflict_report.entries)} claim shape(s))")
+        print(_hr())
+        for entry in summary.conflict_report.entries:
+            _print_claim_shape_entry(entry)
+        if summary.conflict_report.potential_merge_candidates:
+            print("\n  Potential merge candidates:")
+            for pmc in summary.conflict_report.potential_merge_candidates:
+                print(
+                    f"    asset_id={pmc.asset_ids[0]} <-> asset_id={pmc.asset_ids[1]}  "
+                    f"({len(pmc.transaction_ids)} transaction(s))"
+                )
+
+    if summary.potential_duplicate_clusters:
+        print(f"\n{_hr()}")
+        print(f"Potential Duplicates  ({len(summary.potential_duplicate_clusters)} cluster(s))")
+        print(_hr())
+        for cluster in summary.potential_duplicate_clusters:
+            print(
+                f"  canonical_symbol={cluster.canonical_symbol}  raw_symbols={list(cluster.raw_symbols)}  "
+                f"({len(cluster.transaction_ids)} transaction(s))"
+            )
+
+    print(f"\n{_hr()}")
+    print(f"Coverage Report  ({len(summary.coverage_report.rows)} claim shape(s))")
+    print(_hr())
+    print(f"  {'Symbol':<16}{'Canonical':<16}{'Currency':<10}{'Verdict':<12}{'Txns':<6}Portfolios")
+    for row in sorted(summary.coverage_report.rows, key=lambda r: r.shape.raw_symbol):
+        print(
+            f"  {row.shape.raw_symbol:<16}{(row.shape.canonical_symbol or '—'):<16}"
+            f"{(row.shape.currency or '—'):<10}{row.verdict.value:<12}{row.transaction_count:<6}"
+            f"{list(row.portfolio_ids)}"
+        )
+    print("\n  By currency:")
+    for currency, breakdown in summary.coverage_report.by_currency:
+        print(
+            f"    {currency:<10} resolved={breakdown.resolved} candidate={breakdown.candidate} "
+            f"ambiguous={breakdown.ambiguous} conflict={breakdown.conflict} unknown={breakdown.unknown}"
+        )
+    print("\n  By provider:")
+    for provider, breakdown in summary.coverage_report.by_provider:
+        print(
+            f"    {provider:<20} resolved={breakdown.resolved} candidate={breakdown.candidate} "
+            f"ambiguous={breakdown.ambiguous} conflict={breakdown.conflict} unknown={breakdown.unknown}"
+        )
+
+    print(f"\n{_hr()}")
+    print("Caveats")
+    print(_hr())
+    for caveat in s.caveats:
+        print(f"  - {caveat}")
+    print(_hr())
+
+
+def _cmd_plan_migration(args: argparse.Namespace) -> int:
+    """Read-only Asset Registry migration dry run. Never modifies the
+    database. identity_resolver.resolve() does write RegistryFinding rows
+    internally for AMBIGUOUS/CONFLICT verdicts (see services/migration_
+    planner.py's module docstring) — the "no writes" guarantee here is
+    structural: plan_migration() never commits its session and always
+    rolls it back before returning, regardless of outcome."""
+    db = SessionLocal()
+    t_start = time.monotonic()
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        portfolio_ids: list[int] | None
+        if getattr(args, "all", False):
+            portfolios = db.query(Portfolio).filter_by(workspace_id=ws_id).all()
+            if not portfolios:
+                print("ERROR: No portfolios found in workspace.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id for p in portfolios]
+        elif getattr(args, "portfolio", None):
+            p = db.query(Portfolio).filter_by(id=args.portfolio, workspace_id=ws_id).first()
+            if p is None:
+                print(f"ERROR: Portfolio {args.portfolio} not found.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id]
+        else:
+            print("ERROR: Specify --portfolio ID  or  --all", file=sys.stderr)
+            return 1
+
+        print(f"\n{_hr()}")
+        print("Migration Planner  —  Dry Run")
+        print("(read-only — no database mutation; session is rolled back, never committed)")
+        print(_hr())
+
+        plan = plan_migration(db, portfolio_ids=portfolio_ids)
+        summary = build_migration_report(plan)
+        _print_migration_summary(summary)
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+    elapsed = time.monotonic() - t_start
+    print(f"\n  Completed in {elapsed:.2f}s — DRY RUN, no rows written.")
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Migration executor: execute_migration
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_execution_report(report: ExecutionReport) -> None:
+    s = report.summary
+    print(f"\n{_hr()}")
+    print("Execution Report")
+    print(_hr())
+    print(f"  Run ID                 : {report.run_id}")
+    print(f"  Mode                   : {'DRY RUN' if report.dry_run else 'LIVE'}")
+    print(f"  Completed              : {s.completed}")
+    print(f"  Blocked                : {s.blocked}")
+    print(f"  Skipped (not resolved) : {s.skipped_not_resolved}")
+    print(f"  Skipped (already done) : {s.skipped_already_done}")
+    print(f"  Identifiers attached   : {s.total_identifiers_attached}")
+
+    blocked_steps = [st for st in report.steps if st.outcome == ExecutionOutcome.BLOCKED]
+    if blocked_steps:
+        print(f"\n{_hr()}")
+        print(f"Blocked  ({len(blocked_steps)} claim shape(s))")
+        print(_hr())
+        for st in blocked_steps:
+            print(f"\n  {st.shape.raw_symbol} / {st.shape.canonical_symbol or '—'}   currency={st.shape.currency or '—'}")
+            print(f"    resolved_asset_id             : {st.resolved_asset_id}")
+            print(f"    identifiers attached (partial): {st.identifiers_attached}")
+            print(f"    detail                        : {st.detail}")
+    print(_hr())
+
+
+def _cmd_execute_migration(args: argparse.Namespace) -> int:
+    """Executes an approved Asset Registry migration plan (Milestone M5.2).
+
+    Re-computes the MigrationPlan fresh on every invocation (the same
+    read-only plan_migration() used by `plan_migration`) so a resumed run
+    always sees current Registry/ledger state rather than a stale plan.
+    Only RESOLVED claim shapes are ever acted on; AMBIGUOUS/CONFLICT/UNKNOWN
+    shapes are always skipped and reported, never auto-resolved.
+
+    Defaults to a dry run (--commit is required to persist changes).
+    """
+    db = SessionLocal()
+    t_start = time.monotonic()
+    report: ExecutionReport | None = None
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        portfolio_ids: list[int] | None
+        if getattr(args, "all", False):
+            portfolios = db.query(Portfolio).filter_by(workspace_id=ws_id).all()
+            if not portfolios:
+                print("ERROR: No portfolios found in workspace.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id for p in portfolios]
+        elif getattr(args, "portfolio", None):
+            p = db.query(Portfolio).filter_by(id=args.portfolio, workspace_id=ws_id).first()
+            if p is None:
+                print(f"ERROR: Portfolio {args.portfolio} not found.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id]
+        else:
+            print("ERROR: Specify --portfolio ID  or  --all", file=sys.stderr)
+            return 1
+
+        run_id = args.run_id or str(uuid.uuid4())
+        dry_run = not getattr(args, "commit", False)
+        resuming = bool(args.run_id)
+
+        if not dry_run and not getattr(args, "yes", False):
+            action = "Resuming" if resuming else "Starting"
+            print(f"\n{action} a LIVE migration execution — run_id={run_id}")
+            print("This will attach identifier evidence to the Registry (asset_identifiers).")
+            confirm = input("Proceed? [y/N] ").strip().lower()
+            if confirm != "y":
+                print("Aborted.")
+                return 1
+
+        print(f"\n{_hr()}")
+        print(f"Migration Executor  —  run_id={run_id}  {'(RESUME)' if resuming else '(NEW RUN)'}  {'(DRY RUN)' if dry_run else '(LIVE)'}")
+        print(_hr())
+
+        plan = plan_migration(db, portfolio_ids=portfolio_ids)
+        report = execute_migration(db, plan, run_id=run_id, dry_run=dry_run)
+        _print_execution_report(report)
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+    elapsed = time.monotonic() - t_start
+    print(f"\n  Completed in {elapsed:.2f}s.")
+    return 1 if report.summary.blocked > 0 else 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Registry bootstrap: bootstrap_registry
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_bootstrap_report(report: BootstrapReport) -> None:
+    s = report.summary
+    print(f"\n{_hr()}")
+    print("Bootstrap Report")
+    print(_hr())
+    print(f"  Run ID                       : {report.run_id}")
+    print(f"  Mode                         : {'DRY RUN' if report.dry_run else 'LIVE'}")
+    print(f"  Minted                       : {s.minted}")
+    print(f"  Blocked                      : {s.blocked}")
+    print(f"  Skipped (already done)       : {s.skipped_already_done}")
+    print(f"  Identifiers attached         : {s.total_identifiers_attached}")
+    print(f"  Duplicate clusters (blocked) : {s.duplicate_blocked_clusters}")
+    print(f"  Quarantined (no convention)  : {s.quarantined}")
+
+    blocked_steps = [st for st in report.steps if st.outcome == BootstrapOutcome.BLOCKED]
+    if blocked_steps:
+        print(f"\n{_hr()}")
+        print(f"Blocked  ({len(blocked_steps)} claim shape(s))")
+        print(_hr())
+        for st in blocked_steps:
+            print(f"\n  {st.shape.raw_symbol} / {st.shape.canonical_symbol or '—'}   currency={st.shape.currency or '—'}")
+            print(f"    detail : {st.detail}")
+
+    if report.duplicate_blocked:
+        print(f"\n{_hr()}")
+        print(f"Duplicate Clusters — Manual Resolution Required  ({len(report.duplicate_blocked)} cluster(s))")
+        print(_hr())
+        for cluster in report.duplicate_blocked:
+            print(
+                f"  canonical_symbol={cluster.canonical_symbol}  raw_symbols={list(cluster.raw_symbols)}  "
+                f"({len(cluster.transaction_ids)} transaction(s))"
+            )
+        print("\n  Resolve by hand via registry_service.mint_asset()/attach_identifier() — never auto-resolved.")
+
+    if report.quarantined:
+        print(f"\n{_hr()}")
+        print(f"Quarantined — No Market/Exchange Convention  ({len(report.quarantined)} shape(s))")
+        print(_hr())
+        for q in report.quarantined:
+            print(f"  {q.shape.raw_symbol:<16} currency={q.shape.currency or '—':<6} reason={q.reason}")
+
+    print(_hr())
+
+
+def _cmd_bootstrap_registry(args: argparse.Namespace) -> int:
+    """Populates the empty Asset Registry from UNKNOWN ledger claims
+    (Milestone M5.3). Consumes a freshly-computed BootstrapPlan (services.
+    bootstrap_planner, unmodified) and mints exactly its `mintable`
+    candidates via registry_service.mint_asset(). Duplicate-cluster and
+    quarantined shapes are never auto-resolved — they are reported for
+    manual review.
+
+    Re-computes the MigrationPlan and BootstrapPlan fresh on every
+    invocation, so a resumed run always sees current Registry/ledger state.
+
+    Defaults to a dry run (--commit is required to persist changes).
+    """
+    db = SessionLocal()
+    t_start = time.monotonic()
+    report: BootstrapReport | None = None
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        portfolio_ids: list[int] | None
+        if getattr(args, "all", False):
+            portfolios = db.query(Portfolio).filter_by(workspace_id=ws_id).all()
+            if not portfolios:
+                print("ERROR: No portfolios found in workspace.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id for p in portfolios]
+        elif getattr(args, "portfolio", None):
+            p = db.query(Portfolio).filter_by(id=args.portfolio, workspace_id=ws_id).first()
+            if p is None:
+                print(f"ERROR: Portfolio {args.portfolio} not found.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id]
+        else:
+            print("ERROR: Specify --portfolio ID  or  --all", file=sys.stderr)
+            return 1
+
+        run_id = args.run_id or str(uuid.uuid4())
+        dry_run = not getattr(args, "commit", False)
+        resuming = bool(args.run_id)
+
+        if not dry_run and not getattr(args, "yes", False):
+            action = "Resuming" if resuming else "Starting"
+            print(f"\n{action} a LIVE registry bootstrap — run_id={run_id}")
+            print("This will mint new Assets and attach identifier evidence to the Registry.")
+            confirm = input("Proceed? [y/N] ").strip().lower()
+            if confirm != "y":
+                print("Aborted.")
+                return 1
+
+        print(f"\n{_hr()}")
+        print(f"Registry Bootstrap  —  run_id={run_id}  {'(RESUME)' if resuming else '(NEW RUN)'}  {'(DRY RUN)' if dry_run else '(LIVE)'}")
+        print(_hr())
+
+        plan = plan_migration(db, portfolio_ids=portfolio_ids)
+        bootstrap_plan = build_bootstrap_plan(plan)
+        report = bootstrap_registry(db, bootstrap_plan, run_id=run_id, dry_run=dry_run)
+        _print_bootstrap_report(report)
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+    elapsed = time.monotonic() - t_start
+    print(f"\n  Completed in {elapsed:.2f}s.")
+    return 1 if report.summary.blocked > 0 else 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Apply repairs: apply_repair
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -3608,6 +4012,155 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── plan_migration ────────────────────────────────────────────────────────
+    plan = sub.add_parser(
+        "plan_migration",
+        help="Read-only Asset Registry migration dry run (Milestone M5.1)",
+        description=textwrap.dedent("""\
+            Simulates the complete Asset Registry migration for the given
+            portfolios without writing a single row.
+
+            NEVER mutates the database. NEVER writes to the Registry. NEVER
+            touches the Ledger, Replay, or Snapshots. The session is always
+            rolled back, never committed — even though identity_resolver.
+            resolve() itself durably records RegistryFinding rows for
+            AMBIGUOUS/CONFLICT verdicts, that write never survives this
+            command (see services/migration_planner.py).
+
+            Classifies every transaction as RESOLVED / CANDIDATE / AMBIGUOUS /
+            CONFLICT / UNKNOWN (or cash-only, reported separately), and
+            reports Statistics, an Ambiguity Report, a Conflict Report, a
+            Coverage Report, and potential duplicate/merge candidates.
+
+            Answers: "if we migrate today, what exactly would happen?"
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    plan.add_argument(
+        "--portfolio", "-p",
+        type=int,
+        metavar="ID",
+        help="Portfolio ID to plan the migration for",
+    )
+    plan.add_argument(
+        "--all",
+        action="store_true",
+        help="Plan the migration across every portfolio in the workspace",
+    )
+
+    # ── execute_migration ────────────────────────────────────────────────────
+    execute = sub.add_parser(
+        "execute_migration",
+        help="Execute an approved Asset Registry migration plan (Milestone M5.2)",
+        description=textwrap.dedent("""\
+            Consumes a freshly-computed MigrationPlan (services.migration_planner,
+            unmodified) and durably attaches identifier evidence to the Registry
+            for every RESOLVED claim shape. Never resolves identities, never
+            merges assets, never invents mappings — AMBIGUOUS / CONFLICT / UNKNOWN
+            claim shapes are always skipped and reported, never auto-resolved.
+
+            Defaults to a dry run (--commit is required to persist changes).
+            Every claim shape is checkpointed (MigrationExecutionCheckpoint) as
+            it completes or blocks, keyed by --run-id — re-running with the same
+            --run-id resumes: already-COMPLETED shapes are skipped, BLOCKED
+            shapes are retried, and any newly-RESOLVED shapes (e.g. from
+            transactions added since the last run) are picked up. Omit --run-id
+            to start a new run; the generated run_id is printed so it can be
+            passed to a later --run-id to resume.
+
+            No replay changes. No analytics changes. No optimizer changes.
+            Transaction / PortfolioItem / PortfolioSnapshot are never touched —
+            only asset_identifiers and migration_execution_checkpoints gain rows.
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    execute.add_argument(
+        "--portfolio", "-p",
+        type=int,
+        metavar="ID",
+        help="Portfolio ID to execute the migration for",
+    )
+    execute.add_argument(
+        "--all",
+        action="store_true",
+        help="Execute the migration across every portfolio in the workspace",
+    )
+    execute.add_argument(
+        "--run-id",
+        metavar="UUID",
+        help="Resume a specific prior run; omit to start a new run",
+    )
+    execute.add_argument(
+        "--commit",
+        action="store_true",
+        help="Persist changes to the database (default is a dry run)",
+    )
+    execute.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip the confirmation prompt when --commit is used",
+    )
+
+    # ── bootstrap_registry ───────────────────────────────────────────────────
+    bootstrap = sub.add_parser(
+        "bootstrap_registry",
+        help="Populate the empty Asset Registry from UNKNOWN ledger claims (Milestone M5.3)",
+        description=textwrap.dedent("""\
+            Consumes a freshly-computed BootstrapPlan (services.bootstrap_planner,
+            unmodified over services.migration_planner's MigrationPlan) and mints
+            exactly its `mintable` UNKNOWN claim shapes into new canonical Assets
+            via registry_service.mint_asset(). This is a one-time bootstrap
+            process: it creates canonical Assets, it does not migrate ledger data.
+
+            Duplicate-cluster shapes (two UNKNOWN shapes sharing a canonical_symbol)
+            and quarantined shapes (no known market/exchange convention, or no
+            currency recorded) are NEVER auto-minted or auto-resolved — both are
+            reported for manual review via registry_service.mint_asset()/
+            attach_identifier() directly.
+
+            Defaults to a dry run (--commit is required to persist changes).
+            Every mint attempt is checkpointed (RegistryBootstrapCheckpoint) as it
+            completes or blocks, keyed by --run-id — re-running with the same
+            --run-id resumes: already-MINTED shapes are skipped, BLOCKED shapes
+            are retried. Omit --run-id to start a new run; the generated run_id is
+            printed so it can be passed to a later --run-id to resume.
+
+            No replay changes. No transaction/portfolio changes. No analytics
+            changes. Only assets, asset_identifiers, registry_findings, and
+            registry_bootstrap_checkpoints gain rows.
+
+            After bootstrapping, re-run `plan_migration` to confirm Resolved
+            increased and Unknown decreased for the minted symbols.
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bootstrap.add_argument(
+        "--portfolio", "-p",
+        type=int,
+        metavar="ID",
+        help="Portfolio ID to bootstrap the registry for",
+    )
+    bootstrap.add_argument(
+        "--all",
+        action="store_true",
+        help="Bootstrap the registry across every portfolio in the workspace",
+    )
+    bootstrap.add_argument(
+        "--run-id",
+        metavar="UUID",
+        help="Resume a specific prior run; omit to start a new run",
+    )
+    bootstrap.add_argument(
+        "--commit",
+        action="store_true",
+        help="Persist changes to the database (default is a dry run)",
+    )
+    bootstrap.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip the confirmation prompt when --commit is used",
+    )
+
     return parser
 
 
@@ -3639,6 +4192,15 @@ def main() -> None:
         sys.exit(exit_code)
     elif args.command == "validate_ledger":
         exit_code = asyncio.run(_cmd_validate_ledger(args))
+        sys.exit(exit_code)
+    elif args.command == "plan_migration":
+        exit_code = _cmd_plan_migration(args)
+        sys.exit(exit_code)
+    elif args.command == "execute_migration":
+        exit_code = _cmd_execute_migration(args)
+        sys.exit(exit_code)
+    elif args.command == "bootstrap_registry":
+        exit_code = _cmd_bootstrap_registry(args)
         sys.exit(exit_code)
     elif args.command == "apply_repair":
         exit_code = asyncio.run(_cmd_apply_repair(args))

@@ -93,6 +93,7 @@ def build_execution_plan(
         db:                 SQLAlchemy session.
     """
     from models.database import AnalysisCache, Portfolio, PortfolioItem
+    from services.registry_symbol_matching import match_known_symbols
 
     portfolio = (
         db.query(Portfolio)
@@ -120,6 +121,9 @@ def build_execution_plan(
     total_value = cash + sum(item_values.values())
 
     # ── Signal lookup for existing holdings ────────────────────────────────────
+    # bk_variants keeps the SQL filter wide enough to catch a row stored under
+    # the alternate spelling; the actual holding-symbol -> row matching
+    # decision is Registry-backed (services/registry_symbol_matching.py).
     holding_symbols = [item.symbol for item in portfolio_items]
     bk_variants = {f"{s}.BK" for s in holding_symbols if "." not in s}
     cache_rows = (
@@ -130,12 +134,12 @@ def build_execution_plan(
         )
         .all()
     )
-    signal_map: dict[str, str] = {}
-    for r in cache_rows:
-        sig = (r.signal or "HOLD").upper()
-        signal_map[r.symbol] = sig
-        if r.symbol.endswith(".BK"):
-            signal_map.setdefault(r.symbol[:-3], sig)
+    cache_row_by_symbol: dict[str, AnalysisCache] = {r.symbol: r for r in cache_rows}
+    signal_matched = match_known_symbols(db, holding_symbols, cache_row_by_symbol.keys())
+    signal_map: dict[str, str] = {
+        holding_sym: (cache_row_by_symbol[matched].signal or "HOLD").upper()
+        for holding_sym, matched in signal_matched.items()
+    }
 
     buy_set = {s.upper() for s in buy_symbols}
 

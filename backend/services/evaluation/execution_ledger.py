@@ -61,14 +61,51 @@ def _recommendation_prices(snap: Any) -> dict[str, float]:
     return prices
 
 
-def _linked_transactions(db: Session, decision_id: int) -> list[dict]:
+def _linked_transactions(db: Session, decision_id: int, known_symbols: list[str] | None = None) -> list[dict]:
+    """Transactions linked to one decision, symbol-normalized against the
+    decision's own plan symbols where possible.
+
+    `Transaction.symbol` is live and mutable; the plan's target_allocation
+    symbols are frozen at recommendation time (docs/architecture/
+    ASSET_REGISTRY.md §10; M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md §2.3
+    item 1 — "the strongest concrete argument... for why asset_id beats
+    symbol"). A post-hoc spelling difference (e.g. plan says "BH", the fill
+    is recorded as "BH.BK") must not silently read as "no linked
+    transaction". When `known_symbols` (the plan's own symbols) is given,
+    each transaction symbol that doesn't already match one exactly is
+    resolved against them via registry_symbol_matching.match_known_symbols()
+    — a genuine Registry match (or its legacy .BK fallback) rewrites the
+    transaction's symbol to the plan's spelling; anything the Registry
+    can't decide is left untouched, which is identical to today's behavior
+    for the population of symbols the Registry hasn't resolved yet.
+    """
     from models.database import Transaction
 
     rows = db.query(Transaction).filter_by(execution_decision_id=decision_id).all()
-    return [
+    txs = [
         {"symbol": t.symbol, "shares": t.shares, "price_per_share": t.price_per_share, "total_amount": t.total_amount}
         for t in rows
     ]
+
+    if not known_symbols:
+        return txs
+
+    known_set = set(known_symbols)
+    unmatched = [tx["symbol"] for tx in txs if tx["symbol"] and tx["symbol"] not in known_set]
+    if not unmatched:
+        return txs
+
+    from services.registry_symbol_matching import match_known_symbols
+
+    matches = match_known_symbols(db, symbols=unmatched, known=known_symbols)
+    if not matches:
+        return txs
+
+    for tx in txs:
+        mapped = matches.get(tx["symbol"])
+        if mapped is not None:
+            tx["symbol"] = mapped
+    return txs
 
 
 def _decision_analysis(db: Session, decision: Any, snap: Any) -> dict[str, Any]:
@@ -79,9 +116,11 @@ def _decision_analysis(db: Session, decision: Any, snap: Any) -> dict[str, Any]:
     if inputs is None:
         return {"status": "unavailable", "reason": "no_target_allocations", "score": None}
 
+    plan_symbols = [a.get("symbol") for a in (inputs["target_allocations"] or []) if a.get("symbol")]
+
     return compute_execution_analysis(
         inputs["target_allocations"], inputs["cash_available"], inputs["violations"],
-        _recommendation_prices(snap), _linked_transactions(db, decision.id),
+        _recommendation_prices(snap), _linked_transactions(db, decision.id, known_symbols=plan_symbols),
     )
 
 

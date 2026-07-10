@@ -42,6 +42,7 @@ from services.optimizer.strategy_profiles import (
 )
 from services.analytics.factor_engine import compute_portfolio_factor_exposure
 from services.optimizer.constraint_resolver import resolve_constraints, effective_sector_cap
+from services.registry_symbol_matching import match_known_symbols
 
 log = logging.getLogger(__name__)
 
@@ -276,6 +277,7 @@ def _build_reason(
 # ─── Sector resolution ────────────────────────────────────────────────────────
 
 def _get_sector(
+    db: Session,
     symbol: str,
     portfolio_items: list[PortfolioItem],
     watchlist_items: list[Watchlist],
@@ -283,20 +285,25 @@ def _get_sector(
 ) -> str | None:
     """Tiered sector lookup: portfolio DB → watchlist DB → yfinance info.
 
-    Handles .BK suffix mismatch: 'BH' matches item stored as 'BH.BK'.
+    Same-instrument spelling differences (e.g. "BH" vs "BH.BK") are resolved
+    through the Registry compatibility layer first, falling back to the
+    legacy bare/.BK suffix heuristic for any symbol the Registry hasn't
+    resolved yet — see services/registry_symbol_matching.py (M6 plan §4.2).
     """
-    for item in portfolio_items:
-        match = item.symbol == symbol or (
-            item.symbol.endswith(".BK") and item.symbol[:-3] == symbol
-        )
-        if match and item.sector:
-            return item.sector
-    for item in watchlist_items:
-        match = item.symbol == symbol or (
-            item.symbol.endswith(".BK") and item.symbol[:-3] == symbol
-        )
-        if match and item.sector:
-            return item.sector
+    portfolio_sector_by_symbol = {
+        item.symbol: item.sector for item in portfolio_items if item.sector
+    }
+    match = match_known_symbols(db, [symbol], portfolio_sector_by_symbol.keys()).get(symbol)
+    if match:
+        return portfolio_sector_by_symbol[match]
+
+    watchlist_sector_by_symbol = {
+        item.symbol: item.sector for item in watchlist_items if item.sector
+    }
+    match = match_known_symbols(db, [symbol], watchlist_sector_by_symbol.keys()).get(symbol)
+    if match:
+        return watchlist_sector_by_symbol[match]
+
     raw = yf_info_cache.get(symbol, {}).get("sector")
     return _normalize_sector(raw) if raw else None
 
@@ -402,8 +409,10 @@ def review_ideas(
     }
 
     # ── AnalysisCache: fetch for both portfolio holdings AND idea symbols ───────
-    # Also include .BK variants of bare idea symbols: analysis may have been stored
-    # as "BH.BK" (via portfolio analyze) while the user submits "BH" as an idea.
+    # bk_variants keeps the SQL filter wide enough to catch analysis stored as
+    # "BH.BK" (via portfolio analyze) while the user submits "BH" as an idea;
+    # the actual symbol -> row matching decision is Registry-backed below
+    # (services/registry_symbol_matching.py, M6 plan §4.2).
     bk_variants = {f"{s}.BK" for s in symbols if "." not in s}
     all_query_symbols = list(
         {item.symbol for item in portfolio_items} | set(symbols) | bk_variants
@@ -416,19 +425,18 @@ def review_ideas(
         )
         .all()
     )
-    # Dual-index: allows cache_map.get("BH") to find a row stored as "BH.BK"
-    cache_map: dict[str, AnalysisCache] = {}
-    for r in cache_rows:
-        cache_map[r.symbol] = r
-        if r.symbol.endswith(".BK"):
-            cache_map.setdefault(r.symbol[:-3], r)
+    cache_row_by_symbol: dict[str, AnalysisCache] = {r.symbol: r for r in cache_rows}
+    cache_matched = match_known_symbols(db, symbols, cache_row_by_symbol.keys())
+    cache_map: dict[str, AnalysisCache] = {
+        sym: cache_row_by_symbol[matched] for sym, matched in cache_matched.items()
+    }
 
     # Normalize portfolio-item lookup so "BH" finds the item stored as "BH.BK"
-    holdings_by_sym: dict[str, PortfolioItem] = {}
-    for h in portfolio_items:
-        holdings_by_sym[h.symbol] = h
-        if h.symbol.endswith(".BK"):
-            holdings_by_sym.setdefault(h.symbol[:-3], h)
+    portfolio_item_by_symbol = {item.symbol: item for item in portfolio_items}
+    holdings_matched = match_known_symbols(db, symbols, portfolio_item_by_symbol.keys())
+    holdings_by_sym: dict[str, PortfolioItem] = {
+        sym: portfolio_item_by_symbol[matched] for sym, matched in holdings_matched.items()
+    }
 
     # ── Portfolio DNA + Persona context ───────────────────────────────────────
     # Use factor_engine as single source of truth (same engine as DNA page).
@@ -490,28 +498,23 @@ def review_ideas(
             pass
 
     # ── yfinance info for symbols not in portfolio / watchlist ─────────────────
-    # Expand known_symbols with bare forms so "BH" is not treated as unknown when "BH.BK" is held
-    known_symbols: set[str] = set()
-    for item in portfolio_items:
-        known_symbols.add(item.symbol)
-        if item.symbol.endswith(".BK"):
-            known_symbols.add(item.symbol[:-3])
-    for item in watchlist_items:
-        known_symbols.add(item.symbol)
-        if item.symbol.endswith(".BK"):
-            known_symbols.add(item.symbol[:-3])
+    # known_symbols: is this idea symbol the same instrument as some holding
+    # or watchlist entry, under any spelling? Registry-backed with legacy
+    # bare/.BK fallback (services/registry_symbol_matching.py, M6 plan §4.2).
+    all_holding_watchlist_symbols = (
+        [item.symbol for item in portfolio_items] + [item.symbol for item in watchlist_items]
+    )
+    known_symbols: set[str] = set(
+        match_known_symbols(db, symbols, all_holding_watchlist_symbols).keys()
+    )
     # Symbols whose sector is already set in the DB — yfinance not needed for sector
-    symbols_with_db_sector: set[str] = set()
-    for item in portfolio_items:
-        if item.sector:
-            symbols_with_db_sector.add(item.symbol)
-            if item.symbol.endswith(".BK"):
-                symbols_with_db_sector.add(item.symbol[:-3])
-    for item in watchlist_items:
-        if item.sector:
-            symbols_with_db_sector.add(item.symbol)
-            if item.symbol.endswith(".BK"):
-                symbols_with_db_sector.add(item.symbol[:-3])
+    sectored_symbols = (
+        [item.symbol for item in portfolio_items if item.sector]
+        + [item.symbol for item in watchlist_items if item.sector]
+    )
+    symbols_with_db_sector: set[str] = set(
+        match_known_symbols(db, symbols, sectored_symbols).keys()
+    )
 
     yf_info_cache: dict[str, dict] = {}
     for sym in symbols:
@@ -551,7 +554,7 @@ def review_ideas(
             )
 
         # Sector
-        sector = _get_sector(sym, portfolio_items, watchlist_items, yf_info_cache)
+        sector = _get_sector(db, sym, portfolio_items, watchlist_items, yf_info_cache)
 
         # Constraint limits
         if envelope is not None:
