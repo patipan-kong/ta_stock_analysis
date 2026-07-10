@@ -64,6 +64,11 @@ Apply a repair plan, then re-validate and rebuild:
 Backfill recommendation-quality grades for existing snapshots (AI Evaluation M1):
     python manage.py backfill_recommendation_grades --all
     python manage.py backfill_recommendation_grades --portfolio 4
+
+Seed Registry SECTOR classification from the static taxonomy (Classification
+Consolidation; defaults to dry run, never overwrites an existing fact):
+    python manage.py seed_registry_classification
+    python manage.py seed_registry_classification --commit
 """
 from __future__ import annotations
 
@@ -152,6 +157,7 @@ from services.migration_report import MigrationSummary, build_migration_report
 from services.migration_executor import ExecutionOutcome, ExecutionReport, execute_migration
 from services.bootstrap_planner import BootstrapPlan, build_bootstrap_plan
 from services.registry_bootstrap import BootstrapOutcome, BootstrapReport, bootstrap_registry
+from services.registry_classification_seed import SeedReport, seed_sector_classification
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────
@@ -1387,6 +1393,88 @@ def _cmd_backfill_recommendation_grades(args: argparse.Namespace) -> int:
     print(f"\n{_hr()}")
     print(f"Done in {elapsed:.2f}s")
     return 1 if errors else 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Classification Consolidation: seed_registry_classification
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_seed_report(report: SeedReport) -> None:
+    print(f"\n{_hr()}")
+    print(f"Registry SECTOR Classification Seed  —  {'DRY RUN' if report.dry_run else 'LIVE'}")
+    print(_hr())
+    print(f"  Symbols considered    : {len(report.outcomes)}")
+    print(f"  Seeded                : {report.seeded}")
+    print(f"  Already classified    : {report.already_classified}")
+    print(f"  Unresolved (Registry) : {report.unresolved}")
+    print(f"  No seed data          : {report.no_seed_data}")
+
+    seeded = [o for o in report.outcomes if o.outcome == "seeded"]
+    if seeded:
+        print(f"\n{_hr()}")
+        print(f"Seeded  ({len(seeded)})")
+        print(_hr())
+        for o in seeded:
+            print(f"  {o.symbol:<16} -> {o.sector}")
+
+    print(_hr())
+
+
+def _cmd_seed_registry_classification(args: argparse.Namespace) -> int:
+    """One-time (re-runnable) seed: copies services/sector_taxonomy.py's
+    static sector maps into the Registry as SECTOR AssetClassification
+    facts, for every Watchlist/PortfolioItem symbol the Registry can
+    already resolve to a minted Asset (docs/implementation/
+    CLASSIFICATION_CONSOLIDATION.md).
+
+    Never overwrites an existing classification fact — only fills gaps.
+    Safe to re-run after new assets are minted (e.g. by a future M5 Track B
+    backfill); already-seeded and already-classified symbols are no-ops.
+
+    Defaults to a dry run (--commit is required to persist changes).
+    """
+    from models.database import Watchlist
+
+    db = SessionLocal()
+    t_start = time.monotonic()
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+
+        wl_symbols = {s for (s,) in db.query(Watchlist.symbol).filter(Watchlist.workspace_id == ws.id).all()}
+        pi_symbols = {s for (s,) in db.query(PortfolioItem.symbol).filter(PortfolioItem.workspace_id == ws.id).all()}
+        symbols = sorted(wl_symbols | pi_symbols)
+
+        dry_run = not getattr(args, "commit", False)
+
+        if not dry_run and not getattr(args, "yes", False):
+            print(f"\nThis will write SECTOR classification facts to the Asset Registry for up to {len(symbols)} symbol(s).")
+            confirm = input("Proceed? [y/N] ").strip().lower()
+            if confirm != "y":
+                print("Aborted.")
+                return 1
+
+        print(f"\n{_hr()}")
+        print(f"Registry SECTOR Classification Seed  —  {len(symbols)} symbol(s) in scope  {'(DRY RUN)' if dry_run else '(LIVE)'}")
+        print(_hr())
+
+        report = seed_sector_classification(db, symbols, dry_run=dry_run)
+        _print_seed_report(report)
+
+        if not dry_run and report.seeded:
+            db.commit()
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+    elapsed = time.monotonic() - t_start
+    print(f"\n  Completed in {elapsed:.2f}s.")
+    return 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4161,6 +4249,35 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip the confirmation prompt when --commit is used",
     )
 
+    # ── seed_registry_classification ─────────────────────────────────────────
+    seed_classification = sub.add_parser(
+        "seed_registry_classification",
+        help="Seed Registry SECTOR classification from the static sector taxonomy (Classification Consolidation)",
+        description=textwrap.dedent("""\
+            Copies services/sector_taxonomy.py's static THAI_SECTOR_MAP /
+            _DR_SECTOR_MAP values into the Asset Registry as SECTOR
+            AssetClassification facts, for every Watchlist/PortfolioItem
+            symbol the Registry can already resolve to a minted Asset.
+
+            Never overwrites an existing classification fact — only fills
+            gaps. Safe to re-run at any time, including after new assets
+            are minted by a future M5 Track B backfill.
+
+            Defaults to a dry run (--commit is required to persist changes).
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    seed_classification.add_argument(
+        "--commit",
+        action="store_true",
+        help="Persist changes to the database (default is a dry run)",
+    )
+    seed_classification.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip the confirmation prompt when --commit is used",
+    )
+
     return parser
 
 
@@ -4213,6 +4330,9 @@ def main() -> None:
         sys.exit(exit_code)
     elif args.command == "regenerate_paper_portfolios":
         exit_code = asyncio.run(_cmd_regenerate_paper_portfolios(args))
+        sys.exit(exit_code)
+    elif args.command == "seed_registry_classification":
+        exit_code = _cmd_seed_registry_classification(args)
         sys.exit(exit_code)
     else:
         parser.print_help()

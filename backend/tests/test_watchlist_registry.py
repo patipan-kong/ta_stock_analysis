@@ -72,7 +72,7 @@ def _reset_cache():
 def _no_network(monkeypatch):
     monkeypatch.setattr(main, "fetch_price_info", lambda symbol: {"current_price": 100.0})
 
-    async def _fake_fetch_sector(symbol: str) -> str:
+    async def _fake_fetch_sector(symbol: str, db=None) -> str:
         return "Other"
 
     monkeypatch.setattr(main, "_fetch_sector", _fake_fetch_sector)

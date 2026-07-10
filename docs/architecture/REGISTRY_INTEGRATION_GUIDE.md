@@ -2,7 +2,7 @@
 
 Companion documents: [ASSET_REGISTRY.md](ASSET_REGISTRY.md) (frozen architecture), [ASSET_REGISTRY_IMPLEMENTATION_PLAN.md](../implementation/ASSET_REGISTRY_IMPLEMENTATION_PLAN.md) (M0–M7 milestone plan), [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](../implementation/M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md) (the audit and refactoring order this module implements Phase 1 of).
 
-**Status (2026-07-10): `services/registry_lookup.py` exists, is tested, and now has real callers.** `basket_simulation.py`, `execution_plan.py`, `position_sizing.py`, `allocation_engine.py`, `idea_review.py`, and `portfolio_construction.py` all resolve symbols through it now, via the shared `services/registry_symbol_matching.py` adapter described in §"Matching two spellings of one instrument" below. The Recommendation write path (`main.py`'s `POST /analyze/optimizer` → `RecommendationSnapshot.scores_map_json`) is also wired, via `services/registry_recommendation_context.py`, described in §"Recommendation write-path metadata" below. AI Evaluation's plan-vs-live-Transaction join is wired as of Phase 4 (2026-07-10) — see §"AI Evaluation read-path (Phase 4)" below. A fresh completion audit of the remaining Execution and Evaluation surface (Phase 5, also 2026-07-10) found nothing further that qualifies for migration — see §"Execution & Evaluation Completion Review (Phase 5)" below. `GET /watchlist` and `POST /watchlist` gained additive Registry metadata the same day — see §"Watchlist read path (Phase 1 step 2)" below and [WATCHLIST_REGISTRY_PILOT.md](../implementation/WATCHLIST_REGISTRY_PILOT.md).
+**Status (2026-07-10): `services/registry_lookup.py` exists, is tested, and now has real callers.** `basket_simulation.py`, `execution_plan.py`, `position_sizing.py`, `allocation_engine.py`, `idea_review.py`, and `portfolio_construction.py` all resolve symbols through it now, via the shared `services/registry_symbol_matching.py` adapter described in §"Matching two spellings of one instrument" below. The Recommendation write path (`main.py`'s `POST /analyze/optimizer` → `RecommendationSnapshot.scores_map_json`) is also wired, via `services/registry_recommendation_context.py`, described in §"Recommendation write-path metadata" below. AI Evaluation's plan-vs-live-Transaction join is wired as of Phase 4 (2026-07-10) — see §"AI Evaluation read-path (Phase 4)" below. A fresh completion audit of the remaining Execution and Evaluation surface (Phase 5, also 2026-07-10) found nothing further that qualifies for migration — see §"Execution & Evaluation Completion Review (Phase 5)" below. `GET /watchlist` and `POST /watchlist` gained additive Registry metadata the same day — see §"Watchlist read path (Phase 1 step 2)" below and [WATCHLIST_REGISTRY_PILOT.md](../implementation/WATCHLIST_REGISTRY_PILOT.md). `main.py`'s sector-classification system (`_get_sector`/`_fetch_sector`) is now Registry-backed as of Phase 7 (2026-07-10) — see §"Phase 7: Classification Consolidation" below and [CLASSIFICATION_CONSOLIDATION.md](../implementation/CLASSIFICATION_CONSOLIDATION.md). **All 7 phases named in [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](../implementation/M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md) §5 are now shipped.**
 
 ---
 
@@ -195,6 +195,64 @@ Every entry in both endpoints' responses gains one new key:
 
 No existing field, in either endpoint's response, was renamed, removed, or reinterpreted. `DELETE /watchlist/{symbol}` was not touched.
 
+---
+
+## Phase 7: Classification Consolidation
+
+`main.py`'s sector-classification system — `_get_sector(symbol, fa_cache, db)`
+and its async wrapper `_fetch_sector(symbol, db)` — now checks the Registry
+**first**: if `registry_lookup.resolve_asset(db, symbol)` returns an
+`AssetView` with a current `classification["SECTOR"]` fact, that value wins.
+Only when the Registry hasn't resolved the symbol, or has resolved it but
+has no SECTOR fact yet, does resolution fall through to the pre-existing
+static-map/FA-cache/`"Other"` chain — now extracted, unchanged, into
+`services/sector_taxonomy.py` (`THAI_SECTOR_MAP`, `_DR_SECTOR_MAP`,
+`normalize_sector()`, `static_sector_lookup()`).
+
+`db` is optional on both functions (defaults to `None`, skipping the
+Registry check entirely) — every real call site in `main.py` now passes a
+session, but a caller with no session in scope reproduces exactly the
+pre-Registry behavior, which is also what makes this a safe, non-breaking
+change: the Registry currently has zero SECTOR facts recorded, so
+`_get_sector()`'s output is byte-identical to before until the new seed
+script (below) is run.
+
+```python
+from services import registry_lookup
+
+# inside _get_sector(symbol, fa_cache, db):
+if db is not None:
+    resolved = registry_lookup.resolve_asset(db, symbol)
+    if isinstance(resolved, registry_lookup.AssetView):
+        registry_sector = resolved.classification.get("SECTOR")
+        if registry_sector:
+            return registry_sector
+# ... falls through to services.sector_taxonomy.static_sector_lookup(), then FA cache, then "Other"
+```
+
+### Seeding the Registry
+
+`services/registry_classification_seed.py::seed_sector_classification(db, symbols, *, dry_run=True)`
+copies `sector_taxonomy.py`'s static maps into the Registry as SECTOR
+`AssetClassification` facts, for every symbol that already resolves to a
+minted Asset. It never overwrites an existing classification fact,
+regardless of source — it only fills gaps (ADR-002: never silently
+compensate for or override an existing decision). Exposed as a `manage.py`
+subcommand:
+
+```
+python manage.py seed_registry_classification            # dry run, default
+python manage.py seed_registry_classification --commit    # persist
+```
+
+Safe to re-run at any time, including after new assets are minted by a
+future M5 Track B backfill — already-seeded and already-classified symbols
+are no-ops.
+
+Full audit (every other classification implementation found across the
+codebase, classified as Replace/Keep/Deferred/Technical-debt), migration
+summary, retained fallbacks, and future work: [CLASSIFICATION_CONSOLIDATION.md](../implementation/CLASSIFICATION_CONSOLIDATION.md).
+
 ## Where NOT to call this from
 
 Never from `services/portfolio_rebuilder.py`'s replay loop or `services/ledger_validator.py`'s CHECK functions. Those are the accounting-critical, deterministic-replay paths the M5 Track B milestone owns — introducing a Registry lookup there before Track B's replay-parity gate exists would be exactly the "silent behavior change during coexistence" Migration Principle 3 forbids. This module is for analytics, optimizer internals, evaluation, and CRUD/display paths only.
@@ -211,4 +269,6 @@ Never from `services/portfolio_rebuilder.py`'s replay loop or `services/ledger_v
 
 **Watchlist Registry Pilot (2026-07-10)** wired Phase 1 step 2: `GET /watchlist` and `POST /watchlist` now resolve every symbol through `resolve_asset()`/`resolve_many()` and attach additive `"registry"` metadata, with graceful degradation on Registry failure. See §"Watchlist read path (Phase 1 step 2)" above and [WATCHLIST_REGISTRY_PILOT.md](../implementation/WATCHLIST_REGISTRY_PILOT.md) for the full audit and pilot report. Per that pilot's own explicit brief, Classification Consolidation and Native Asset Persistence were not started as part of this work.
 
-Still open: Phases 5–7 of [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](../implementation/M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md) §5's own numbering (the policy/execution structural fix, shadow portfolios/factor engine/calibration, and classification consolidation) — this guide's "Phase 5" heading above refers to the completion-review brief that requested it, not §5's own phase numbering, same numbering caveat as Phase 4's. Phase 4 of §5 (optimizer internals + consensus scoring, §5 steps 9-10) also remains open — out of scope for both this guide's Phase 4 and Phase 5 sections, which cover read-path business logic and its completion audit, not optimizer internals.
+**Classification Consolidation (2026-07-10)** shipped §5's Phase 7: `main.py`'s `_get_sector()`/`_fetch_sector()` now check the Registry's `classification["SECTOR"]` fact before falling back to the (unchanged, extracted-not-rewritten) static maps/FA-cache chain, and a new `manage.py seed_registry_classification` command seeds that fact for every Watchlist/PortfolioItem symbol the Registry can already resolve. See §"Phase 7: Classification Consolidation" above and [CLASSIFICATION_CONSOLIDATION.md](../implementation/CLASSIFICATION_CONSOLIDATION.md) for the full audit (every other classification implementation in the codebase, classified Replace/Keep/Deferred/Technical-debt), migration summary, and future work. Three divergent `normalize_sector()` implementations (`agents/optimizer.py`, `services/idea_review.py`, `services/optimizer/policy_engine.py`) were found and documented as technical debt, not reconciled — unifying them would change behavior for inputs where they already disagree, which this adoption milestone's "existing behaviour must remain unchanged" mandate forbids.
+
+**All 7 phases of [M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md](../implementation/M6_REGISTRY_READ_PATH_INTEGRATION_PLAN.md) §5 are now shipped.** M6 Compatibility-Layer Integration is complete; the remaining Asset Registry epic work is M5 Track B (Native Ledger Persistence) and M6 Native Integration, both still gated as documented in [ASSET_REGISTRY_IMPLEMENTATION_PLAN.md](../implementation/ASSET_REGISTRY_IMPLEMENTATION_PLAN.md).
