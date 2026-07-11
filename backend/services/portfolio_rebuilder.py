@@ -88,6 +88,7 @@ from services.data_fetcher import fetch_history
 from services.ledger_repair import apply_repair_overlay, load_active_repairs
 from services.ledger_validator import FindingSeverity, LedgerValidationReport, validate_portfolio_ledger
 from services.portfolio_metrics import compute_period_metrics
+from services.replay_key import replay_key
 from services.symbol_normalization import get_yfinance_symbol
 from services.symbol_resolver import is_dr
 from services.transaction_canonicalizer import CanonicalTransaction, canonicalize_transactions
@@ -123,10 +124,34 @@ def _f(v: Decimal) -> float:
 
 @dataclass
 class _HoldingState:
-    symbol:   str
+    symbol:   int | str   # ReplayKeyT — the internal merge key (asset_id → canonical_symbol → raw_symbol)
+    # The display / live-DB symbol (TDD Stage 4). Set once, at holding
+    # creation, as ctx.canonical_symbol or ctx.raw_symbol — exactly the same
+    # two-tier string chain replay_key() itself falls back to. Under legacy
+    # keying (Portfolio.replay_asset_id_native OFF), `symbol` above already
+    # IS this same string, so every consumer below that reads report_symbol
+    # instead of `symbol` is a byte-identical no-op. Under native keying,
+    # `symbol` becomes an int (asset_id) — report_symbol is then the ONLY
+    # valid string identifier for anything that touches PortfolioItem.symbol
+    # (a String column; §4.1 legacy symbol columns are never removed or
+    # replaced with a non-symbol value). See _reconcile_portfolio_items,
+    # _generate_execution_plan, and _commit_rebuild.
+    report_symbol: str
     shares:   Decimal
     avg_cost: Decimal       # fee-inclusive per share
     sector:   str | None = None
+    # DR-safe symbol for yfinance price lookups (TDD Stage 0). `symbol` may be
+    # the ReplayKey's asset_id/canonical_symbol tier, which fully resolves DR
+    # certificates to their US underlying ticker (NVDA01.BK → NVDA per
+    # get_yfinance_symbol()). That collapse is correct for replay
+    # identity/merging but wrong for price fetching — a DR trades on SET at
+    # ~1/10 the US price in THB, not the US ticker's own price. price_symbol
+    # preserves the raw, DR-detectable form (set once, at holding creation,
+    # from ctx.raw_symbol) so _build_price_matrix's existing is_dr() branch
+    # keeps firing correctly. Falls back to `symbol` when unset (non-DR case:
+    # canonical_symbol and raw_symbol already agree or the difference doesn't
+    # matter to yfinance).
+    price_symbol: str | None = None
 
 
 @dataclass
@@ -141,10 +166,12 @@ class _PortfolioState:
             cash_balance            = self.cash_balance,
             holdings                = {
                 sym: _HoldingState(
-                    symbol   = h.symbol,
-                    shares   = h.shares,
-                    avg_cost = h.avg_cost,
-                    sector   = h.sector,
+                    symbol        = h.symbol,
+                    report_symbol = h.report_symbol,
+                    shares        = h.shares,
+                    avg_cost      = h.avg_cost,
+                    sector        = h.sector,
+                    price_symbol  = h.price_symbol,
                 )
                 for sym, h in self.holdings.items()
             },
@@ -343,7 +370,7 @@ def _apply_transaction(state: _PortfolioState, ctx: CanonicalTransaction) -> Non
         eff_price = amount / shares
         state.cash_balance -= amount
 
-        sym = ctx.raw_symbol
+        sym = replay_key(ctx)
         if sym in state.holdings:
             h = state.holdings[sym]
             new_shares = h.shares + shares
@@ -354,10 +381,12 @@ def _apply_transaction(state: _PortfolioState, ctx: CanonicalTransaction) -> Non
                 h.sector = ctx.sector
         else:
             state.holdings[sym] = _HoldingState(
-                symbol   = sym,
-                shares   = shares,
-                avg_cost = eff_price,
-                sector   = ctx.sector,
+                symbol        = sym,
+                report_symbol = ctx.canonical_symbol or ctx.raw_symbol,
+                shares        = shares,
+                avg_cost      = eff_price,
+                sector        = ctx.sector,
+                price_symbol  = ctx.raw_symbol,
             )
 
     elif tx_type == "SELL":
@@ -369,7 +398,7 @@ def _apply_transaction(state: _PortfolioState, ctx: CanonicalTransaction) -> Non
         pnl = ctx.realized_pnl if ctx.realized_pnl is not None else 0.0
         state.cumulative_realized_pnl += _d(pnl)
 
-        sym = ctx.raw_symbol
+        sym = replay_key(ctx)
         if sym in state.holdings:
             h          = state.holdings[sym]
             new_shares = h.shares - shares
@@ -379,7 +408,7 @@ def _apply_transaction(state: _PortfolioState, ctx: CanonicalTransaction) -> Non
                 h.shares = new_shares
 
     elif tx_type == "INITIAL_POSITION":
-        sym    = ctx.raw_symbol
+        sym    = replay_key(ctx)
         shares = ctx.shares
         avg    = ctx.price_per_share
         if not sym or shares <= 0:
@@ -394,15 +423,17 @@ def _apply_transaction(state: _PortfolioState, ctx: CanonicalTransaction) -> Non
                 h.sector = ctx.sector
         else:
             state.holdings[sym] = _HoldingState(
-                symbol   = sym,
-                shares   = shares,
-                avg_cost = avg,
-                sector   = ctx.sector,
+                symbol        = sym,
+                report_symbol = ctx.canonical_symbol or ctx.raw_symbol,
+                shares        = shares,
+                avg_cost      = avg,
+                sector        = ctx.sector,
+                price_symbol  = ctx.raw_symbol,
             )
         # INITIAL_POSITION does NOT affect cash balance
 
     elif tx_type == "QUANTITY_CORRECTION":
-        sym = ctx.raw_symbol
+        sym = replay_key(ctx)
         if not sym or sym not in state.holdings:
             return
         delta = ctx.qty_correction_delta  # pre-parsed Decimal with sign
@@ -589,8 +620,12 @@ def _build_snapshot_day(
             n_priced                 += 1
         total_cost += cost
 
+        # report_symbol, never the internal merge key `sym` — an int under
+        # native keying, and holdings_json's "symbol" field must always be a
+        # display string (TDD §4.2; the additive "asset_id" key §4.2 also
+        # describes is Stage 5+ work, not introduced here).
         holdings_list.append({
-            "symbol":            sym,
+            "symbol":            h.report_symbol,
             "shares":            round(shares, 6),
             "avg_cost":          round(avg_cost, 4),
             "current_price":     round(price, 4) if price is not None else None,
@@ -699,7 +734,13 @@ def _reconcile_portfolio_items(
         item.symbol: item
         for item in db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id).all()
     }
-    recon = final_state.holdings
+    # Re-keyed by report_symbol (always a str), never by the raw internal
+    # merge key (`symbol`, which is an int under native/asset_id keying —
+    # TDD Stage 4). Under legacy keying this is a byte-identical no-op,
+    # since report_symbol IS the merge key there. See _HoldingState's own
+    # docstring for why PortfolioItem.symbol must never see a non-string
+    # value.
+    recon = {h.report_symbol: h for h in final_state.holdings.values()}
 
     rows: list[ReconciliationRow] = []
 
@@ -1059,12 +1100,16 @@ def _generate_execution_plan(
         item.symbol: item
         for item in db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id).all()
     }
-    final_syms   = set(final_state.holdings)
+    # Re-keyed by report_symbol — see _reconcile_portfolio_items's identical
+    # comment (TDD Stage 4: `final_state.holdings`'s own key is an int under
+    # native keying, never a valid PortfolioItem.symbol value).
+    final_items  = {h.report_symbol: h for h in final_state.holdings.values()}
+    final_syms   = set(final_items)
     current_syms = set(current_items)
     updated_syms: set[str] = set()   # symbols with ≥1 changed field
 
     for sym in sorted(final_syms & current_syms):
-        h          = final_state.holdings[sym]
+        h          = final_items[sym]
         curr       = current_items[sym]
         new_shares = _f(h.shares)
         new_avg    = _f(h.avg_cost)
@@ -1094,7 +1139,7 @@ def _generate_execution_plan(
             ))
 
     for sym in sorted(final_syms - current_syms):
-        h = final_state.holdings[sym]
+        h = final_items[sym]
         ops.append(PlanOperation(
             table         = "PortfolioItem",
             operation     = "INSERT",
@@ -1256,15 +1301,19 @@ def _commit_rebuild(
         synchronize_session=False
     )
 
-    for sym, h in final_state.holdings.items():
+    for h in final_state.holdings.values():
+        # Always report_symbol, never the internal merge key `h.symbol` — the
+        # latter is an int (asset_id) under native keying, and
+        # PortfolioItem.symbol is a String column (TDD Stage 4; see
+        # _HoldingState's own docstring).
         db.add(PortfolioItem(
             workspace_id = workspace_id,
             portfolio_id = portfolio_id,
-            symbol       = sym,
+            symbol       = h.report_symbol,
             shares       = _f(h.shares),
             avg_cost     = _f(h.avg_cost),
             sector       = h.sector,
-            allow_swap   = allow_swap_map.get(sym, True),
+            allow_swap   = allow_swap_map.get(h.report_symbol, True),
         ))
 
     # ── 3. Upsert snapshot rows ────────────────────────────────────────────────
@@ -1416,7 +1465,14 @@ async def rebuild_portfolio(
             result.error = "No transactions found — nothing to rebuild"
             return result
 
-        canonical_txs: list[CanonicalTransaction] = list(canonicalize_transactions(raw_txs))
+        # M5 Track B Stage 4: per-portfolio replay cutover gate (never global —
+        # TDD §9). NULL/False (the default) reproduces every pre-Stage-4 replay
+        # exactly; only a portfolio whose flag has been explicitly flipped ON
+        # (services/replay_cutover.py, after proving bit-identical parity)
+        # gets asset_id-preferring keying.
+        canonical_txs: list[CanonicalTransaction] = list(
+            canonicalize_transactions(raw_txs, prefer_asset_id=bool(portfolio.replay_asset_id_native))
+        )
         raw_canonical_count = len(canonical_txs)
 
         # ── Repair overlay (Phase 6.7C) ────────────────────────────────────────
@@ -1515,8 +1571,14 @@ async def rebuild_portfolio(
                     f"({rebuild_dates[0]} → {rebuild_dates[-1]})..."
                 )
 
-                # Collect all symbols that appear in the rebuild window
-                all_symbols: set[str] = set(final_state.holdings)
+                # Collect all symbols that appear in the rebuild window.
+                # Use price_symbol (DR-safe raw form), not the holdings dict
+                # key (ReplayKey) — canonical_symbol collapses DR certificates
+                # to their US underlying ticker, which _build_price_matrix's
+                # is_dr() branch must not receive (see _HoldingState.price_symbol).
+                all_symbols: set[str] = {
+                    (h.price_symbol or sym) for sym, h in final_state.holdings.items()
+                }
                 for snap in existing_snaps:
                     if snap.snapshot_date in set(rebuild_dates) and snap.holdings_json:
                         try:
@@ -1555,9 +1617,12 @@ async def rebuild_portfolio(
                         )
                         continue
 
+                    # price_row stays keyed by the holdings dict key (ReplayKey)
+                    # for _build_snapshot_day; the price_matrix lookup itself
+                    # uses each holding's DR-safe price_symbol.
                     price_row = {
-                        sym: price_matrix.get(sym, {}).get(snap_date)
-                        for sym in state_at.holdings
+                        sym: price_matrix.get(h.price_symbol or sym, {}).get(snap_date)
+                        for sym, h in state_at.holdings.items()
                     }
 
                     # Determine the "previous" for return calculation

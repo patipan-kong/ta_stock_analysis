@@ -18,6 +18,7 @@ All tests use an in-memory SQLite database seeded with the full schema
 """
 import os
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -33,7 +34,7 @@ import models.registry_finding  # noqa: F401 — registers RegistryFinding table
 
 from services import registry_lookup as lookup
 from services import registry_service as svc
-from services.asset_domain import AssetClaim, AssetType, IdentifierRecord, IdentifierType
+from services.asset_domain import AssetClaim, AssetId, AssetType, IdentifierRecord, IdentifierType
 
 from services.basket_simulation import simulate_basket
 from services.position_sizing import suggest_position_sizes
@@ -106,6 +107,43 @@ def test_basket_simulation_does_not_unify_two_distinct_registry_assets():
     # No sector match found (Registry says these are different instruments,
     # and the heuristic must not override that) -> falls to "Other".
     assert result.impacts[0].sector == "Other"
+
+
+# ── Native asset_id path (M6 Native Integration, TDD §7 Stage 5) ────────────
+# PortfolioItem.asset_id is materialized directly (bypassing the backfill
+# tool, which is out of scope here) and the query symbol resolves to the
+# same asset_id through a spelling with no `.BK` relationship at all — the
+# legacy heuristic could never produce this match, so a passing result here
+# can only come from the native asset_id fact _resolve_symbol_sectors() now
+# reads off the loaded PortfolioItem row.
+
+def test_basket_simulation_matches_via_materialized_asset_id_with_no_bk_relationship():
+    db = make_session()
+    db.add(Workspace(id=1, name="Default"))
+    db.add(Portfolio(id=1, workspace_id=1, name="Main", cash_balance=10_000.0))
+    db.commit()
+    db.add(PortfolioItem(
+        workspace_id=1, portfolio_id=1, symbol="OLDNAME",
+        shares=10.0, avg_cost=100.0, sector="Healthcare", asset_id=99,
+    ))
+    db.commit()
+
+    view = lookup.AssetView(
+        asset_id=AssetId(99), canonical_symbol="NEWTICK", display_symbol="NEWTICK",
+        market="Thailand", exchange="SET", currency="THB", asset_type=AssetType.EQUITY,
+    )
+
+    def fake_resolve(db, query):
+        if query == "NEWTICK":
+            return view
+        return lookup.Unresolved(query=str(query), reason="no matching asset")
+
+    with patch.object(lookup, "resolve_asset", side_effect=fake_resolve):
+        result = simulate_basket(
+            portfolio_id=1, symbols=["NEWTICK"], allocation_pct=2.0, workspace_id=1, db=db,
+        )
+
+    assert result.impacts[0].sector == "Healthcare"
 
 
 # ── position_sizing.suggest_position_sizes ──────────────────────────────────
@@ -186,5 +224,38 @@ def test_idea_review_bk_variant_matches_holding_sector_via_fallback():
     assert result["reviews"], "expected at least one review"
     review = result["reviews"][0]
     assert review["symbol"] == "BH"
+    assert review["existing_position"] is True
+    assert review["sector"] == "Healthcare"
+
+
+def test_idea_review_matches_via_materialized_asset_id_with_no_bk_relationship():
+    """Same native-asset_id proof as basket_simulation's, against
+    idea_review's own portfolio_item_by_symbol match site."""
+    db = make_session()
+    db.add(Workspace(id=1, name="Default"))
+    db.add(Portfolio(id=1, workspace_id=1, name="Main", cash_balance=10_000.0))
+    db.commit()
+    db.add(PortfolioItem(
+        workspace_id=1, portfolio_id=1, symbol="OLDNAME",
+        shares=10.0, avg_cost=100.0, sector="Healthcare", asset_id=99,
+    ))
+    db.commit()
+
+    view = lookup.AssetView(
+        asset_id=AssetId(99), canonical_symbol="NEWTICK", display_symbol="NEWTICK",
+        market="Thailand", exchange="SET", currency="THB", asset_type=AssetType.EQUITY,
+    )
+
+    def fake_resolve(db, query):
+        if query == "NEWTICK":
+            return view
+        return lookup.Unresolved(query=str(query), reason="no matching asset")
+
+    with patch.object(lookup, "resolve_asset", side_effect=fake_resolve):
+        result = review_ideas(symbols=["NEWTICK"], portfolio_id=1, db=db, workspace_id=1)
+
+    assert result["reviews"], "expected at least one review"
+    review = result["reviews"][0]
+    assert review["symbol"] == "NEWTICK"
     assert review["existing_position"] is True
     assert review["sector"] == "Healthcare"

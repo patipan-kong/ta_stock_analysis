@@ -343,15 +343,67 @@ Defined in `docs/architecture/platform_architecture.md`.
 
 ## Asset Definition
 
-The description of an asset class's behavior.
+The declarative behavior contract of an asset class.
 
 Unit semantics. Valuation cadence. Flow types. Lifecycle vocabulary.
 
-Engines consume descriptions.
+Written in a closed, platform-owned vocabulary.
+
+A definition can only say things engines already know how to hear.
+
+Engines consume declarations through single implementations.
 
 They never contain asset-class branches.
 
-"Assets are plugins."
+"Assets are plugins" — by description, never by code.
+
+
+## Capability
+
+One queryable behavior fact granted by an asset definition.
+
+Supports NAV. Supports coupons. Supports corporate actions.
+
+Independently combinable.
+
+Engines branch on capabilities, never on types.
+
+
+## Evidence File
+
+Every external name an asset is known by.
+
+ISINs, tickers, provider symbols, broker codes.
+
+Externally owned. Mutable. Plural. Time-bounded.
+
+Maps into identity; the arrow never reverses.
+
+Survives every provider.
+
+
+## Claim
+
+Evidence that something exists, before identity does.
+
+Discovery → Candidate → Verified.
+
+Reversible until minting.
+
+A claim never mints itself.
+
+
+## Structural Event
+
+An adjudicated fact about what the world did to an instrument.
+
+Splits, mergers, spin-offs, renames, delistings, redemptions.
+
+Classified into a closed family vocabulary before any consequence.
+
+Moves lifecycle. Authors relationships.
+
+Proposes ledger consequences — never performs them.
 
 
 ## Domain Constitution

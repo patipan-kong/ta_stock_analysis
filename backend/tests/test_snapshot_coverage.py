@@ -21,6 +21,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from models.database import Base, Portfolio, PortfolioItem, PortfolioSnapshot, Workspace
+import models.asset  # noqa: F401 — registers Asset* tables (portfolio_items.asset_id FK target)
+import models.registry_finding  # noqa: F401 — registers RegistryFinding table
 from services.portfolio_snapshots import SnapshotCoverageError
 
 
@@ -243,6 +245,27 @@ def test_missing_price_reflected_in_holdings_json():
     assert dark_holding["market_value"] is None
     assert dark_holding["unrealized_pnl"] is None
     assert dark_holding["price_missing"] is True
+
+
+def test_holdings_json_carries_additive_asset_id():
+    """M6 Native Integration (M5_TRACK_B_NATIVE_INTEGRATION_TDD.md §7 Stage 5,
+    §4.2): each holding gets an additive asset_id key — the materialized
+    PortfolioItem.asset_id when backfilled, None (not fabricated) otherwise."""
+    db = make_session()
+    ws, p = _seed(db, cash=0.0)
+    _add_item(db, p.id, ws.id, "BACKFILLED.BK", 100, 50.0)
+    _add_item(db, p.id, ws.id, "PENDING.BK", 100, 50.0)
+
+    backfilled_item = db.query(PortfolioItem).filter_by(symbol="BACKFILLED.BK").one()
+    backfilled_item.asset_id = 7
+    db.commit()
+
+    prices = {"BACKFILLED.BK": 55.0, "PENDING.BK": 60.0}
+    result = run_snapshot(db, p.id, ws.id, _today(), prices)
+
+    by_symbol = {h["symbol"]: h for h in result["holdings"]}
+    assert by_symbol["BACKFILLED.BK"]["asset_id"] == 7
+    assert by_symbol["PENDING.BK"]["asset_id"] is None
 
 
 def test_available_prices_are_not_affected_by_missing_peers():

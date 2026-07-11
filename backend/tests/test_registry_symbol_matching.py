@@ -197,3 +197,75 @@ def test_return_shape_is_plain_str_to_str():
     for k, v in result.items():
         assert isinstance(k, str)
         assert isinstance(v, str)
+
+
+# ── known_asset_ids (M6 Native Integration, TDD §7 Stage 5) ─────────────────
+# Callers that already hold a loaded PortfolioItem/Watchlist row can pass its
+# materialized asset_id straight through — this must (a) skip the
+# resolve_asset() call for that known entry, (b) match `sym` even when the
+# `.BK` heuristic could never relate the two spellings, and (c) leave every
+# other resolution path (fallback for None/absent entries) unchanged.
+
+def test_known_asset_ids_matches_without_any_bk_relationship():
+    """Materialized asset_id links "sym" to a "known" entry with a spelling
+    the legacy heuristic could never relate — proving the match came from
+    the caller-supplied fact, not the string fallback."""
+    db = make_session()
+    view = lookup.AssetView(
+        asset_id=AssetId(7), canonical_symbol="RENAMEDCO", display_symbol="RENAMEDCO",
+        market="Thailand", exchange="SET", currency="THB", asset_type=AssetType.EQUITY,
+    )
+
+    def fake_resolve(db, query):
+        return view if query == "NEWTICK" else lookup.Unresolved(query=str(query), reason="no matching asset")
+
+    with patch.object(lookup, "resolve_asset", side_effect=fake_resolve) as mock_resolve:
+        result = match_known_symbols(
+            db, ["NEWTICK"], ["OLDTICK"], known_asset_ids={"OLDTICK": 7},
+        )
+        # The known side's asset_id was supplied directly — resolve_asset()
+        # must never have been called for "OLDTICK".
+        called_queries = {c.args[1] for c in mock_resolve.call_args_list}
+        assert "OLDTICK" not in called_queries
+
+    assert result == {"NEWTICK": "OLDTICK"}
+
+
+def test_known_asset_ids_with_none_value_falls_back_to_resolve():
+    """A `known` entry present in the map with value None (not yet
+    backfilled) must resolve exactly as if the map had been omitted."""
+    db = make_session()
+    result = match_known_symbols(
+        db, ["BH"], ["BH.BK"], known_asset_ids={"BH.BK": None},
+    )
+    assert result == {"BH": "BH.BK"}
+
+
+def test_known_asset_ids_partial_map_only_short_circuits_supplied_entries():
+    """A mix of materialized and un-materialized known entries: the
+    materialized one matches via the supplied fact, the other still falls
+    back to the legacy heuristic — both resolve in the same call."""
+    db = make_session()
+    view = lookup.AssetView(
+        asset_id=AssetId(11), canonical_symbol="FOO", display_symbol="FOO",
+        market="Thailand", exchange="SET", currency="THB", asset_type=AssetType.EQUITY,
+    )
+
+    def fake_resolve(db, query):
+        return view if query == "FOOALIAS" else lookup.Unresolved(query=str(query), reason="no matching asset")
+
+    with patch.object(lookup, "resolve_asset", side_effect=fake_resolve):
+        result = match_known_symbols(
+            db, ["FOOALIAS", "BH"], ["FOO", "BH.BK"],
+            known_asset_ids={"FOO": 11},
+        )
+
+    assert result == {"FOOALIAS": "FOO", "BH": "BH.BK"}
+
+
+def test_known_asset_ids_omitted_reproduces_prior_behavior():
+    """No known_asset_ids at all is identical to the pre-Stage-5 call shape."""
+    db = make_session()
+    with_param = match_known_symbols(db, ["BH"], ["BH.BK"], known_asset_ids=None)
+    without_param = match_known_symbols(db, ["BH"], ["BH.BK"])
+    assert with_param == without_param == {"BH": "BH.BK"}

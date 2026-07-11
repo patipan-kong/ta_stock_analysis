@@ -148,6 +148,27 @@ class CanonicalTransaction:
         type is not SELL.
         Consumers that need a numeric value when notes are absent should use:
             pnl = ctx.realized_pnl if ctx.realized_pnl is not None else 0.0
+
+    asset_id
+        M5 Track B Stage 4 (docs/implementation/M5_TRACK_B_NATIVE_INTEGRATION_TDD.md
+        §2.2, §4.3). A plain, read-only reflection of tx.asset_id — never
+        resolved here, never a Registry call (purity is preserved exactly as
+        before; identity resolution happens once, upstream, at write time —
+        services/portfolio_transactions.py, Stage 3).
+
+        Populated only when canonicalize_transactions() is called with
+        prefer_asset_id=True; None otherwise (the default). This is the one
+        mechanical deviation from §2.2's literal "populated by simply reading
+        that column" phrasing — necessary because the per-portfolio cutover
+        gate (Portfolio.replay_asset_id_native, §9) has to live somewhere,
+        and it cannot live in replay_key.py (test_replay_key.py asserts that
+        function's signature stays exactly `(ctx)` — no flag parameter — so
+        replay_key() keeps preferring asset_id *whenever present*,
+        unconditionally, exactly as §2.1 specifies). Gating whether it is
+        ever present is therefore this function's job: a portfolio still on
+        legacy keying gets asset_id=None on every CanonicalTransaction it
+        produces, so replay_key() naturally, correctly falls through to the
+        canonical_symbol tier — with zero changes to replay_key.py itself.
     """
 
     id:                   int
@@ -165,9 +186,10 @@ class CanonicalTransaction:
     notes:                str | None
     qty_correction_delta: Decimal | None
     realized_pnl:         float | None
+    asset_id:             int | None = None
 
 
-def _canonicalize_one(tx: Any) -> CanonicalTransaction:
+def _canonicalize_one(tx: Any, *, prefer_asset_id: bool = False) -> CanonicalTransaction:
     raw_sym   = tx.symbol.strip().upper() if tx.symbol and tx.symbol.strip() else None
     canon_sym = get_yfinance_symbol(raw_sym) if raw_sym else None
 
@@ -203,11 +225,14 @@ def _canonicalize_one(tx: Any) -> CanonicalTransaction:
         notes                = tx.notes if tx.notes else None,
         qty_correction_delta = qty_delta,
         realized_pnl         = realized,
+        asset_id             = (getattr(tx, "asset_id", None) if prefer_asset_id else None),
     )
 
 
 def canonicalize_transactions(
     txs: list[Any],
+    *,
+    prefer_asset_id: bool = False,
 ) -> tuple[CanonicalTransaction, ...]:
     """Convert a list of Transaction ORM rows into a sorted immutable tuple.
 
@@ -221,10 +246,19 @@ def canonicalize_transactions(
     Args:
         txs: List of SQLAlchemy Transaction objects (or any object with the
              same attribute names — SimpleNamespace is accepted in tests).
+        prefer_asset_id: M5 Track B Stage 4. When True, each
+            CanonicalTransaction's asset_id is read from tx.asset_id (a
+            plain ORM attribute access — no Registry call, purity intact).
+            When False (the default), asset_id is always None, which is
+            what every pre-Stage-4 caller still gets automatically since
+            this parameter is additive. Callers that key replay state by
+            replay_key() (portfolio_rebuilder.py, ledger_validator.py) pass
+            this per-portfolio, from that portfolio's own
+            Portfolio.replay_asset_id_native flag — never globally.
 
     Returns:
         Immutable tuple of CanonicalTransaction, sorted by (transaction_date, id).
     """
-    canonical = [_canonicalize_one(tx) for tx in txs]
+    canonical = [_canonicalize_one(tx, prefer_asset_id=prefer_asset_id) for tx in txs]
     canonical.sort(key=lambda c: (c.transaction_date, c.id))
     return tuple(canonical)

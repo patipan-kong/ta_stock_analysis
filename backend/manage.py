@@ -158,6 +158,30 @@ from services.migration_executor import ExecutionOutcome, ExecutionReport, execu
 from services.bootstrap_planner import BootstrapPlan, build_bootstrap_plan
 from services.registry_bootstrap import BootstrapOutcome, BootstrapReport, bootstrap_registry
 from services.registry_classification_seed import SeedReport, seed_sector_classification
+from services.registry_replay_parity import (
+    GoldenBaseline,
+    ParityReport,
+    RegressionReport,
+    capture_golden_baseline,
+    compare_against_baseline,
+    generate_regression_report,
+    load_baseline,
+    save_baseline,
+)
+from services.ledger_asset_backfill import (
+    BackfillOutcome,
+    BackfillReport,
+    RollbackReport,
+    backfill_ledger_asset_ids,
+    rollback_backfill,
+    unresolved_steps,
+)
+from services.replay_cutover import (
+    CutoverResult,
+    attempt_cutover,
+    rollback_cutover,
+    unresolved_transaction_count,
+)
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────
@@ -2845,6 +2869,219 @@ async def _cmd_validate_ledger(args: argparse.Namespace) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Golden Baseline: golden_baseline  (M5 Track B Stage 1)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_baseline_summary(baseline: GoldenBaseline) -> None:
+    print(f"  Portfolio {baseline.portfolio_id} \"{baseline.portfolio_name}\"")
+    print(f"    transactions replayed : {baseline.transactions_replayed}")
+    print(f"    holdings              : {baseline.reconstructed_holdings_count}")
+    print(f"    cash                  : {baseline.reconstructed_cash}")
+    print(f"    snapshots processed   : {baseline.snapshots_processed}")
+    print(f"    validator severity    : {baseline.validator_overall_severity}")
+    print(f"    content hash          : {baseline.content_hash}")
+
+
+def _print_parity_report(report: ParityReport, baseline_hash: str) -> None:
+    status = "IDENTICAL" if report.is_bit_identical else "DIFFERS"
+    print(f"  [{status}] portfolio {report.portfolio_id}  baseline_hash={baseline_hash[:12]}")
+    for d in report.holding_diffs:
+        print(f"    HOLDING  {d.symbol}.{d.field}: {d.baseline_value!r} -> {d.rebuilt_value!r}  [{d.status.value}]")
+    for d in report.snapshot_diffs:
+        print(f"    SNAPSHOT {d.date}.{d.field}: {d.baseline_value!r} -> {d.rebuilt_value!r}  [{d.status.value}]")
+    for d in report.validator_diffs:
+        print(f"    VALIDATOR {d.finding_key}: {d.baseline_severity} -> {d.rebuilt_severity}  [{d.status.value}]")
+
+
+def _print_regression_report(report: RegressionReport) -> None:
+    print(f"\n{_hr()}")
+    print("Golden Baseline — Regression Report (Stage 1)")
+    print(_hr())
+    print(f"  generated_at              : {report.generated_at}")
+    print(f"  portfolio_count           : {report.portfolio_count}")
+    print(f"  portfolios_bit_identical  : {report.portfolios_bit_identical}")
+    print(f"  portfolios_with_diffs     : {report.portfolios_with_diffs}")
+    print()
+    for e in report.entries:
+        status = "IDENTICAL" if e.is_bit_identical else "DIFFERS"
+        print(
+            f"  [{status:9}] portfolio {e.portfolio_id} \"{e.portfolio_name}\"  "
+            f"hash={e.baseline_hash[:12]}  "
+            f"holding_diffs={e.holding_diff_count} "
+            f"snapshot_diffs={e.snapshot_diff_count} "
+            f"validator_diffs={e.validator_diff_count}"
+        )
+
+
+async def _cmd_golden_baseline(args: argparse.Namespace) -> int:
+    """Golden Baseline capture / determinism verification (read-only).
+
+    Never writes to the database — every replay is dry_run=True. Baseline
+    storage (--capture) is a plain JSON file per portfolio under
+    --baseline-dir, outside the operational DB (Migration Principle 7).
+    """
+    db      = SessionLocal()
+    t_start = time.monotonic()
+    baseline_dir    = getattr(args, "baseline_dir", "golden_baselines")
+    skip_snapshots  = getattr(args, "skip_snapshots", False)
+
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        if getattr(args, "all", False):
+            portfolios = db.query(Portfolio).filter_by(workspace_id=ws_id).all()
+            if not portfolios:
+                print("ERROR: No portfolios found in workspace.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id for p in portfolios]
+        elif getattr(args, "portfolio", None):
+            p = db.query(Portfolio).filter_by(id=args.portfolio, workspace_id=ws_id).first()
+            if p is None:
+                print(f"ERROR: Portfolio {args.portfolio} not found.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id]
+        else:
+            print("ERROR: Specify --portfolio ID  or  --all", file=sys.stderr)
+            return 1
+
+        print(f"\n{_hr()}")
+        print("Golden Baseline  (read-only — every replay is dry_run=True)")
+        print(_hr())
+
+        if getattr(args, "capture", False):
+            for pid in portfolio_ids:
+                print(f"  Capturing portfolio {pid}...")
+                baseline = await capture_golden_baseline(
+                    db, portfolio_id=pid, workspace_id=ws_id, skip_snapshots=skip_snapshots,
+                )
+                path = save_baseline(baseline, baseline_dir=baseline_dir)
+                _print_baseline_summary(baseline)
+                print(f"    saved -> {path}")
+            return 0
+
+        if getattr(args, "compare_stored", False):
+            any_diff = False
+            for pid in portfolio_ids:
+                stored = load_baseline(pid, baseline_dir=baseline_dir)
+                if stored is None:
+                    print(f"  ERROR: no stored baseline for portfolio {pid} in {baseline_dir} "
+                          f"— run --capture first.", file=sys.stderr)
+                    any_diff = True
+                    continue
+                rebuilt = await rebuild_portfolio(
+                    db, portfolio_id=pid, workspace_id=ws_id,
+                    dry_run=True, skip_snapshots=skip_snapshots, backup=False,
+                )
+                parity = compare_against_baseline(stored, rebuilt)
+                _print_parity_report(parity, stored.content_hash)
+                any_diff = any_diff or not parity.is_bit_identical
+            return 1 if any_diff else 0
+
+        # Default action: verify determinism and print a regression report.
+        report = await generate_regression_report(
+            db, workspace_id=ws_id, portfolio_ids=portfolio_ids, skip_snapshots=skip_snapshots,
+        )
+        _print_regression_report(report)
+        elapsed = time.monotonic() - t_start
+        print(f"\n  elapsed: {elapsed:.2f}s")
+        return 0 if report.portfolios_with_diffs == 0 else 1
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Replay cutover: replay_cutover  (M5 Track B, Stage 4)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_cutover_result(result: CutoverResult) -> None:
+    print(f"\n  Portfolio {result.portfolio_id} \"{result.portfolio_name}\"")
+    print(f"    still_unresolved_transaction_count : {result.still_unresolved_transaction_count}")
+    if result.error:
+        print(f"    ERROR: {result.error}")
+        return
+    status    = "ACCEPTED" if result.accepted else "REJECTED"
+    persisted = "committed" if result.committed else "not committed (dry-run)"
+    print(f"    result    : {status} ({persisted})")
+    if result.parity is not None:
+        print(f"    is_bit_identical : {result.parity.is_bit_identical}")
+        for d in result.parity.holding_diffs:
+            print(f"      HOLDING  {d.symbol}.{d.field}: {d.baseline_value!r} -> {d.rebuilt_value!r}  [{d.status.value}]")
+        for d in result.parity.snapshot_diffs:
+            print(f"      SNAPSHOT {d.date}.{d.field}: {d.baseline_value!r} -> {d.rebuilt_value!r}  [{d.status.value}]")
+        for d in result.parity.validator_diffs:
+            print(f"      VALIDATOR {d.finding_key}: {d.baseline_severity} -> {d.rebuilt_severity}  [{d.status.value}]")
+
+
+async def _cmd_replay_cutover(args: argparse.Namespace) -> int:
+    """Per-portfolio controlled replay cutover (M5 Track B Stage 4).
+
+    Never global: exactly one --portfolio ID per invocation — there is no
+    --all flag for this command, by design (TDD §9: "not a global flag
+    day"). Default action proves the cutover would succeed without
+    persisting it; --commit persists the flag flip, and only when accepted.
+    --rollback reverts an already-cut-over portfolio back to legacy mode.
+    """
+    db = SessionLocal()
+    baseline_dir = getattr(args, "baseline_dir", "golden_baselines")
+
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        pid = args.portfolio
+        p = db.query(Portfolio).filter_by(id=pid, workspace_id=ws_id).first()
+        if p is None:
+            print(f"ERROR: Portfolio {pid} not found.", file=sys.stderr)
+            return 1
+
+        print(f"\n{_hr()}")
+        print("Replay Cutover  (M5 Track B Stage 4 — per-portfolio only, never global)")
+        print(_hr())
+
+        if getattr(args, "rollback", False):
+            ok = rollback_cutover(db, pid, ws_id)
+            if ok:
+                print(f"  Portfolio {pid}: replay_asset_id_native -> False (legacy mode)")
+            else:
+                print(f"  ERROR: portfolio {pid} not found", file=sys.stderr)
+            return 0 if ok else 1
+
+        stored = load_baseline(pid, baseline_dir=baseline_dir)
+        if stored is None:
+            print(
+                f"  ERROR: no stored Golden Baseline for portfolio {pid} in {baseline_dir} "
+                f"— run `golden_baseline --portfolio {pid} --capture` first.",
+                file=sys.stderr,
+            )
+            return 1
+
+        result = await attempt_cutover(
+            db, portfolio_id=pid, workspace_id=ws_id, baseline=stored,
+            commit=getattr(args, "commit", False),
+            skip_snapshots=getattr(args, "skip_snapshots", False),
+        )
+        _print_cutover_result(result)
+        return 0 if (result.accepted and result.error is None) else 1
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Migration planner: plan_migration
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -3226,6 +3463,175 @@ def _cmd_bootstrap_registry(args: argparse.Namespace) -> int:
     elapsed = time.monotonic() - t_start
     print(f"\n  Completed in {elapsed:.2f}s.")
     return 1 if report.summary.blocked > 0 else 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Ledger asset backfill: backfill_asset_ids  (M5 Track B, Stage 2)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_backfill_report(report: BackfillReport) -> None:
+    print(f"\n{_hr()}")
+    print("Backfill Report")
+    print(_hr())
+    print(f"  Run ID                    : {report.run_id}")
+    print(f"  Mode                      : {'DRY RUN' if report.dry_run else 'LIVE'}")
+    print(f"  Portfolios scanned        : {list(report.portfolios_scanned)}")
+    print(f"  Transactions updated      : {report.transactions_updated}")
+    print(f"  Portfolio items updated   : {report.portfolio_items_updated}")
+    print(f"  Watchlist rows updated    : {report.watchlist_rows_updated}")
+    print(f"  Still unresolved (txns)   : {report.still_unresolved_transaction_count}")
+
+    completed = [s for s in report.steps if s.outcome == BackfillOutcome.COMPLETED]
+    if completed:
+        print(f"\n{_hr()}")
+        print(f"Completed  ({len(completed)} claim shape(s))")
+        print(_hr())
+        for st in completed:
+            print(
+                f"  {st.shape.raw_symbol:<16}{(st.shape.canonical_symbol or '—'):<16}"
+                f"asset_id={st.resolved_asset_id:<6} "
+                f"tx={st.transactions_updated} item={st.portfolio_items_updated} wl={st.watchlist_rows_updated}"
+            )
+
+    already_done = [s for s in report.steps if s.outcome == BackfillOutcome.SKIPPED_ALREADY_DONE]
+    if already_done:
+        print(f"\n{_hr()}")
+        print(f"Already done  ({len(already_done)} claim shape(s))")
+        print(_hr())
+        for st in already_done:
+            print(f"  {st.shape.raw_symbol:<16}{(st.shape.canonical_symbol or '—'):<16}asset_id={st.resolved_asset_id}")
+
+    _print_unresolved_section(report)
+    print(_hr())
+
+
+def _print_unresolved_section(report: BackfillReport) -> None:
+    """Every unresolved record, reported — never silently dropped."""
+    unresolved = unresolved_steps(report)
+    if not unresolved:
+        return
+    print(f"\n{_hr()}")
+    print(f"Unresolved — Adjudication Required  ({len(unresolved)} claim shape(s), "
+          f"{sum(s.transaction_count for s in unresolved)} transaction(s))")
+    print(_hr())
+    for st in unresolved:
+        print(
+            f"  {st.shape.raw_symbol:<16}{(st.shape.canonical_symbol or '—'):<16}"
+            f"currency={st.shape.currency or '—':<6} transactions={st.transaction_count:<6} {st.detail}"
+        )
+    print("\n  Resolve via plan_migration/execute_migration/bootstrap_registry, then re-run backfill_asset_ids.")
+
+
+def _print_rollback_report(report: RollbackReport) -> None:
+    print(f"\n{_hr()}")
+    print("Rollback Report")
+    print(_hr())
+    print(f"  Run ID                    : {report.run_id}")
+    print(f"  Mode                      : {'DRY RUN' if report.dry_run else 'LIVE'}")
+    print(f"  Claim shapes rolled back  : {report.shapes_rolled_back}")
+    print(f"  Transactions reset        : {report.transactions_reset}")
+    print(f"  Portfolio items reset     : {report.portfolio_items_reset}")
+    print(f"  Watchlist rows reset      : {report.watchlist_rows_reset}")
+    print(_hr())
+
+
+def _cmd_backfill_asset_ids(args: argparse.Namespace) -> int:
+    """Writes RESOLVED Asset Registry verdicts onto Transaction/PortfolioItem/
+    Watchlist.asset_id (M5 Track B, Stage 2). Never resolves anything itself —
+    consumes a freshly-computed MigrationPlan (services.migration_planner,
+    unmodified) exactly like execute_migration/bootstrap_registry do.
+
+    Nothing reads asset_id yet (Stage 5 native cutover); this command is
+    inert with respect to replay, analytics, and every other consumer.
+
+    Defaults to a dry run (--commit is required to persist changes).
+    --unresolved-report prints only the adjudication backlog (always
+    read-only, regardless of --commit). --rollback RUN_ID reverses a prior
+    live run's writes precisely (only rows that run actually changed).
+    """
+    db = SessionLocal()
+    t_start = time.monotonic()
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        if getattr(args, "rollback", None):
+            dry_run = not getattr(args, "commit", False)
+            if not dry_run and not getattr(args, "yes", False):
+                print(f"\nRolling back backfill run_id={args.rollback} — this resets asset_id "
+                      f"back to NULL for exactly the rows that run wrote.")
+                confirm = input("Proceed? [y/N] ").strip().lower()
+                if confirm != "y":
+                    print("Aborted.")
+                    return 1
+            print(f"\n{_hr()}")
+            print(f"Backfill Rollback  —  run_id={args.rollback}  {'(DRY RUN)' if dry_run else '(LIVE)'}")
+            print(_hr())
+            rb_report = rollback_backfill(db, args.rollback, dry_run=dry_run)
+            _print_rollback_report(rb_report)
+            elapsed = time.monotonic() - t_start
+            print(f"\n  Completed in {elapsed:.2f}s.")
+            return 0
+
+        portfolio_ids: list[int] | None
+        if getattr(args, "all", False):
+            portfolios = db.query(Portfolio).filter_by(workspace_id=ws_id).all()
+            if not portfolios:
+                print("ERROR: No portfolios found in workspace.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id for p in portfolios]
+        elif getattr(args, "portfolio", None):
+            p = db.query(Portfolio).filter_by(id=args.portfolio, workspace_id=ws_id).first()
+            if p is None:
+                print(f"ERROR: Portfolio {args.portfolio} not found.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id]
+        else:
+            print("ERROR: Specify --portfolio ID  or  --all", file=sys.stderr)
+            return 1
+
+        unresolved_only = getattr(args, "unresolved_report", False)
+        dry_run = True if unresolved_only else not getattr(args, "commit", False)
+        run_id = args.run_id or str(uuid.uuid4())
+        resuming = bool(args.run_id)
+
+        if not dry_run and not getattr(args, "yes", False):
+            action = "Resuming" if resuming else "Starting"
+            print(f"\n{action} a LIVE ledger asset backfill — run_id={run_id}")
+            print("This will write asset_id onto Transaction/PortfolioItem/Watchlist rows.")
+            print("Nothing reads this column yet (Stage 5 native cutover) — this write is inert.")
+            confirm = input("Proceed? [y/N] ").strip().lower()
+            if confirm != "y":
+                print("Aborted.")
+                return 1
+
+        label = "Unresolved Assets Report" if unresolved_only else "Ledger Asset Backfill"
+        print(f"\n{_hr()}")
+        print(f"{label}  —  run_id={run_id}  {'(RESUME)' if resuming else '(NEW RUN)'}  "
+              f"{'(DRY RUN)' if dry_run else '(LIVE)'}")
+        print(_hr())
+
+        plan = plan_migration(db, portfolio_ids=portfolio_ids)
+        report = backfill_ledger_asset_ids(db, plan, portfolio_ids=portfolio_ids, run_id=run_id, dry_run=dry_run)
+
+        if unresolved_only:
+            _print_unresolved_section(report)
+            print(_hr())
+        else:
+            _print_backfill_report(report)
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+    elapsed = time.monotonic() - t_start
+    print(f"\n  Completed in {elapsed:.2f}s.")
+    return 1 if unresolved_steps(report) else 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3961,6 +4367,108 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── golden_baseline ─────────────────────────────────────────────────────────
+    baseline = sub.add_parser(
+        "golden_baseline",
+        help="Golden Baseline capture and replay-determinism verification (M5 Track B Stage 1)",
+        description=textwrap.dedent("""\
+            Golden Baseline Capture — M5 Track B Stage 1.
+
+            Read-only. Every replay is dry_run=True; nothing is ever written
+            to the database. Reference:
+            docs/implementation/M5_TRACK_B_NATIVE_INTEGRATION_TDD.md §7 Stage 1.
+
+            Actions
+            -------
+              (default)         Replay each portfolio twice and prove the two
+                                 replays are bit-identical (holdings, cash, NAV,
+                                 and validator findings). Prints a regression
+                                 report: portfolio count, replay parity,
+                                 validator parity, baseline hash.
+
+              --capture          Capture a golden baseline for each portfolio
+                                 and save it to --baseline-dir as JSON
+                                 (portfolio_<id>.json). This becomes the fixed
+                                 parity reference for later migration stages.
+
+              --compare-stored    Load a previously captured baseline and
+                                 compare it against a fresh replay right now.
+                                 Requires --capture to have been run first.
+
+            Exit codes
+            ----------
+              0  no diffs found (deterministic replay, matches stored baseline)
+              1  a diff was found, or a requested stored baseline is missing
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    baseline.add_argument("--portfolio", "-p", type=int, metavar="ID", help="Portfolio ID")
+    baseline.add_argument("--all", action="store_true", help="All portfolios in the workspace")
+    baseline.add_argument(
+        "--capture", action="store_true",
+        help="Capture and save a golden baseline for each selected portfolio.",
+    )
+    baseline.add_argument(
+        "--compare-stored", action="store_true",
+        help="Compare a freshly-run replay against the previously saved baseline.",
+    )
+    baseline.add_argument(
+        "--baseline-dir", default="golden_baselines", metavar="DIR",
+        help="Directory for baseline JSON storage (default: golden_baselines)",
+    )
+    baseline.add_argument(
+        "--skip-snapshots", action="store_true",
+        help="Skip NAV/snapshot replay (faster; omits snapshot truth from the baseline).",
+    )
+
+    # ── replay_cutover ────────────────────────────────────────────────────────
+    cutover = sub.add_parser(
+        "replay_cutover",
+        help="Per-portfolio controlled replay cutover to native asset_id keying (M5 Track B Stage 4)",
+        description=textwrap.dedent("""\
+            Controlled Replay Cutover — M5 Track B Stage 4.
+
+            Flips Portfolio.replay_asset_id_native for exactly ONE portfolio at
+            a time. There is no --all flag for this command, by design
+            (docs/implementation/M5_TRACK_B_NATIVE_INTEGRATION_TDD.md §9:
+            "not a global flag day").
+
+            Runs a dry-run native (asset_id-preferring) replay and compares it
+            against that portfolio's stored Golden Baseline
+            (`golden_baseline --portfolio ID --capture` must have been run
+            first). Any difference — holdings, snapshots, or validator
+            findings — aborts the cutover and leaves the portfolio in legacy
+            mode; nothing is ever persisted on a diff.
+
+            Actions
+            -------
+              (default)   Prove the cutover would succeed, without persisting
+                           the flag flip.
+              --commit     Persist the flag flip — but only if the comparison
+                           was bit-identical.
+              --rollback   Flip replay_asset_id_native back to False for this
+                           portfolio (legacy mode). Reversible at any time;
+                           never requires a ledger data rollback.
+
+            Exit codes
+            ----------
+              0  accepted (and committed, if --commit was given)
+              1  rejected (a diff was found), portfolio/baseline not found,
+                 or an unexpected error occurred
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    cutover.add_argument("--portfolio", "-p", type=int, required=True, metavar="ID",
+                          help="Portfolio ID (required — exactly one per invocation, never --all)")
+    cutover.add_argument("--commit", action="store_true",
+                          help="Persist the flag flip if the comparison is bit-identical.")
+    cutover.add_argument("--rollback", action="store_true",
+                          help="Flip replay_asset_id_native back to False for this portfolio.")
+    cutover.add_argument("--baseline-dir", default="golden_baselines", metavar="DIR",
+                          help="Directory the Golden Baseline was saved to (default: golden_baselines)")
+    cutover.add_argument("--skip-snapshots", action="store_true",
+                          help="Must match the --skip-snapshots value the baseline was captured with.")
+
     # ── apply_repair ──────────────────────────────────────────────────────────
     apply = sub.add_parser(
         "apply_repair",
@@ -4249,6 +4757,92 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip the confirmation prompt when --commit is used",
     )
 
+    # ── backfill_asset_ids ───────────────────────────────────────────────────
+    backfill = sub.add_parser(
+        "backfill_asset_ids",
+        help="Backfill ledger asset_id columns from resolved Registry identity (M5 Track B Stage 2)",
+        description=textwrap.dedent("""\
+            Ledger Asset ID Backfill — M5 Track B Stage 2.
+            Reference: docs/implementation/M5_TRACK_B_NATIVE_INTEGRATION_TDD.md §7 Stage 2.
+
+            Consumes a freshly-computed MigrationPlan (services.migration_planner,
+            unmodified) and writes every RESOLVED claim shape's asset_id onto
+            matching Transaction / PortfolioItem / Watchlist rows. Never resolves
+            anything itself — AMBIGUOUS/CANDIDATE/CONFLICT/UNKNOWN claim shapes
+            are always skipped and reported, never guessed.
+
+            Nothing reads asset_id yet (native cutover is Stage 5) — this
+            command's writes are inert with respect to replay, analytics, and
+            every other consumer. No production cutover happens here.
+
+            Defaults to a dry run (--commit is required to persist changes).
+            Idempotent: re-running (with or without the same --run-id) reports
+            zero additional writes once every resolvable row already carries
+            the correct asset_id. Resumable via --run-id, exactly like
+            execute_migration/bootstrap_registry.
+
+            Actions
+            -------
+              (default)            Backfill (dry-run unless --commit). Prints
+                                     a full progress report: per-shape outcome,
+                                     row counts updated, and the unresolved
+                                     backlog.
+
+              --unresolved-report   Read-only regardless of --commit. Prints
+                                     only the adjudication backlog — every
+                                     unresolved claim shape and its exact
+                                     transaction scope.
+
+              --rollback RUN_ID     Reverse a prior LIVE run precisely: resets
+                                     asset_id back to NULL for exactly the rows
+                                     that run wrote (never a later run's rows).
+                                     Dry-run unless --commit is also given.
+
+            Exit codes
+            ----------
+              0  no unresolved claim shapes remain in scope
+              1  unresolved claim shapes remain (adjudication required), or
+                 an unexpected failure occurred
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    backfill.add_argument(
+        "--portfolio", "-p",
+        type=int,
+        metavar="ID",
+        help="Portfolio ID to backfill",
+    )
+    backfill.add_argument(
+        "--all",
+        action="store_true",
+        help="Backfill across every portfolio in the workspace",
+    )
+    backfill.add_argument(
+        "--run-id",
+        metavar="UUID",
+        help="Resume a specific prior run; omit to start a new run",
+    )
+    backfill.add_argument(
+        "--commit",
+        action="store_true",
+        help="Persist changes to the database (default is a dry run)",
+    )
+    backfill.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip the confirmation prompt when --commit is used",
+    )
+    backfill.add_argument(
+        "--unresolved-report",
+        action="store_true",
+        help="Print only the unresolved-assets adjudication backlog (always read-only).",
+    )
+    backfill.add_argument(
+        "--rollback",
+        metavar="RUN_ID",
+        help="Reverse a prior live run's writes precisely (dry-run unless --commit is also given).",
+    )
+
     # ── seed_registry_classification ─────────────────────────────────────────
     seed_classification = sub.add_parser(
         "seed_registry_classification",
@@ -4310,6 +4904,12 @@ def main() -> None:
     elif args.command == "validate_ledger":
         exit_code = asyncio.run(_cmd_validate_ledger(args))
         sys.exit(exit_code)
+    elif args.command == "golden_baseline":
+        exit_code = asyncio.run(_cmd_golden_baseline(args))
+        sys.exit(exit_code)
+    elif args.command == "replay_cutover":
+        exit_code = asyncio.run(_cmd_replay_cutover(args))
+        sys.exit(exit_code)
     elif args.command == "plan_migration":
         exit_code = _cmd_plan_migration(args)
         sys.exit(exit_code)
@@ -4318,6 +4918,9 @@ def main() -> None:
         sys.exit(exit_code)
     elif args.command == "bootstrap_registry":
         exit_code = _cmd_bootstrap_registry(args)
+        sys.exit(exit_code)
+    elif args.command == "backfill_asset_ids":
+        exit_code = _cmd_backfill_asset_ids(args)
         sys.exit(exit_code)
     elif args.command == "apply_repair":
         exit_code = asyncio.run(_cmd_apply_repair(args))

@@ -190,6 +190,51 @@ def test_mixed_watchlist_resolves_each_entry_independently():
     assert by_symbol["NEVER_SEEN"]["registry"] == {"resolved": False, "reason": "no matching asset"}
 
 
+# ── Native asset_id path (M6 Native Integration, TDD §7 Stage 5) ─────────
+
+def test_materialized_asset_id_row_resolves_by_id_not_by_symbol_resolution():
+    """A Watchlist row with asset_id already backfilled (Stage 2) must
+    resolve via the materialized column — proven here by making the
+    symbol-based resolve_asset() path explode: if that path is still being
+    used for this row, the request would fail rather than degrade."""
+    db = make_session()
+    asset = svc.mint_asset(db, _claim(canonical_symbol="AOT.BK"), identifiers=[_provider_symbol("AOT.BK")])
+    item = _add_watchlist_row(db, "AOT.BK")
+    item.asset_id = asset.id
+    db.commit()
+
+    rows = asyncio.run(main.list_watchlist(db))
+
+    assert len(rows) == 1
+    assert rows[0]["registry"] == {
+        "resolved": True,
+        "asset_id": asset.id,
+        "canonical_symbol": "AOT.BK",
+        "market": "Thailand",
+        "exchange": "SET",
+    }
+
+
+def test_mixed_materialized_and_legacy_rows_each_resolve_independently():
+    """One row already carries asset_id (native path), the other doesn't yet
+    (legacy symbol-resolution fallback) — both must resolve correctly in the
+    same call, with no cross-contamination between the two code paths."""
+    db = make_session()
+    native_asset = svc.mint_asset(db, _claim(canonical_symbol="PTT.BK"), identifiers=[_provider_symbol("PTT.BK")])
+    legacy_asset = svc.mint_asset(db, _claim(canonical_symbol="SCB.BK"), identifiers=[_provider_symbol("SCB.BK")])
+
+    native_item = _add_watchlist_row(db, "PTT.BK")
+    native_item.asset_id = native_asset.id
+    db.commit()
+    _add_watchlist_row(db, "SCB.BK")  # legacy: asset_id stays NULL
+
+    rows = asyncio.run(main.list_watchlist(db))
+    by_symbol = {r["symbol"]: r for r in rows}
+
+    assert by_symbol["PTT.BK"]["registry"]["asset_id"] == native_asset.id
+    assert by_symbol["SCB.BK"]["registry"]["asset_id"] == legacy_asset.id
+
+
 # ── API compatibility ────────────────────────────────────────────────────
 
 def test_existing_response_fields_unchanged_regardless_of_registry_status():

@@ -26,14 +26,25 @@ depended on it), not a documented behavior; this module's fallback is
 symmetric in every caller, which only ever adds matches the old asymmetric
 code missed — it never removes one the old code found.
 
+M6 Native Integration (M5_TRACK_B_NATIVE_INTEGRATION_TDD.md §7 Stage 5): the
+optional `known_asset_ids` parameter lets a caller that already has the
+`known` side's `asset_id` materialized on a loaded ORM row (PortfolioItem,
+Watchlist — both carry `asset_id` since M5 Track B Stage 2) pass it straight
+through, skipping a `resolve_asset()` call this module would otherwise make
+for that entry. This module still owns the match decision (a caller supplies
+a fact it already holds, never a verdict) — any `known` entry omitted from
+`known_asset_ids`, or present with value `None` (not yet backfilled), is
+resolved exactly as before. Omitting the parameter entirely reproduces prior
+behavior exactly.
+
 Public API
 ----------
-match_known_symbols(db, symbols, known) -> dict[str, str]
+match_known_symbols(db, symbols, known, *, known_asset_ids=None) -> dict[str, str]
 """
 from __future__ import annotations
 
 import logging
-from typing import Iterable
+from typing import Iterable, Mapping, Optional
 
 from sqlalchemy.orm import Session
 
@@ -61,18 +72,29 @@ def match_known_symbols(
     db: Session,
     symbols: Iterable[str],
     known: Iterable[str],
+    *,
+    known_asset_ids: Optional[Mapping[str, Optional[int]]] = None,
 ) -> dict[str, str]:
     """For each symbol in `symbols`, find which entry in `known` denotes the
     same instrument, if any. Symbols with no match are omitted from the
     result.
 
+    `known_asset_ids` (optional): a `known`-symbol -> `asset_id` map the
+    caller already has on hand (e.g. `{item.symbol: item.asset_id for item in
+    portfolio_items}`) — see module docstring, M6 Native Integration. A `None`
+    value, or an entry simply absent from the map, falls through to the same
+    resolve_asset() call this function has always made for that `known`
+    entry; passing nothing at all is identical to every pre-existing caller.
+
     Resolution order per symbol:
       1. Exact string match — trivial, always correct, checked before any
          lookup.
-      2. Registry match — resolve_asset() on both sides; identical asset_id
-         wins. This can only ever add a match the `.BK` heuristic would have
-         missed (e.g. a spelling difference that isn't a `.BK` suffix at
-         all), never remove one, since it is tried before the fallback.
+      2. Registry match — identical asset_id wins, sourced from
+         `known_asset_ids` where the caller supplied it and from
+         resolve_asset() otherwise. This can only ever add a match the
+         `.BK` heuristic would have missed (e.g. a spelling difference
+         that isn't a `.BK` suffix at all), never remove one, since it is
+         tried before the fallback.
       3. Legacy bare/`.BK` suffix heuristic — preserved so any symbol the
          Registry has not resolved yet keeps matching exactly as before
          (M6 plan §4.4). This fallback is only ever applied against `known`
@@ -87,12 +109,16 @@ def match_known_symbols(
     known_list = [k for k in dict.fromkeys(known) if k]
     known_set = set(known_list)
 
-    known_asset_ids: dict[int, str] = {}
+    known_asset_id_map: dict[int, str] = {}
     known_unresolved: list[str] = []
     for k in known_list:
+        materialized = known_asset_ids.get(k) if known_asset_ids else None
+        if materialized is not None:
+            known_asset_id_map.setdefault(materialized, k)
+            continue
         resolved = registry_lookup.resolve_asset(db, k)
         if isinstance(resolved, registry_lookup.AssetView):
-            known_asset_ids.setdefault(resolved.asset_id, k)
+            known_asset_id_map.setdefault(resolved.asset_id, k)
         else:
             known_unresolved.append(k)
     known_unresolved_set = set(known_unresolved)
@@ -105,7 +131,7 @@ def match_known_symbols(
 
         resolved = registry_lookup.resolve_asset(db, sym)
         if isinstance(resolved, registry_lookup.AssetView):
-            match = known_asset_ids.get(resolved.asset_id)
+            match = known_asset_id_map.get(resolved.asset_id)
             if match is not None:
                 log.debug(
                     "registry_symbol_matching: %s -> %s via Registry asset_id=%s",

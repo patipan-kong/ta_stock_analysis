@@ -1053,8 +1053,23 @@ async def list_watchlist(db: Session = Depends(get_db)) -> list[dict]:
     if dr_parents:
         pp_list = await asyncio.gather(*[asyncio.to_thread(fetch_price_info, s) for s in dr_parents])
         parent_prices = dict(zip(dr_parents, pp_list))
+    # M6 Native Integration (M5_TRACK_B_NATIVE_INTEGRATION_TDD.md §7 Stage 5):
+    # Watchlist.asset_id is materialized (Stage 2 backfill). Rows that already
+    # carry it are resolved by asset_id directly (a materialized-column read,
+    # not a fresh symbol-derived resolution); resolve_asset() by symbol is the
+    # fallback, retained only for rows Track A hasn't adjudicated yet.
     try:
-        registry_map = registry_lookup.resolve_many(db, symbols)
+        by_asset_id_items = [i for i in items if i.asset_id is not None]
+        by_symbol_items = [i for i in items if i.asset_id is None]
+        registry_map: dict[str, "registry_lookup.AssetView | registry_lookup.Unresolved"] = {}
+        if by_asset_id_items:
+            resolved_by_id = registry_lookup.resolve_many(db, [i.asset_id for i in by_asset_id_items])
+            for i in by_asset_id_items:
+                registry_map[i.symbol] = resolved_by_id[i.asset_id]
+        if by_symbol_items:
+            resolved_by_symbol = registry_lookup.resolve_many(db, [i.symbol for i in by_symbol_items])
+            for i in by_symbol_items:
+                registry_map[i.symbol] = resolved_by_symbol[i.symbol]
     except Exception as exc:
         _log.warning(
             "watchlist: Registry resolution failed for %d symbol(s) — degrading to unresolved: %s",
