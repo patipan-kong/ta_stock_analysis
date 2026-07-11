@@ -176,6 +176,12 @@ from services.ledger_asset_backfill import (
     rollback_backfill,
     unresolved_steps,
 )
+from services.replay_cutover import (
+    CutoverResult,
+    attempt_cutover,
+    rollback_cutover,
+    unresolved_transaction_count,
+)
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────
@@ -2992,6 +2998,90 @@ async def _cmd_golden_baseline(args: argparse.Namespace) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Replay cutover: replay_cutover  (M5 Track B, Stage 4)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_cutover_result(result: CutoverResult) -> None:
+    print(f"\n  Portfolio {result.portfolio_id} \"{result.portfolio_name}\"")
+    print(f"    still_unresolved_transaction_count : {result.still_unresolved_transaction_count}")
+    if result.error:
+        print(f"    ERROR: {result.error}")
+        return
+    status    = "ACCEPTED" if result.accepted else "REJECTED"
+    persisted = "committed" if result.committed else "not committed (dry-run)"
+    print(f"    result    : {status} ({persisted})")
+    if result.parity is not None:
+        print(f"    is_bit_identical : {result.parity.is_bit_identical}")
+        for d in result.parity.holding_diffs:
+            print(f"      HOLDING  {d.symbol}.{d.field}: {d.baseline_value!r} -> {d.rebuilt_value!r}  [{d.status.value}]")
+        for d in result.parity.snapshot_diffs:
+            print(f"      SNAPSHOT {d.date}.{d.field}: {d.baseline_value!r} -> {d.rebuilt_value!r}  [{d.status.value}]")
+        for d in result.parity.validator_diffs:
+            print(f"      VALIDATOR {d.finding_key}: {d.baseline_severity} -> {d.rebuilt_severity}  [{d.status.value}]")
+
+
+async def _cmd_replay_cutover(args: argparse.Namespace) -> int:
+    """Per-portfolio controlled replay cutover (M5 Track B Stage 4).
+
+    Never global: exactly one --portfolio ID per invocation — there is no
+    --all flag for this command, by design (TDD §9: "not a global flag
+    day"). Default action proves the cutover would succeed without
+    persisting it; --commit persists the flag flip, and only when accepted.
+    --rollback reverts an already-cut-over portfolio back to legacy mode.
+    """
+    db = SessionLocal()
+    baseline_dir = getattr(args, "baseline_dir", "golden_baselines")
+
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        pid = args.portfolio
+        p = db.query(Portfolio).filter_by(id=pid, workspace_id=ws_id).first()
+        if p is None:
+            print(f"ERROR: Portfolio {pid} not found.", file=sys.stderr)
+            return 1
+
+        print(f"\n{_hr()}")
+        print("Replay Cutover  (M5 Track B Stage 4 — per-portfolio only, never global)")
+        print(_hr())
+
+        if getattr(args, "rollback", False):
+            ok = rollback_cutover(db, pid, ws_id)
+            if ok:
+                print(f"  Portfolio {pid}: replay_asset_id_native -> False (legacy mode)")
+            else:
+                print(f"  ERROR: portfolio {pid} not found", file=sys.stderr)
+            return 0 if ok else 1
+
+        stored = load_baseline(pid, baseline_dir=baseline_dir)
+        if stored is None:
+            print(
+                f"  ERROR: no stored Golden Baseline for portfolio {pid} in {baseline_dir} "
+                f"— run `golden_baseline --portfolio {pid} --capture` first.",
+                file=sys.stderr,
+            )
+            return 1
+
+        result = await attempt_cutover(
+            db, portfolio_id=pid, workspace_id=ws_id, baseline=stored,
+            commit=getattr(args, "commit", False),
+            skip_snapshots=getattr(args, "skip_snapshots", False),
+        )
+        _print_cutover_result(result)
+        return 0 if (result.accepted and result.error is None) else 1
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Migration planner: plan_migration
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -4331,6 +4421,54 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip NAV/snapshot replay (faster; omits snapshot truth from the baseline).",
     )
 
+    # ── replay_cutover ────────────────────────────────────────────────────────
+    cutover = sub.add_parser(
+        "replay_cutover",
+        help="Per-portfolio controlled replay cutover to native asset_id keying (M5 Track B Stage 4)",
+        description=textwrap.dedent("""\
+            Controlled Replay Cutover — M5 Track B Stage 4.
+
+            Flips Portfolio.replay_asset_id_native for exactly ONE portfolio at
+            a time. There is no --all flag for this command, by design
+            (docs/implementation/M5_TRACK_B_NATIVE_INTEGRATION_TDD.md §9:
+            "not a global flag day").
+
+            Runs a dry-run native (asset_id-preferring) replay and compares it
+            against that portfolio's stored Golden Baseline
+            (`golden_baseline --portfolio ID --capture` must have been run
+            first). Any difference — holdings, snapshots, or validator
+            findings — aborts the cutover and leaves the portfolio in legacy
+            mode; nothing is ever persisted on a diff.
+
+            Actions
+            -------
+              (default)   Prove the cutover would succeed, without persisting
+                           the flag flip.
+              --commit     Persist the flag flip — but only if the comparison
+                           was bit-identical.
+              --rollback   Flip replay_asset_id_native back to False for this
+                           portfolio (legacy mode). Reversible at any time;
+                           never requires a ledger data rollback.
+
+            Exit codes
+            ----------
+              0  accepted (and committed, if --commit was given)
+              1  rejected (a diff was found), portfolio/baseline not found,
+                 or an unexpected error occurred
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    cutover.add_argument("--portfolio", "-p", type=int, required=True, metavar="ID",
+                          help="Portfolio ID (required — exactly one per invocation, never --all)")
+    cutover.add_argument("--commit", action="store_true",
+                          help="Persist the flag flip if the comparison is bit-identical.")
+    cutover.add_argument("--rollback", action="store_true",
+                          help="Flip replay_asset_id_native back to False for this portfolio.")
+    cutover.add_argument("--baseline-dir", default="golden_baselines", metavar="DIR",
+                          help="Directory the Golden Baseline was saved to (default: golden_baselines)")
+    cutover.add_argument("--skip-snapshots", action="store_true",
+                          help="Must match the --skip-snapshots value the baseline was captured with.")
+
     # ── apply_repair ──────────────────────────────────────────────────────────
     apply = sub.add_parser(
         "apply_repair",
@@ -4768,6 +4906,9 @@ def main() -> None:
         sys.exit(exit_code)
     elif args.command == "golden_baseline":
         exit_code = asyncio.run(_cmd_golden_baseline(args))
+        sys.exit(exit_code)
+    elif args.command == "replay_cutover":
+        exit_code = asyncio.run(_cmd_replay_cutover(args))
         sys.exit(exit_code)
     elif args.command == "plan_migration":
         exit_code = _cmd_plan_migration(args)

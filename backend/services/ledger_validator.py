@@ -268,8 +268,14 @@ def _check_symbol_aliases(
     it blocks commit (rebuild_portfolio Stage 5) until resolved, exactly as
     DUP_INITIAL_POSITION already does for its own CRITICAL condition.
     """
-    canon_to_raw:    dict[str, set[str]]  = defaultdict(set)
-    canon_to_tx_ids: dict[str, list[int]] = defaultdict(list)
+    # ReplayKeyT — under native (asset_id-preferring) keying (TDD Stage 4),
+    # `canon` may be an int for resolved transactions while an unresolved
+    # residual on the same portfolio still falls through to a str. Keys are
+    # never mixed-type-compared directly (sorted() below uses str(canon) as
+    # its sort key) — same crash class already fixed in portfolio_rebuilder.py
+    # (_reconcile_portfolio_items et al.).
+    canon_to_raw:    dict[object, set[str]]  = defaultdict(set)
+    canon_to_tx_ids: dict[object, list[int]] = defaultdict(list)
 
     for ctx in ctxs:
         if not ctx.raw_symbol:
@@ -279,18 +285,19 @@ def _check_symbol_aliases(
         canon_to_tx_ids[canon].append(ctx.id)
 
     findings: list[LedgerFinding] = []
-    for canon, raw_set in sorted(canon_to_raw.items()):
+    for canon, raw_set in sorted(canon_to_raw.items(), key=lambda kv: str(kv[0])):
         if len(raw_set) <= 1:
             continue
         raw_list = sorted(raw_set)
+        canon_str = str(canon)
         findings.append(LedgerFinding(
             check_id          = "SYMBOL_ALIAS",
             severity          = FindingSeverity.CRITICAL,
             portfolio_id      = portfolio_id,
             transaction_ids   = canon_to_tx_ids[canon],
             symbol            = raw_list[0],
-            normalized_symbol = canon,
-            title             = f"Symbol alias: multiple raw forms resolve to '{canon}'",
+            normalized_symbol = canon_str,
+            title             = f"Symbol alias: multiple raw forms resolve to '{canon_str}'",
             explanation       = (
                 f"Raw symbols {raw_list} in portfolio {portfolio_id} all resolve "
                 f"to the same ReplayKey '{canon}'. "
@@ -307,7 +314,7 @@ def _check_symbol_aliases(
                 "DECISION_LOG.md per ADR-005, then run rebuild_portfolio."
             ),
             details={
-                "canonical_symbol":  canon,
+                "canonical_symbol":  canon_str,
                 "raw_symbols":       raw_list,
                 "transaction_count": len(canon_to_tx_ids[canon]),
             },
@@ -1213,7 +1220,11 @@ async def validate_portfolio_ledger(
     snap_dates = [s.snapshot_date for s in snapshots]
 
     # ── Canonicalize — single preprocessing pass ──────────────────────────────
-    ctxs: list[CanonicalTransaction] = list(canonicalize_transactions(raw_txs))
+    # M5 Track B Stage 4: same per-portfolio cutover gate as portfolio_rebuilder.py
+    # (never global — TDD §9). See that file's own comment for the full rationale.
+    ctxs: list[CanonicalTransaction] = list(
+        canonicalize_transactions(raw_txs, prefer_asset_id=bool(portfolio.replay_asset_id_native))
+    )
 
     # ── Effective mode: apply repair overlay ──────────────────────────────────
     # Build provenance map and SUPPRESS_FINDING lookup before running checks.

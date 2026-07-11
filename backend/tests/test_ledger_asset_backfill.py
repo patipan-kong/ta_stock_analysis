@@ -435,9 +435,19 @@ def test_backfill_never_writes_to_registry_tables():
 # entirely downstream of canonicalize_transactions()/replay_key(), both
 # proven column-blind below.
 
-def test_canonical_transaction_has_no_asset_id_field_yet():
+def test_canonical_transaction_asset_id_defaults_to_none():
+    """M5 Track B Stage 4 added CanonicalTransaction.asset_id (superseding
+    this test's original Stage-2-era name/assertion, which checked the field
+    didn't exist at all — see test_write_path_asset_id.py and
+    test_replay_cutover.py for Stage 4's own coverage of the field). What
+    remains true, and is the actual invariant this backfill module's
+    zero-replay-impact guarantee depends on: constructing a
+    CanonicalTransaction without prefer_asset_id=True — exactly what every
+    call site in this file does — always yields asset_id=None, regardless
+    of what the underlying Transaction.asset_id column holds."""
     field_names = {f for f in CanonicalTransaction.__dataclass_fields__}
-    assert "asset_id" not in field_names
+    assert "asset_id" in field_names
+    assert CanonicalTransaction.__dataclass_fields__["asset_id"].default is None
 
 
 def test_canonicalization_and_replay_key_are_unaffected_by_backfilled_asset_id():

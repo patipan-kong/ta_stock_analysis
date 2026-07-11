@@ -251,7 +251,7 @@ def test_buy_zero_shares_is_no_op():
 
 def test_sell_full_position_removes_holding():
     s = _state(0.0)
-    s.holdings["AOT.BK"] = _HoldingState("AOT.BK", Decimal("100"), Decimal("75"), "Transport")
+    s.holdings["AOT.BK"] = _HoldingState("AOT.BK", "AOT.BK", Decimal("100"), Decimal("75"), "Transport")
     _apply_transaction(s, _ctx(transaction_type="SELL", shares=100.0, total_amount=8_000.0,
                                 canonical_symbol="AOT.BK", realized_pnl=500.0))
     assert "AOT.BK" not in s.holdings
@@ -261,7 +261,7 @@ def test_sell_full_position_removes_holding():
 
 def test_sell_partial_reduces_shares():
     s = _state(0.0)
-    s.holdings["AOT.BK"] = _HoldingState("AOT.BK", Decimal("200"), Decimal("75"), "Transport")
+    s.holdings["AOT.BK"] = _HoldingState("AOT.BK", "AOT.BK", Decimal("200"), Decimal("75"), "Transport")
     _apply_transaction(s, _ctx(transaction_type="SELL", shares=50.0, total_amount=4_000.0,
                                 canonical_symbol="AOT.BK", realized_pnl=250.0))
     assert "AOT.BK" in s.holdings
@@ -270,7 +270,7 @@ def test_sell_partial_reduces_shares():
 
 def test_sell_accumulates_realized_pnl_from_ctx():
     s = _state(0.0)
-    s.holdings["AOT.BK"] = _HoldingState("AOT.BK", Decimal("100"), Decimal("75"), None)
+    s.holdings["AOT.BK"] = _HoldingState("AOT.BK", "AOT.BK", Decimal("100"), Decimal("75"), None)
     _apply_transaction(s, _ctx(transaction_type="SELL", shares=100.0, total_amount=8_000.0,
                                 canonical_symbol="AOT.BK", realized_pnl=1_234.56))
     assert float(s.cumulative_realized_pnl) == pytest.approx(1_234.56)
@@ -278,7 +278,7 @@ def test_sell_accumulates_realized_pnl_from_ctx():
 
 def test_sell_with_none_realized_pnl_treated_as_zero():
     s = _state(0.0)
-    s.holdings["AOT.BK"] = _HoldingState("AOT.BK", Decimal("100"), Decimal("75"), None)
+    s.holdings["AOT.BK"] = _HoldingState("AOT.BK", "AOT.BK", Decimal("100"), Decimal("75"), None)
     _apply_transaction(s, _ctx(transaction_type="SELL", shares=100.0, total_amount=8_000.0,
                                 canonical_symbol="AOT.BK", realized_pnl=None))
     assert s.cumulative_realized_pnl == Decimal("0")
@@ -302,7 +302,7 @@ def test_initial_position_adds_holding_without_affecting_cash():
 
 def test_initial_position_merges_into_existing_holding():
     s = _state(0.0)
-    s.holdings["KBANK.BK"] = _HoldingState("KBANK.BK", Decimal("100"), Decimal("60"), None)
+    s.holdings["KBANK.BK"] = _HoldingState("KBANK.BK", "KBANK.BK", Decimal("100"), Decimal("60"), None)
     _apply_transaction(s, _ctx(transaction_type="INITIAL_POSITION", shares=100.0,
                                 price_per_share=70.0, total_amount=7_000.0,
                                 raw_symbol="KBANK.BK", canonical_symbol="KBANK.BK"))
@@ -325,7 +325,7 @@ def test_initial_position_zero_shares_is_no_op():
 
 def test_qcorr_positive_delta_increases_shares_and_adjusts_avg():
     s = _state(0.0)
-    s.holdings["PTT.BK"] = _HoldingState("PTT.BK", Decimal("100"), Decimal("40"), None)
+    s.holdings["PTT.BK"] = _HoldingState("PTT.BK", "PTT.BK", Decimal("100"), Decimal("40"), None)
     _apply_transaction(s, _ctx(
         transaction_type     = "QUANTITY_CORRECTION",
         raw_symbol           = "PTT.BK",
@@ -343,7 +343,7 @@ def test_qcorr_positive_delta_increases_shares_and_adjusts_avg():
 
 def test_qcorr_negative_delta_decreases_shares():
     s = _state(0.0)
-    s.holdings["PTT.BK"] = _HoldingState("PTT.BK", Decimal("100"), Decimal("40"), None)
+    s.holdings["PTT.BK"] = _HoldingState("PTT.BK", "PTT.BK", Decimal("100"), Decimal("40"), None)
     _apply_transaction(s, _ctx(
         transaction_type     = "QUANTITY_CORRECTION",
         raw_symbol           = "PTT.BK",
@@ -357,7 +357,7 @@ def test_qcorr_negative_delta_decreases_shares():
 
 def test_qcorr_zeros_holding_removes_it():
     s = _state(0.0)
-    s.holdings["PTT.BK"] = _HoldingState("PTT.BK", Decimal("50"), Decimal("40"), None)
+    s.holdings["PTT.BK"] = _HoldingState("PTT.BK", "PTT.BK", Decimal("50"), Decimal("40"), None)
     _apply_transaction(s, _ctx(
         transaction_type     = "QUANTITY_CORRECTION",
         raw_symbol           = "PTT.BK",
@@ -849,9 +849,10 @@ def _make_final_state(holdings: dict[str, tuple[float, float]]) -> _PortfolioSta
     )
     for sym, (sh, ac) in holdings.items():
         state.holdings[sym] = _HoldingState(
-            symbol   = sym,
-            shares   = Decimal(str(sh)),
-            avg_cost = Decimal(str(ac)),
+            symbol        = sym,
+            report_symbol = sym,
+            shares        = Decimal(str(sh)),
+            avg_cost      = Decimal(str(ac)),
         )
     return state
 

@@ -71,6 +71,16 @@ class Portfolio(Base):
     risk_personality = Column(String, nullable=True)  # AGGRESSIVE|MODERATE|CONSERVATIVE
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # M5 Track B Stage 4 (docs/implementation/M5_TRACK_B_NATIVE_INTEGRATION_TDD.md
+    # §9 Rollout Plan, §7 Stage 4). Per-portfolio replay cutover gate: OFF (the
+    # default) keys replay by canonical_symbol/raw_symbol exactly as before
+    # Stage 4 shipped; ON prefers the portfolio's own asset_id via ReplayKey.
+    # Never a global switch — flipped one portfolio at a time, only after that
+    # portfolio's native replay is proven bit-identical to its Golden Baseline
+    # (services/replay_cutover.py). Nullable so existing rows default cleanly;
+    # NULL and False are both treated as OFF by every reader.
+    replay_asset_id_native = Column(Boolean, nullable=True, default=False)
+
     workspace = relationship("Workspace", back_populates="portfolios")
     items = relationship("PortfolioItem", back_populates="portfolio", cascade="all, delete-orphan")
     transactions = relationship("Transaction", back_populates="portfolio", cascade="all, delete-orphan")

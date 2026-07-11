@@ -43,15 +43,18 @@ Because avg_cost includes BUY fees, the complete round-trip cost is:
     cash_out = gross_sell - sell_fees_incl_vat
     true_pnl = cash_out - cost_in  (= the above formula)
 """
+import logging
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 
 from models.database import Portfolio, PortfolioItem, Transaction
+from services import registry_lookup
 from services.broker_fees import FeeProfile, FeeBreakdown, calc_fees, resolve_fee_profile
 
 _QUANT = Decimal("0.000001")
+_log = logging.getLogger(__name__)
 
 
 def _d(v: float) -> Decimal:
@@ -60,6 +63,42 @@ def _d(v: float) -> Decimal:
 
 def _f(v: Decimal) -> float:
     return float(v.quantize(_QUANT, rounding=ROUND_HALF_UP))
+
+
+def _resolve_write_time_asset_id(db: Session, symbol: str | None) -> int | None:
+    """Resolves `symbol` to a permanent asset_id at the moment it enters the
+    ledger (M5 Track B Stage 3, TDD §2.3) — the only legitimate resolution
+    point, per ASSET_REGISTRY.md §10. Reuses registry_lookup.resolve_asset(),
+    the platform's single Registry authority; performs no identity logic of
+    its own (ADR-004).
+
+    Fails open, per ASSET_REGISTRY.md §4 ("resolve decisively or ask — never
+    guess") and TDD §4.1: an unresolved symbol, or any unexpected error
+    resolving it, returns None rather than raising or inventing an id. The
+    legacy symbol is always what gets persisted regardless of this result —
+    this function never blocks a write. Unresolved outcomes are logged so
+    they're observable (ENGINEERING_PRINCIPLES.md "Failure Handling"),
+    mirroring the existing registry_recommendation_context.py convention.
+    """
+    if not symbol:
+        return None
+    try:
+        resolved = registry_lookup.resolve_asset(db, symbol)
+    except Exception as exc:
+        _log.warning(
+            "portfolio_transactions: resolve_asset raised for symbol=%r: %s — "
+            "asset_id left NULL, legacy symbol persisted unchanged",
+            symbol, exc,
+        )
+        return None
+    if isinstance(resolved, registry_lookup.AssetView):
+        return int(resolved.asset_id)
+    _log.info(
+        "portfolio_transactions: symbol=%r unresolved at write time (reason=%s) — "
+        "asset_id left NULL, legacy symbol persisted unchanged",
+        symbol, getattr(resolved, "reason", "unknown"),
+    )
+    return None
 
 
 # ─── BUY ──────────────────────────────────────────────────────────────────────
@@ -106,6 +145,8 @@ def execute_buy(
 
     tx_date = transaction_date or datetime.utcnow()
 
+    resolved_asset_id = _resolve_write_time_asset_id(db, symbol)
+
     item = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     if item:
         old_shares = _d(item.shares)
@@ -117,6 +158,8 @@ def execute_buy(
         item.avg_cost = _f(new_avg)
         if sector and not item.sector:
             item.sector = sector
+        if resolved_asset_id is not None and item.asset_id is None:
+            item.asset_id = resolved_asset_id
     else:
         item = PortfolioItem(
             workspace_id=ws_id,
@@ -125,6 +168,7 @@ def execute_buy(
             shares=_f(d_shares),
             avg_cost=_f(eff_price),       # fee-inclusive from the start
             sector=sector,
+            asset_id=resolved_asset_id,
         )
         db.add(item)
 
@@ -148,6 +192,7 @@ def execute_buy(
         notes=notes,
         sector=sector or (item.sector if item else None),
         execution_decision_id=execution_decision_id,
+        asset_id=resolved_asset_id,
     )
     db.add(tx)
     db.commit()
@@ -210,6 +255,10 @@ def execute_sell(
     if not item:
         raise ValueError(f"No holding found for {symbol} in this portfolio")
 
+    resolved_asset_id = _resolve_write_time_asset_id(db, symbol)
+    if resolved_asset_id is not None and item.asset_id is None:
+        item.asset_id = resolved_asset_id
+
     d_shares = _d(shares)
     d_price  = _d(price_per_share)
     d_gross  = d_shares * d_price
@@ -263,6 +312,7 @@ def execute_sell(
         transaction_date=tx_date,
         notes=full_notes,
         execution_decision_id=execution_decision_id,
+        asset_id=resolved_asset_id,
     )
     db.add(tx)
     db.commit()
@@ -437,6 +487,8 @@ def execute_dividend(
 
     portfolio.cash_balance = _f(_d(portfolio.cash_balance) + d_amount)
 
+    resolved_asset_id = _resolve_write_time_asset_id(db, symbol)
+
     tx = Transaction(
         workspace_id=ws_id,
         portfolio_id=portfolio_id,
@@ -451,6 +503,7 @@ def execute_dividend(
         exchange_rate=exchange_rate,
         transaction_date=tx_date,
         notes=notes,
+        asset_id=resolved_asset_id,
     )
     db.add(tx)
     db.commit()
@@ -498,6 +551,8 @@ def execute_initial_position(
     total    = d_shares * d_avg
     tx_date  = transaction_date or datetime.utcnow()
 
+    resolved_asset_id = _resolve_write_time_asset_id(db, symbol)
+
     item = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     if item:
         old_shares = _d(item.shares)
@@ -508,6 +563,8 @@ def execute_initial_position(
         item.avg_cost = _f(new_avg)
         if sector and not item.sector:
             item.sector = sector
+        if resolved_asset_id is not None and item.asset_id is None:
+            item.asset_id = resolved_asset_id
     else:
         item = PortfolioItem(
             workspace_id=ws_id,
@@ -516,6 +573,7 @@ def execute_initial_position(
             shares=_f(d_shares),
             avg_cost=_f(d_avg),
             sector=sector,
+            asset_id=resolved_asset_id,
         )
         db.add(item)
 
@@ -532,6 +590,7 @@ def execute_initial_position(
         transaction_date=tx_date,
         notes=notes,
         sector=sector or (item.sector if item else None),
+        asset_id=resolved_asset_id,
     )
     db.add(tx)
     db.commit()
@@ -592,6 +651,10 @@ def execute_quantity_correction(
     if not item:
         raise ValueError(f"No holding found for {symbol} in portfolio {portfolio_id}")
 
+    resolved_asset_id = _resolve_write_time_asset_id(db, symbol)
+    if resolved_asset_id is not None and item.asset_id is None:
+        item.asset_id = resolved_asset_id
+
     old_shares = _d(item.shares)
     new_shares = old_shares + d_delta
     if new_shares < 0:
@@ -619,6 +682,7 @@ def execute_quantity_correction(
         transaction_date=tx_date,
         notes=notes or f"Quantity correction: {'+' if d_delta > 0 else ''}{_f(d_delta)} shares",
         sector=item.sector,
+        asset_id=resolved_asset_id,
     )
     db.add(tx)
     db.commit()
