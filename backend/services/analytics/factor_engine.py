@@ -835,9 +835,14 @@ def compute_portfolio_factor_exposure(db, portfolio_id: int, workspace_id: int) 
     sector_data = _sector_concentration(raw_list)
 
     # ── Per-stock scores for the frontend table / radar ───────────────────────
+    # M6 Native Integration (M5_TRACK_B_NATIVE_INTEGRATION_TDD.md §7 Stage 5):
+    # additive asset_id, already materialized on `items` (Stage 2 backfill) —
+    # no new resolve_asset() call, no key change (still symbol-keyed).
+    asset_id_by_symbol = {item.symbol: item.asset_id for item in items}
     per_stock = [
         {
             "symbol":        s.symbol,
+            "asset_id":      asset_id_by_symbol.get(s.symbol),
             "sector":        next((r.sector for r in raw_list if r.symbol == s.symbol), None),
             "weight":        round(s.weight * 100, 2),  # convert to %
             "scores": {

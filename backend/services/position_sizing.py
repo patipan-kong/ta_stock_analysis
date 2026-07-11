@@ -350,7 +350,10 @@ def suggest_position_sizes(
     # Normalize current holdings lookup — Registry-backed with legacy .BK
     # fallback (see services/registry_symbol_matching.py).
     item_mv_by_symbol = {item.symbol: item_mvs.get(item.symbol, 0.0) for item in portfolio_items}
-    holdings_matched = match_known_symbols(db, symbols, item_mv_by_symbol.keys())
+    # M6 Native Integration (TDD §7 Stage 5): PortfolioItem.asset_id is already
+    # materialized (Stage 2 backfill) — pass it through instead of re-resolving.
+    item_asset_ids = {item.symbol: item.asset_id for item in portfolio_items}
+    holdings_matched = match_known_symbols(db, symbols, item_mv_by_symbol.keys(), known_asset_ids=item_asset_ids)
     holdings_mv: dict[str, float] = dict(item_mv_by_symbol)
     for sym, matched in holdings_matched.items():
         holdings_mv.setdefault(sym, item_mv_by_symbol[matched])

@@ -71,19 +71,29 @@ def _linked_transactions(db: Session, decision_id: int, known_symbols: list[str]
     item 1 — "the strongest concrete argument... for why asset_id beats
     symbol"). A post-hoc spelling difference (e.g. plan says "BH", the fill
     is recorded as "BH.BK") must not silently read as "no linked
-    transaction". When `known_symbols` (the plan's own symbols) is given,
-    each transaction symbol that doesn't already match one exactly is
-    resolved against them via registry_symbol_matching.match_known_symbols()
-    — a genuine Registry match (or its legacy .BK fallback) rewrites the
-    transaction's symbol to the plan's spelling; anything the Registry
-    can't decide is left untouched, which is identical to today's behavior
-    for the population of symbols the Registry hasn't resolved yet.
+    transaction".
+
+    M6 Native Integration (M5_TRACK_B_NATIVE_INTEGRATION_TDD.md §7 Stage 5):
+    `Transaction.asset_id` is materialized (Stage 2 backfill) on every row
+    already loaded here. Each plan symbol is resolved once via
+    registry_lookup.resolve_asset() — the Registry's own read API, not a new
+    resolution rule — and any transaction whose materialized `asset_id`
+    matches wins immediately: this is a direct identity comparison, strictly
+    stronger than the legacy string heuristic (it survives a rename the
+    `.BK` heuristic would never catch). `registry_symbol_matching.
+    match_known_symbols()` remains the fallback for whatever's left —
+    transactions with no `asset_id` yet, or plan symbols the Registry hasn't
+    adjudicated — identical to today's behavior for that residual.
     """
     from models.database import Transaction
+    from services import registry_lookup
 
     rows = db.query(Transaction).filter_by(execution_decision_id=decision_id).all()
     txs = [
-        {"symbol": t.symbol, "shares": t.shares, "price_per_share": t.price_per_share, "total_amount": t.total_amount}
+        {
+            "symbol": t.symbol, "shares": t.shares, "price_per_share": t.price_per_share,
+            "total_amount": t.total_amount, "asset_id": t.asset_id,
+        }
         for t in rows
     ]
 
@@ -91,17 +101,35 @@ def _linked_transactions(db: Session, decision_id: int, known_symbols: list[str]
         return txs
 
     known_set = set(known_symbols)
-    unmatched = [tx["symbol"] for tx in txs if tx["symbol"] and tx["symbol"] not in known_set]
-    if not unmatched:
+
+    # Native tier: materialized Transaction.asset_id vs. plan symbols resolved
+    # to asset_id. Only touches transactions not already an exact string match.
+    known_asset_ids: dict[int, str] = {}
+    for ks in known_symbols:
+        resolved = registry_lookup.resolve_asset(db, ks)
+        if isinstance(resolved, registry_lookup.AssetView):
+            known_asset_ids.setdefault(resolved.asset_id, ks)
+
+    still_unmatched: list[dict] = []
+    for tx in txs:
+        if not tx["symbol"] or tx["symbol"] in known_set:
+            continue
+        if tx["asset_id"] is not None and tx["asset_id"] in known_asset_ids:
+            tx["symbol"] = known_asset_ids[tx["asset_id"]]
+            continue
+        still_unmatched.append(tx)
+
+    if not still_unmatched:
         return txs
 
     from services.registry_symbol_matching import match_known_symbols
 
-    matches = match_known_symbols(db, symbols=unmatched, known=known_symbols)
+    unmatched_symbols = [tx["symbol"] for tx in still_unmatched]
+    matches = match_known_symbols(db, symbols=unmatched_symbols, known=known_symbols)
     if not matches:
         return txs
 
-    for tx in txs:
+    for tx in still_unmatched:
         mapped = matches.get(tx["symbol"])
         if mapped is not None:
             tx["symbol"] = mapped

@@ -281,6 +281,29 @@ def test_registry_conflict_never_silently_unified(db, ws_portfolio):
     assert detail["analysis"]["symbols"]["BH"]["note"] == "no_linked_transaction"
 
 
+def test_native_asset_id_links_transaction_with_no_bk_relationship(db, ws_portfolio):
+    """M6 Native Integration (M5_TRACK_B_NATIVE_INTEGRATION_TDD.md §7 Stage 5):
+    Transaction.asset_id is materialized directly (simulating a Stage 2
+    backfill) and links to the plan's "BH" through a fill recorded under a
+    spelling ("BHNEWNAME") that has no `.BK` relationship at all — the
+    legacy heuristic could never produce this match. A passing result here
+    can only come from the native asset_id join."""
+    ws, portfolio = ws_portfolio
+    asset = _mint_asset(db, "BH", provider_symbol="BH")
+
+    _snap, dec = _seed_snapshot_and_decision(
+        db, ws, portfolio, "APPROVED", _ALLOCS_BH_PLAN, with_transaction=True, tx_symbol="BHNEWNAME",
+    )
+    from models.database import Transaction
+    tx = db.query(Transaction).filter_by(execution_decision_id=dec.id).first()
+    tx.asset_id = int(asset.id)
+    db.commit()
+
+    detail = get_execution_detail(db, portfolio.id, dec.id)
+    assert detail["analysis"]["symbols"]["BH"]["executed_amount"] == 30_000.0
+    assert detail["analysis"]["symbols"]["BH"]["note"] is None
+
+
 def test_unrelated_symbols_stay_unmatched(db, ws_portfolio):
     """A transaction recorded under a wholly unrelated symbol (not a .BK
     variant, no Registry data at all) must not be linked — regression

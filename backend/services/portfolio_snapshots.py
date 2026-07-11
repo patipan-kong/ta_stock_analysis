@@ -279,6 +279,11 @@ async def generate_daily_snapshot(
 
         holdings.append({
             "symbol": item.symbol,
+            # M5_TRACK_B_NATIVE_INTEGRATION_TDD.md §4.2: additive-only key.
+            # `None` = not yet backfilled (Stage 2); absent entirely on any
+            # snapshot row written before this shipped — the two are
+            # distinguishable states readers must not conflate.
+            "asset_id": item.asset_id,
             "shares": round(item.shares, 6),
             "avg_cost": round(item.avg_cost, 4),
             "current_price": round(price, 4) if price is not None else None,

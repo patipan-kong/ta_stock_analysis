@@ -293,14 +293,23 @@ def _get_sector(
     portfolio_sector_by_symbol = {
         item.symbol: item.sector for item in portfolio_items if item.sector
     }
-    match = match_known_symbols(db, [symbol], portfolio_sector_by_symbol.keys()).get(symbol)
+    # M6 Native Integration (TDD §7 Stage 5): PortfolioItem/Watchlist already
+    # carry asset_id (Stage 2 backfill) — pass it through instead of
+    # re-resolving each known symbol.
+    portfolio_asset_ids = {item.symbol: item.asset_id for item in portfolio_items}
+    match = match_known_symbols(
+        db, [symbol], portfolio_sector_by_symbol.keys(), known_asset_ids=portfolio_asset_ids,
+    ).get(symbol)
     if match:
         return portfolio_sector_by_symbol[match]
 
     watchlist_sector_by_symbol = {
         item.symbol: item.sector for item in watchlist_items if item.sector
     }
-    match = match_known_symbols(db, [symbol], watchlist_sector_by_symbol.keys()).get(symbol)
+    watchlist_asset_ids = {item.symbol: item.asset_id for item in watchlist_items}
+    match = match_known_symbols(
+        db, [symbol], watchlist_sector_by_symbol.keys(), known_asset_ids=watchlist_asset_ids,
+    ).get(symbol)
     if match:
         return watchlist_sector_by_symbol[match]
 
@@ -433,7 +442,12 @@ def review_ideas(
 
     # Normalize portfolio-item lookup so "BH" finds the item stored as "BH.BK"
     portfolio_item_by_symbol = {item.symbol: item for item in portfolio_items}
-    holdings_matched = match_known_symbols(db, symbols, portfolio_item_by_symbol.keys())
+    # M6 Native Integration (TDD §7 Stage 5): asset_id is already materialized
+    # on these loaded PortfolioItem rows (Stage 2 backfill).
+    portfolio_item_asset_ids = {item.symbol: item.asset_id for item in portfolio_items}
+    holdings_matched = match_known_symbols(
+        db, symbols, portfolio_item_by_symbol.keys(), known_asset_ids=portfolio_item_asset_ids,
+    )
     holdings_by_sym: dict[str, PortfolioItem] = {
         sym: portfolio_item_by_symbol[matched] for sym, matched in holdings_matched.items()
     }
@@ -504,8 +518,16 @@ def review_ideas(
     all_holding_watchlist_symbols = (
         [item.symbol for item in portfolio_items] + [item.symbol for item in watchlist_items]
     )
+    # M6 Native Integration (TDD §7 Stage 5): reuse the already-materialized
+    # asset_id from portfolio/watchlist rows rather than re-resolving them.
+    holding_watchlist_asset_ids: dict[str, int | None] = {
+        item.symbol: item.asset_id for item in portfolio_items
+    }
+    holding_watchlist_asset_ids.update({item.symbol: item.asset_id for item in watchlist_items})
     known_symbols: set[str] = set(
-        match_known_symbols(db, symbols, all_holding_watchlist_symbols).keys()
+        match_known_symbols(
+            db, symbols, all_holding_watchlist_symbols, known_asset_ids=holding_watchlist_asset_ids,
+        ).keys()
     )
     # Symbols whose sector is already set in the DB — yfinance not needed for sector
     sectored_symbols = (
@@ -513,7 +535,9 @@ def review_ideas(
         + [item.symbol for item in watchlist_items if item.sector]
     )
     symbols_with_db_sector: set[str] = set(
-        match_known_symbols(db, symbols, sectored_symbols).keys()
+        match_known_symbols(
+            db, symbols, sectored_symbols, known_asset_ids=holding_watchlist_asset_ids,
+        ).keys()
     )
 
     yf_info_cache: dict[str, dict] = {}

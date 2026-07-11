@@ -301,9 +301,18 @@ def _resolve_symbol_sectors(
     watchlist_sector_by_symbol = {
         item.symbol: item.sector for item in watchlist_items if item.sector
     }
+    # M6 Native Integration (TDD §7 Stage 5): PortfolioItem/Watchlist already
+    # carry asset_id (Stage 2 backfill) — pass it straight through instead of
+    # having match_known_symbols() re-resolve each known symbol.
+    portfolio_asset_ids = {item.symbol: item.asset_id for item in portfolio_items}
+    watchlist_asset_ids = {item.symbol: item.asset_id for item in watchlist_items}
 
-    portfolio_match = match_known_symbols(db, symbols, portfolio_sector_by_symbol.keys())
-    watchlist_match = match_known_symbols(db, symbols, watchlist_sector_by_symbol.keys())
+    portfolio_match = match_known_symbols(
+        db, symbols, portfolio_sector_by_symbol.keys(), known_asset_ids=portfolio_asset_ids,
+    )
+    watchlist_match = match_known_symbols(
+        db, symbols, watchlist_sector_by_symbol.keys(), known_asset_ids=watchlist_asset_ids,
+    )
 
     result: dict[str, str] = {}
     for sym in symbols:
