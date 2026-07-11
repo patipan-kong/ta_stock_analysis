@@ -89,6 +89,11 @@ class PortfolioItem(Base):
     allow_swap = Column(Boolean, nullable=False, default=True)
     sector = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # M5 Track B Stage 2 (asset_foundation.md / M5_TRACK_B_NATIVE_INTEGRATION_TDD.md
+    # §4.1): backfilled by services/ledger_asset_backfill.py. NULL is a
+    # permanently legitimate "not yet adjudicated" state, not "migration in
+    # progress" — nothing reads this column yet (Stage 5 native cutover).
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
 
     portfolio = relationship("Portfolio", back_populates="items")
 
@@ -103,6 +108,8 @@ class Watchlist(Base):
     symbol = Column(String, index=True, nullable=False)
     sector = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # M5 Track B Stage 2 — see PortfolioItem.asset_id docstring above.
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
 
     workspace = relationship("Workspace", back_populates="watchlist_items")
 
@@ -228,6 +235,8 @@ class Transaction(Base):
     # decision. Never read by the canonicalizer, rebuilder, or ledger validators.
     execution_decision_id = Column(Integer, ForeignKey("user_execution_decisions.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # M5 Track B Stage 2 — see PortfolioItem.asset_id docstring above.
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
 
     portfolio = relationship("Portfolio", back_populates="transactions")
 

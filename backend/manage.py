@@ -168,6 +168,14 @@ from services.registry_replay_parity import (
     load_baseline,
     save_baseline,
 )
+from services.ledger_asset_backfill import (
+    BackfillOutcome,
+    BackfillReport,
+    RollbackReport,
+    backfill_ledger_asset_ids,
+    rollback_backfill,
+    unresolved_steps,
+)
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────
@@ -3368,6 +3376,175 @@ def _cmd_bootstrap_registry(args: argparse.Namespace) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Ledger asset backfill: backfill_asset_ids  (M5 Track B, Stage 2)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _print_backfill_report(report: BackfillReport) -> None:
+    print(f"\n{_hr()}")
+    print("Backfill Report")
+    print(_hr())
+    print(f"  Run ID                    : {report.run_id}")
+    print(f"  Mode                      : {'DRY RUN' if report.dry_run else 'LIVE'}")
+    print(f"  Portfolios scanned        : {list(report.portfolios_scanned)}")
+    print(f"  Transactions updated      : {report.transactions_updated}")
+    print(f"  Portfolio items updated   : {report.portfolio_items_updated}")
+    print(f"  Watchlist rows updated    : {report.watchlist_rows_updated}")
+    print(f"  Still unresolved (txns)   : {report.still_unresolved_transaction_count}")
+
+    completed = [s for s in report.steps if s.outcome == BackfillOutcome.COMPLETED]
+    if completed:
+        print(f"\n{_hr()}")
+        print(f"Completed  ({len(completed)} claim shape(s))")
+        print(_hr())
+        for st in completed:
+            print(
+                f"  {st.shape.raw_symbol:<16}{(st.shape.canonical_symbol or '—'):<16}"
+                f"asset_id={st.resolved_asset_id:<6} "
+                f"tx={st.transactions_updated} item={st.portfolio_items_updated} wl={st.watchlist_rows_updated}"
+            )
+
+    already_done = [s for s in report.steps if s.outcome == BackfillOutcome.SKIPPED_ALREADY_DONE]
+    if already_done:
+        print(f"\n{_hr()}")
+        print(f"Already done  ({len(already_done)} claim shape(s))")
+        print(_hr())
+        for st in already_done:
+            print(f"  {st.shape.raw_symbol:<16}{(st.shape.canonical_symbol or '—'):<16}asset_id={st.resolved_asset_id}")
+
+    _print_unresolved_section(report)
+    print(_hr())
+
+
+def _print_unresolved_section(report: BackfillReport) -> None:
+    """Every unresolved record, reported — never silently dropped."""
+    unresolved = unresolved_steps(report)
+    if not unresolved:
+        return
+    print(f"\n{_hr()}")
+    print(f"Unresolved — Adjudication Required  ({len(unresolved)} claim shape(s), "
+          f"{sum(s.transaction_count for s in unresolved)} transaction(s))")
+    print(_hr())
+    for st in unresolved:
+        print(
+            f"  {st.shape.raw_symbol:<16}{(st.shape.canonical_symbol or '—'):<16}"
+            f"currency={st.shape.currency or '—':<6} transactions={st.transaction_count:<6} {st.detail}"
+        )
+    print("\n  Resolve via plan_migration/execute_migration/bootstrap_registry, then re-run backfill_asset_ids.")
+
+
+def _print_rollback_report(report: RollbackReport) -> None:
+    print(f"\n{_hr()}")
+    print("Rollback Report")
+    print(_hr())
+    print(f"  Run ID                    : {report.run_id}")
+    print(f"  Mode                      : {'DRY RUN' if report.dry_run else 'LIVE'}")
+    print(f"  Claim shapes rolled back  : {report.shapes_rolled_back}")
+    print(f"  Transactions reset        : {report.transactions_reset}")
+    print(f"  Portfolio items reset     : {report.portfolio_items_reset}")
+    print(f"  Watchlist rows reset      : {report.watchlist_rows_reset}")
+    print(_hr())
+
+
+def _cmd_backfill_asset_ids(args: argparse.Namespace) -> int:
+    """Writes RESOLVED Asset Registry verdicts onto Transaction/PortfolioItem/
+    Watchlist.asset_id (M5 Track B, Stage 2). Never resolves anything itself —
+    consumes a freshly-computed MigrationPlan (services.migration_planner,
+    unmodified) exactly like execute_migration/bootstrap_registry do.
+
+    Nothing reads asset_id yet (Stage 5 native cutover); this command is
+    inert with respect to replay, analytics, and every other consumer.
+
+    Defaults to a dry run (--commit is required to persist changes).
+    --unresolved-report prints only the adjudication backlog (always
+    read-only, regardless of --commit). --rollback RUN_ID reverses a prior
+    live run's writes precisely (only rows that run actually changed).
+    """
+    db = SessionLocal()
+    t_start = time.monotonic()
+    try:
+        ws = db.query(Workspace).first()
+        if ws is None:
+            print("ERROR: No workspace found in database.", file=sys.stderr)
+            return 1
+        ws_id = ws.id
+
+        if getattr(args, "rollback", None):
+            dry_run = not getattr(args, "commit", False)
+            if not dry_run and not getattr(args, "yes", False):
+                print(f"\nRolling back backfill run_id={args.rollback} — this resets asset_id "
+                      f"back to NULL for exactly the rows that run wrote.")
+                confirm = input("Proceed? [y/N] ").strip().lower()
+                if confirm != "y":
+                    print("Aborted.")
+                    return 1
+            print(f"\n{_hr()}")
+            print(f"Backfill Rollback  —  run_id={args.rollback}  {'(DRY RUN)' if dry_run else '(LIVE)'}")
+            print(_hr())
+            rb_report = rollback_backfill(db, args.rollback, dry_run=dry_run)
+            _print_rollback_report(rb_report)
+            elapsed = time.monotonic() - t_start
+            print(f"\n  Completed in {elapsed:.2f}s.")
+            return 0
+
+        portfolio_ids: list[int] | None
+        if getattr(args, "all", False):
+            portfolios = db.query(Portfolio).filter_by(workspace_id=ws_id).all()
+            if not portfolios:
+                print("ERROR: No portfolios found in workspace.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id for p in portfolios]
+        elif getattr(args, "portfolio", None):
+            p = db.query(Portfolio).filter_by(id=args.portfolio, workspace_id=ws_id).first()
+            if p is None:
+                print(f"ERROR: Portfolio {args.portfolio} not found.", file=sys.stderr)
+                return 1
+            portfolio_ids = [p.id]
+        else:
+            print("ERROR: Specify --portfolio ID  or  --all", file=sys.stderr)
+            return 1
+
+        unresolved_only = getattr(args, "unresolved_report", False)
+        dry_run = True if unresolved_only else not getattr(args, "commit", False)
+        run_id = args.run_id or str(uuid.uuid4())
+        resuming = bool(args.run_id)
+
+        if not dry_run and not getattr(args, "yes", False):
+            action = "Resuming" if resuming else "Starting"
+            print(f"\n{action} a LIVE ledger asset backfill — run_id={run_id}")
+            print("This will write asset_id onto Transaction/PortfolioItem/Watchlist rows.")
+            print("Nothing reads this column yet (Stage 5 native cutover) — this write is inert.")
+            confirm = input("Proceed? [y/N] ").strip().lower()
+            if confirm != "y":
+                print("Aborted.")
+                return 1
+
+        label = "Unresolved Assets Report" if unresolved_only else "Ledger Asset Backfill"
+        print(f"\n{_hr()}")
+        print(f"{label}  —  run_id={run_id}  {'(RESUME)' if resuming else '(NEW RUN)'}  "
+              f"{'(DRY RUN)' if dry_run else '(LIVE)'}")
+        print(_hr())
+
+        plan = plan_migration(db, portfolio_ids=portfolio_ids)
+        report = backfill_ledger_asset_ids(db, plan, portfolio_ids=portfolio_ids, run_id=run_id, dry_run=dry_run)
+
+        if unresolved_only:
+            _print_unresolved_section(report)
+            print(_hr())
+        else:
+            _print_backfill_report(report)
+
+    except Exception as exc:
+        print(f"\nERROR: Unexpected failure — {exc}", file=sys.stderr)
+        return 1
+    finally:
+        db.close()
+
+    elapsed = time.monotonic() - t_start
+    print(f"\n  Completed in {elapsed:.2f}s.")
+    return 1 if unresolved_steps(report) else 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Apply repairs: apply_repair
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -4442,6 +4619,92 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip the confirmation prompt when --commit is used",
     )
 
+    # ── backfill_asset_ids ───────────────────────────────────────────────────
+    backfill = sub.add_parser(
+        "backfill_asset_ids",
+        help="Backfill ledger asset_id columns from resolved Registry identity (M5 Track B Stage 2)",
+        description=textwrap.dedent("""\
+            Ledger Asset ID Backfill — M5 Track B Stage 2.
+            Reference: docs/implementation/M5_TRACK_B_NATIVE_INTEGRATION_TDD.md §7 Stage 2.
+
+            Consumes a freshly-computed MigrationPlan (services.migration_planner,
+            unmodified) and writes every RESOLVED claim shape's asset_id onto
+            matching Transaction / PortfolioItem / Watchlist rows. Never resolves
+            anything itself — AMBIGUOUS/CANDIDATE/CONFLICT/UNKNOWN claim shapes
+            are always skipped and reported, never guessed.
+
+            Nothing reads asset_id yet (native cutover is Stage 5) — this
+            command's writes are inert with respect to replay, analytics, and
+            every other consumer. No production cutover happens here.
+
+            Defaults to a dry run (--commit is required to persist changes).
+            Idempotent: re-running (with or without the same --run-id) reports
+            zero additional writes once every resolvable row already carries
+            the correct asset_id. Resumable via --run-id, exactly like
+            execute_migration/bootstrap_registry.
+
+            Actions
+            -------
+              (default)            Backfill (dry-run unless --commit). Prints
+                                     a full progress report: per-shape outcome,
+                                     row counts updated, and the unresolved
+                                     backlog.
+
+              --unresolved-report   Read-only regardless of --commit. Prints
+                                     only the adjudication backlog — every
+                                     unresolved claim shape and its exact
+                                     transaction scope.
+
+              --rollback RUN_ID     Reverse a prior LIVE run precisely: resets
+                                     asset_id back to NULL for exactly the rows
+                                     that run wrote (never a later run's rows).
+                                     Dry-run unless --commit is also given.
+
+            Exit codes
+            ----------
+              0  no unresolved claim shapes remain in scope
+              1  unresolved claim shapes remain (adjudication required), or
+                 an unexpected failure occurred
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    backfill.add_argument(
+        "--portfolio", "-p",
+        type=int,
+        metavar="ID",
+        help="Portfolio ID to backfill",
+    )
+    backfill.add_argument(
+        "--all",
+        action="store_true",
+        help="Backfill across every portfolio in the workspace",
+    )
+    backfill.add_argument(
+        "--run-id",
+        metavar="UUID",
+        help="Resume a specific prior run; omit to start a new run",
+    )
+    backfill.add_argument(
+        "--commit",
+        action="store_true",
+        help="Persist changes to the database (default is a dry run)",
+    )
+    backfill.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip the confirmation prompt when --commit is used",
+    )
+    backfill.add_argument(
+        "--unresolved-report",
+        action="store_true",
+        help="Print only the unresolved-assets adjudication backlog (always read-only).",
+    )
+    backfill.add_argument(
+        "--rollback",
+        metavar="RUN_ID",
+        help="Reverse a prior live run's writes precisely (dry-run unless --commit is also given).",
+    )
+
     # ── seed_registry_classification ─────────────────────────────────────────
     seed_classification = sub.add_parser(
         "seed_registry_classification",
@@ -4514,6 +4777,9 @@ def main() -> None:
         sys.exit(exit_code)
     elif args.command == "bootstrap_registry":
         exit_code = _cmd_bootstrap_registry(args)
+        sys.exit(exit_code)
+    elif args.command == "backfill_asset_ids":
+        exit_code = _cmd_backfill_asset_ids(args)
         sys.exit(exit_code)
     elif args.command == "apply_repair":
         exit_code = asyncio.run(_cmd_apply_repair(args))

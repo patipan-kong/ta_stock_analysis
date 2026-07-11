@@ -109,20 +109,6 @@
       }
     },
     {
-      "id": "gpt-5.4",
-      "label": "GPT-5.4",
-      "apiModel": "gpt-5.4",
-      "provider": "openai",
-      "memo":"คู่หูจัดการportfolio: เหมาะทำ production challenger , daily optimization",
-      "cost": {
-        "token_1m": {
-          "input": 2.50,
-          "output": 15,
-          "caching": 0.25
-        }
-      }
-    },
-    {
       "id": "gpt-5.5",
       "label": "GPT-5.5",
       "apiModel": "gpt-5.5",
@@ -133,6 +119,20 @@
           "input": 5,
           "output": 30,
           "caching": 0.5
+        }
+      }
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "label": "GPT-5.6 Terra",
+      "apiModel": "gpt-5.6-terra",
+      "provider": "openai",
+      "memo":"คู่หูจัดการportfolio: เหมาะทำ production challenger , daily optimization",
+      "cost": {
+        "token_1m": {
+          "input": 2.50,
+          "output": 15,
+          "caching": 0.25
         }
       }
     },
