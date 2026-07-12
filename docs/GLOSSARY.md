@@ -417,3 +417,77 @@ A document that governs one domain's interior.
 Supreme inside the boundary.
 
 Subordinate to the Platform Architecture at the boundary.
+
+## Definition Vocabulary
+
+The closed set of words asset definitions are written in.
+
+Platform-owned. Extended only by governance, never by data.
+
+Every word exists because some engine must behave differently on it.
+
+Its size is a health metric of the whole abstraction.
+
+
+## Axis
+
+One of the seven questions a definition answers about a kind:
+
+unit semantics, acquisition, settlement, valuation,
+flow grants, event-family grants, existence pattern.
+
+The axes are constitutional; the words on each axis are canonical.
+
+Defined in `docs/architecture/asset_definitions.md` §5.1.
+
+
+## Grant
+
+A boolean declaration in an asset definition.
+
+Supports coupons. Supports corporate actions.
+
+Present or absent — and absence is itself a declaration.
+
+An ungranted capability means "does not support," never "unknown."
+
+
+## Unit Semantics
+
+How a kind is counted.
+
+What one unit is. Discrete or continuous. Sign. Conservation.
+
+The declaration the Accounting Engine can never do without.
+
+
+## Flow Type
+
+One kind of holding-generated flow a definition may grant.
+
+Dividend. Coupon. Interest. Rent. Staking. Distribution.
+
+Each carries its income character.
+
+An ungranted flow is a flow the ledger refuses.
+
+
+## Event Family
+
+One kind of structural event a definition may grant.
+
+Split. Merger. Spin-off. Redemption. Expiry. Exercise.
+
+Definitions grant the family; Lifecycle & Structural Events
+interprets the actual event.
+
+
+## Definition Version
+
+One immutable published state of an asset definition.
+
+Additive within a version. New version to widen or narrow.
+
+Recorded facts replay under the version that admitted them.
+
+Definitions bind forward, never backward.
