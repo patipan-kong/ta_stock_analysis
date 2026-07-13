@@ -42,6 +42,14 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from models.database import Portfolio, PortfolioItem, PortfolioSnapshot, Transaction
+from services.asset_definitions import (
+    BindingResolver,
+    DefinitionRegistry,
+    DefinitionRegistryError,
+    UnresolvedBindingError,
+)
+from services.asset_definitions.vocabulary import AcquisitionSemantics, FlowType, RelationshipKind
+from services.asset_domain import AssetType
 from services.data_fetcher import fetch_history
 from services.ledger_repair import apply_repair_overlay
 from services.replay_key import replay_key
@@ -94,6 +102,60 @@ class LedgerFinding:
     origin:            str | None     = None
 
 
+class RuntimeFindingCategory(str, Enum):
+    """Taxonomy for Stage R1 Legacy-vs-Runtime disagreements (M11 brief).
+
+    Only RUNTIME_MISMATCH and MISSING_BINDING are reachable by the current
+    consultations in _consult_runtime_capabilities() — the ledger has no
+    transaction type that exercises an Axis-6 (event-family) or an
+    unrecognized-vocabulary-word decision today, so UNKNOWN_CAPABILITY and
+    UNEXPECTED_GRANT have no live trigger. They are named here anyway,
+    verbatim from the brief, so the taxonomy is complete when a future
+    consultation needs them — not dead code, an unused enum member costs
+    nothing and documents the full category space.
+    """
+    RUNTIME_MISMATCH   = "RuntimeMismatch"
+    UNKNOWN_CAPABILITY = "UnknownCapability"
+    MISSING_BINDING    = "MissingBinding"
+    UNEXPECTED_GRANT   = "UnexpectedGrant"
+
+
+@dataclass(frozen=True)
+class RuntimeValidationFinding:
+    """One Legacy-vs-Runtime disagreement, or a MissingBinding refusal.
+
+    Purely observational (M11 brief: "Do NOT throw / reject / change
+    behavior / change validation result"). Never added to
+    LedgerValidationReport.findings, never affects overall_severity.
+    """
+    category:        str
+    check_id:        str
+    transaction_ids: tuple[int, ...]
+    binding:         str
+    question:        str
+    legacy_result:   bool
+    runtime_result:  bool | None
+    detail:          str
+
+
+@dataclass(frozen=True)
+class RuntimeConsultationLog:
+    """Stage R1 shadow-comparison output for one validation run.
+
+    consulted   — number of Legacy-vs-Runtime questions asked.
+    agreements  — number of those where legacy_result == runtime_result.
+    findings    — every disagreement / refusal, as RuntimeValidationFinding.
+
+    Additive metadata on LedgerValidationReport. Its presence or contents
+    never influence report.findings, report.overall_severity, or any other
+    existing field — see _consult_runtime_capabilities()'s docstring for
+    which legacy decisions are shadowed and why.
+    """
+    consulted:  int
+    agreements: int
+    findings:   tuple[RuntimeValidationFinding, ...]
+
+
 @dataclass
 class LedgerValidationReport:
     portfolio_id:           int
@@ -102,6 +164,9 @@ class LedgerValidationReport:
     findings:               list[LedgerFinding] = field(default_factory=list)
     elapsed_seconds:        float = 0.0
     price_check_performed:  bool  = False
+    # Stage R1 (M11): populated only when _consult_runtime_capabilities()
+    # runs (non-empty ctxs). None means "not consulted", not "no findings".
+    runtime_consultation:   "RuntimeConsultationLog | None" = None
 
     @property
     def criticals(self) -> list[LedgerFinding]:
@@ -1134,6 +1199,188 @@ async def _check_impossible_prices(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Runtime consultation (Stage R1 — Asset Definition Runtime, read-only shadow)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# M11 brief: introduce the Ledger Validator as the runtime's first consumer.
+# Legacy transaction-type logic remains authoritative; the runtime is asked
+# the same question a second way and any disagreement is recorded as a
+# RuntimeValidationFinding — never raised, never allowed to change
+# report.findings or report.overall_severity.
+#
+# The ledger carries no per-transaction asset_type column at all (M9 TDD
+# Section 10 challenge: "cash is a column, not an asset"; Transaction only
+# ever names a raw symbol string or nothing). So this stage can only shadow
+# the decisions the legacy code already makes *implicitly* by which
+# transaction_type it is looking at:
+#
+#   1. DIVIDEND transactions are accepted as a valid cash-additive flow
+#      (_replay_and_check) with no per-asset validation. The only kind in
+#      the library capable of paying a dividend is EQUITY, so the runtime
+#      counterpart question is: does EQUITY grant FlowType.DIVIDEND?
+#   2. SYMBOL_ALIAS (_check_symbol_aliases) merges multiple raw symbols that
+#      resolve to the same ReplayKey into one holding, unconditionally
+#      (ADR-005). The runtime counterpart: does EQUITY permit
+#      RelationshipKind.SAME_ENTITY?
+#   3. DEPOSIT / WITHDRAW / INITIAL_CASH never touch state.holdings, only
+#      state.cash (_replay_and_check) — legacy already treats them as
+#      non-share-bearing cash movements. The runtime counterpart exercises
+#      BindingResolver.resolve_numeraire() (M9 TDD Section 2.3's documented
+#      transitional special case for cash, unused by any caller until now):
+#      is the numeraire's acquisition_semantics NOT_TRANSACTABLE?
+#
+# Deliberately absent: an Axis-6 (event-family) consultation. No transaction
+# type in this ledger schema corresponds to SPLIT/MERGER/SPIN_OFF/RENAME/
+# SUSPENSION/DELISTING, so there is no legacy decision to shadow — inventing
+# one would compare the runtime against a fabricated "legacy result" rather
+# than a real one.
+
+def _consult_runtime_capabilities(
+    ctxs: list[CanonicalTransaction],
+) -> RuntimeConsultationLog:
+    """Ask the Asset Definition Runtime the questions Legacy logic already
+    answers implicitly; record any disagreement. Never raises — a defect in
+    the runtime itself (e.g. boot validation failure) becomes one
+    MissingBinding finding, consistent with this module's "never raises to
+    the caller" invariant.
+    """
+    try:
+        registry = DefinitionRegistry.build()
+    except DefinitionRegistryError as exc:
+        return RuntimeConsultationLog(
+            consulted=0,
+            agreements=0,
+            findings=(RuntimeValidationFinding(
+                category        = RuntimeFindingCategory.MISSING_BINDING.value,
+                check_id        = "RUNTIME_REGISTRY_BOOT_FAILED",
+                transaction_ids = (),
+                binding         = "-",
+                question        = "DefinitionRegistry.build()",
+                legacy_result   = True,
+                runtime_result  = None,
+                detail          = str(exc),
+            ),),
+        )
+
+    resolver = BindingResolver(registry)
+    findings: list[RuntimeValidationFinding] = []
+    consulted  = 0
+    agreements = 0
+
+    # ── 1. DIVIDEND ⇔ EQUITY grants FlowType.DIVIDEND ─────────────────────
+    dividend_ids = tuple(ctx.id for ctx in ctxs if ctx.transaction_type == "DIVIDEND")
+    if dividend_ids:
+        consulted += 1
+        legacy_result = True  # legacy accepts DIVIDEND unconditionally today
+        try:
+            runtime_result = resolver.resolve(AssetType.EQUITY.value).grants_flow(FlowType.DIVIDEND)
+        except UnresolvedBindingError as exc:
+            findings.append(RuntimeValidationFinding(
+                category=RuntimeFindingCategory.MISSING_BINDING.value,
+                check_id="RUNTIME_DIVIDEND_FLOW", transaction_ids=dividend_ids,
+                binding=AssetType.EQUITY.value, question="grants_flow(DIVIDEND)",
+                legacy_result=legacy_result, runtime_result=None, detail=str(exc),
+            ))
+        else:
+            if runtime_result == legacy_result:
+                agreements += 1
+            else:
+                findings.append(RuntimeValidationFinding(
+                    category=RuntimeFindingCategory.RUNTIME_MISMATCH.value,
+                    check_id="RUNTIME_DIVIDEND_FLOW", transaction_ids=dividend_ids,
+                    binding=AssetType.EQUITY.value, question="grants_flow(DIVIDEND)",
+                    legacy_result=legacy_result, runtime_result=runtime_result,
+                    detail=(
+                        f"{len(dividend_ids)} DIVIDEND transaction(s) are accepted as a "
+                        "valid cash flow by legacy replay, but the runtime's EQUITY "
+                        "capability view does not grant FlowType.DIVIDEND."
+                    ),
+                ))
+
+    # ── 2. SYMBOL_ALIAS merge ⇔ EQUITY permits RelationshipKind.SAME_ENTITY ─
+    raw_by_key: dict[object, set[str]] = defaultdict(set)
+    ids_by_key: dict[object, list[int]] = defaultdict(list)
+    for ctx in ctxs:
+        if not ctx.raw_symbol:
+            continue
+        key = replay_key(ctx)
+        raw_by_key[key].add(ctx.raw_symbol)
+        ids_by_key[key].append(ctx.id)
+    merged_tx_ids = tuple(
+        tx_id
+        for key, raws in raw_by_key.items()
+        if len(raws) > 1
+        for tx_id in ids_by_key[key]
+    )
+    if merged_tx_ids:
+        consulted += 1
+        legacy_result = True  # legacy merges aliased symbols unconditionally (ADR-005)
+        try:
+            runtime_result = resolver.resolve(AssetType.EQUITY.value).permits_relationship(
+                RelationshipKind.SAME_ENTITY
+            )
+        except UnresolvedBindingError as exc:
+            findings.append(RuntimeValidationFinding(
+                category=RuntimeFindingCategory.MISSING_BINDING.value,
+                check_id="RUNTIME_SYMBOL_ALIAS_RELATIONSHIP", transaction_ids=merged_tx_ids,
+                binding=AssetType.EQUITY.value, question="permits_relationship(SAME_ENTITY)",
+                legacy_result=legacy_result, runtime_result=None, detail=str(exc),
+            ))
+        else:
+            if runtime_result == legacy_result:
+                agreements += 1
+            else:
+                findings.append(RuntimeValidationFinding(
+                    category=RuntimeFindingCategory.RUNTIME_MISMATCH.value,
+                    check_id="RUNTIME_SYMBOL_ALIAS_RELATIONSHIP", transaction_ids=merged_tx_ids,
+                    binding=AssetType.EQUITY.value, question="permits_relationship(SAME_ENTITY)",
+                    legacy_result=legacy_result, runtime_result=runtime_result,
+                    detail=(
+                        f"{len(merged_tx_ids)} transaction(s) across aliased raw symbols "
+                        "are merged into one holding by legacy replay (ADR-005), but the "
+                        "runtime's EQUITY capability view does not permit "
+                        "RelationshipKind.SAME_ENTITY."
+                    ),
+                ))
+
+    # ── 3. Cash-movement types ⇔ CASH numeraire is NOT_TRANSACTABLE ────────
+    cash_move_ids = tuple(
+        ctx.id for ctx in ctxs if ctx.transaction_type in _CASH_IN_TYPES or ctx.transaction_type == "WITHDRAW"
+    )
+    if cash_move_ids:
+        consulted += 1
+        legacy_result = True  # legacy never routes these through the holdings/shares path
+        try:
+            runtime_result = (
+                resolver.resolve_numeraire().acquisition_semantics() == AcquisitionSemantics.NOT_TRANSACTABLE
+            )
+        except Exception as exc:  # NumeraireNotResolvedError — library defect, not a per-asset one
+            findings.append(RuntimeValidationFinding(
+                category=RuntimeFindingCategory.MISSING_BINDING.value,
+                check_id="RUNTIME_CASH_NUMERAIRE", transaction_ids=cash_move_ids,
+                binding=AssetType.CASH.value, question="resolve_numeraire().acquisition_semantics()",
+                legacy_result=legacy_result, runtime_result=None, detail=str(exc),
+            ))
+        else:
+            if runtime_result == legacy_result:
+                agreements += 1
+            else:
+                findings.append(RuntimeValidationFinding(
+                    category=RuntimeFindingCategory.RUNTIME_MISMATCH.value,
+                    check_id="RUNTIME_CASH_NUMERAIRE", transaction_ids=cash_move_ids,
+                    binding=AssetType.CASH.value, question="resolve_numeraire().acquisition_semantics()",
+                    legacy_result=legacy_result, runtime_result=runtime_result,
+                    detail=(
+                        f"{len(cash_move_ids)} DEPOSIT/WITHDRAW/INITIAL_CASH transaction(s) are "
+                        "replayed as non-share-bearing cash movements by legacy logic, but the "
+                        "runtime's CASH numeraire capability view is not NOT_TRANSACTABLE."
+                    ),
+                ))
+
+    return RuntimeConsultationLog(consulted=consulted, agreements=agreements, findings=tuple(findings))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Public API
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1251,6 +1498,13 @@ async def validate_portfolio_ledger(
     )
     if not ctxs:
         return report
+
+    # ── Stage R1 runtime consultation (read-only shadow; never raises) ────────
+    try:
+        report.runtime_consultation = _consult_runtime_capabilities(ctxs)
+    except Exception as exc:
+        _log.warning("runtime consultation failed portfolio=%d: %s", portfolio_id, exc)
+        report.runtime_consultation = None
 
     findings: list[LedgerFinding] = []
 
