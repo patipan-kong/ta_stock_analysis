@@ -10,14 +10,27 @@ can be MIGRATE (not yet safe to enforce) for two structurally different
 reasons, and this module is what tells them apart:
 
   - the domain model is already expressible; nobody has written and
-    reviewed the document yet (VOCABULARY_READY — ETF, per the M13
-    rationale's own words: "expressible in the existing seven axes without
-    new vocabulary... has not been authored, reviewed... or
-    fingerprint-pinned"), versus
+    reviewed the document yet (VOCABULARY_READY — no MIGRATE binding
+    qualifies today; see the M16 correction below), versus
   - the domain model itself is incomplete: authoring would require a
-    governed vocabulary extension (VOCABULARY_GAP — FUND, BOND, PROPERTY)
-    or a platform-scope decision that has nothing to do with vocabulary
-    (SCOPE_UNDECIDED — CRYPTO, COMMODITY).
+    governed vocabulary extension (VOCABULARY_GAP — ETF, FUND, BOND,
+    PROPERTY) or a platform-scope decision that has nothing to do with
+    vocabulary (SCOPE_UNDECIDED — CRYPTO, COMMODITY).
+
+M16 correction (see DECISION_LOG.md M16 entry): M15 classified ETF
+VOCABULARY_READY on the strength of coverage_report.py's capability-shape
+prose. M16 attempted to actually author the definition and found that
+classification wrong — asset_definitions.md §9's own ETF walk individuates
+ETF from Equity by exactly one declaration, periodic-NAV valuation, and
+ValuationQuestion has no such member (only IDENTITY, CONTINUOUS_QUOTATION).
+Without it, every axis ETF would declare (venue-traded, discrete,
+cycle-settled, dividend flow, Equity's corporate-action set, Equity's
+relationship set) is identical to Equity v1 — which D1 ("no two definitions
+with identical declarations") forbids outright. The lesson generalized:
+*readiness* (is the capability shape describable) and *authorability* (does
+the declaration set individuate against every existing definition, D1) are
+different tests, and only the second one is the one that actually gates
+authoring. This module now checks both.
 
 Per the M15 brief ("No automatic decisions"): DEFINITION_READINESS below is
 hand-authored, not derived by scanning capability shapes — the same
@@ -55,8 +68,8 @@ class ReadinessStatus(str, Enum):
     today, using only vocabulary.py's existing closed vocabulary."""
 
     DEFINED           = "Defined"            # CASH, EQUITY — already in library.py
-    VOCABULARY_READY  = "VocabularyReady"     # ETF — expressible today, not yet authored
-    VOCABULARY_GAP    = "VocabularyGap"       # FUND, BOND, PROPERTY — needs a governed vocabulary extension
+    VOCABULARY_READY  = "VocabularyReady"     # none today — see M16 correction in module docstring
+    VOCABULARY_GAP    = "VocabularyGap"       # ETF, FUND, BOND, PROPERTY — needs a governed vocabulary extension
     SCOPE_UNDECIDED   = "ScopeUndecided"      # CRYPTO, COMMODITY — needs a platform-scope decision first
     EXEMPT            = "Exempt"              # OTHER — no definition is ever anticipated
 
@@ -87,19 +100,22 @@ DEFINITION_READINESS: Tuple[DefinitionReadiness, ...] = (
     ),
     DefinitionReadiness(
         binding=AssetType.ETF.value,
-        status=ReadinessStatus.VOCABULARY_READY,
+        status=ReadinessStatus.VOCABULARY_GAP,
         missing_requirements=(
-            "authoring: no canonical document drafted",
-            "review: asset_definition_library.md §3's mandatory authoring-gate checklist not run",
-            "fingerprint: no PINNED_FINGERPRINTS entry",
+            "vocabulary: ValuationQuestion has no periodic-NAV member (only IDENTITY, "
+            "CONTINUOUS_QUOTATION) — per asset_definitions.md §9's own ETF walk, "
+            "periodic-NAV valuation is ETF's individuating declaration against Equity; "
+            "without it every other axis (venue-traded, discrete, cycle-settled, "
+            "dividend flow, Equity's corporate-action set, Equity's relationship set) is "
+            "identical to Equity v1, which D1 forbids as a duplicate definition",
         ),
         note=(
-            "Capability shape (venue-traded, cycle-settled, distribution-like flow, "
-            "corporate-action events) looks expressible in the existing seven axes "
-            "without a vocabulary extension — the only MIGRATE binding of which that "
-            "is true today. Domain-complete in principle; not authored. M15 deliberately "
-            "stops here (see DECISION_LOG.md M15 entry) — authoring a canonical, "
-            "immutable definition is a human-reviewed step, not a generated one."
+            "M15 classified this VOCABULARY_READY — wrong, corrected in M16 (see "
+            "DECISION_LOG.md M16 entry) when authoring was actually attempted and "
+            "produced a declaration set indistinguishable from Equity v1. The vocabulary "
+            "gate (asset_definition_library.md §3.1's second gate) was checked in M15; "
+            "the individuation gate (§3.1's first gate, D1) was not — checking readiness "
+            "and checking authorability turned out not to be the same test."
         ),
     ),
     DefinitionReadiness(

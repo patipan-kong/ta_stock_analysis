@@ -120,17 +120,21 @@ def test_defined_status_matches_library_ladders(asset_type):
         assert not has_ladder, f"{asset_type} has a library.DEFINITION_LADDERS entry but is not marked DEFINED"
 
 
-def test_etf_is_vocabulary_ready_but_not_yet_authored():
-    """The one binding M13's rationale calls out as domain-complete. M15
-    deliberately stops at classification — see DECISION_LOG.md M15 entry —
-    so ETF must not have gained a library entry as a side effect of this
-    milestone."""
+def test_etf_reclassified_as_vocabulary_gap_by_m16():
+    """M15 classified ETF VOCABULARY_READY. M16 attempted to actually author
+    the definition and found that wrong (see DECISION_LOG.md M16 entry): the
+    constitution's own ETF walk (asset_definitions.md §9) individuates ETF
+    from Equity by exactly one declaration — periodic-NAV valuation — and
+    ValuationQuestion has no such member. Without it ETF has no axis where it
+    differs from Equity, which D1 forbids as a duplicate definition. Pinned
+    so this correction cannot silently regress back to VOCABULARY_READY."""
     readiness = readiness_for(AssetType.ETF.value)
-    assert readiness.status == ReadinessStatus.VOCABULARY_READY
+    assert readiness.status == ReadinessStatus.VOCABULARY_GAP
     assert AssetType.ETF.value not in library.DEFINITION_LADDERS
+    assert len(readiness.missing_requirements) > 0
 
 
-@pytest.mark.parametrize("asset_type", [AssetType.FUND, AssetType.BOND, AssetType.PROPERTY])
+@pytest.mark.parametrize("asset_type", [AssetType.ETF, AssetType.FUND, AssetType.BOND, AssetType.PROPERTY])
 def test_vocabulary_gap_bindings_have_missing_requirements_listed(asset_type):
     readiness = readiness_for(asset_type.value)
     assert readiness.status == ReadinessStatus.VOCABULARY_GAP
