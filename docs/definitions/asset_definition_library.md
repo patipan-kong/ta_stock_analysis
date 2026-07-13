@@ -5,8 +5,8 @@ _The canonical library of Asset Definitions — the official, versioned registry
 | | |
 |---|---|
 | **Library version** | v1 |
-| **Definitions** | 2 — [Cash](asset_definition_cash.md) v1 · [Equity](asset_definition_equity.md) v1 |
-| **Vocabulary status** | Frozen — the seven axes and their words, per the ratified constitution |
+| **Definitions** | 3 — [Cash](asset_definition_cash.md) v1 · [Equity](asset_definition_equity.md) v1 · [ETF](asset_definition_etf.md) v1 |
+| **Vocabulary status** | Frozen — the seven axes and their words, per the ratified constitution (extended once, M17: `ValuationQuestion.PERIODIC_NAV`) |
 
 ---
 
@@ -89,5 +89,6 @@ Any implementation of the definition mechanism — enums, dataclasses, storage, 
 - [asset_definitions.md](../architecture/asset_definitions.md) — the constitution: the seven axes, laws D1–D12, the evolution ladder
 - [asset_definition_cash.md](asset_definition_cash.md) — Cash v1
 - [asset_definition_equity.md](asset_definition_equity.md) — Equity v1
+- [asset_definition_etf.md](asset_definition_etf.md) — ETF v1, the first definition admitted after the founding pair (M18); differs from Equity v1 by exactly one axis (periodic NAV valuation, M17's vocabulary extension)
 - [asset_foundation.md](../architecture/asset_foundation.md) — the parent domain constitution; §8 states why the founding pair is deliberately two
 - [../engineering/DECISION_LOG.md](../engineering/DECISION_LOG.md) — where every future vocabulary extension and definition version is recorded

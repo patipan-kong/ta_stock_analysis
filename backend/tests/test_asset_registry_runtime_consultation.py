@@ -50,7 +50,7 @@ def _claim(**overrides):
 
 # ── 1. Defined types agree with the runtime ─────────────────────────────────
 
-@pytest.mark.parametrize("asset_type", [AssetType.EQUITY, AssetType.CASH])
+@pytest.mark.parametrize("asset_type", [AssetType.EQUITY, AssetType.CASH, AssetType.ETF])
 def test_defined_asset_types_agree_with_runtime(asset_type):
     log = registry._consult_runtime_for_mint(asset_type)
     assert log.consulted == 1
@@ -62,7 +62,7 @@ def test_defined_asset_types_agree_with_runtime(asset_type):
 
 @pytest.mark.parametrize(
     "asset_type",
-    [AssetType.ETF, AssetType.FUND, AssetType.BOND, AssetType.CRYPTO,
+    [AssetType.FUND, AssetType.BOND, AssetType.CRYPTO,
      AssetType.COMMODITY, AssetType.PROPERTY, AssetType.OTHER],
 )
 def test_undefined_asset_types_recorded_as_unknown_capability(asset_type):
@@ -127,9 +127,9 @@ def test_mint_behavior_identical_regardless_of_runtime_agreement():
     """Real validation failures (duplicate canonical_symbol, missing
     market/exchange/currency) still raise AssetRegistryError exactly as
     before, for both a runtime-agreeing (EQUITY) and a runtime-disagreeing
-    (ETF) asset_type — the consultation never changes which exceptions are
+    (FUND) asset_type — the consultation never changes which exceptions are
     raised or which assets are created."""
-    for asset_type in (AssetType.EQUITY, AssetType.ETF):
+    for asset_type in (AssetType.EQUITY, AssetType.FUND):
         db = make_session()
         symbol = f"DUP_{asset_type.value}"
 

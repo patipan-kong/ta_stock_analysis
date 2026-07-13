@@ -92,16 +92,19 @@ ENFORCEMENT_DECISIONS: Tuple[EnforcementDecision, ...] = (
     EnforcementDecision(
         binding=AssetType.ETF.value,
         consumer="asset_registry.mint()",
-        gap_type=GapType.MISSING_DEFINITION,
+        gap_type=GapType.FUTURE_ENFORCEMENT_CANDIDATE,
         future_action=FutureAction.MIGRATE,
         rationale=(
-            "ETF's capability shape (venue-traded, cycle-settled, distribution-like flow, "
-            "corporate-action events) looks expressible in the existing seven axes without new "
-            "vocabulary — closest of the seven gaps to Equity's own shape — but it has not been "
-            "authored, reviewed against docs/definitions/asset_definition_library.md's authoring "
-            "gates, or fingerprint-pinned."
+            "ETF_V1 was authored and fingerprint-pinned in M18 (see DECISION_LOG.md), after M17's "
+            "vocabulary extension (ValuationQuestion.PERIODIC_NAV) made it individuable from "
+            "Equity v1 under D1. asset_registry.mint()'s shadow consultation now genuinely agrees "
+            "with the runtime for this binding — the gap this table originally recorded "
+            "(MISSING_DEFINITION) has closed. future_action is deliberately left at MIGRATE, not "
+            "promoted to NOT_APPLICABLE: a definition existing is necessary but not sufficient for "
+            "an enforcement policy decision, which remains a separate, explicit, human-led step "
+            "(M18 brief's own non-goal: 'do not enable additional enforcement')."
         ),
-        r2_note="Future enforcement candidate once ETF_V1 exists and passes conformance tests.",
+        r2_note="Realized: ETF_V1 exists and passes conformance tests. Awaiting a separate, explicit R2 authorization to promote past MIGRATE.",
     ),
     EnforcementDecision(
         binding=AssetType.FUND.value,

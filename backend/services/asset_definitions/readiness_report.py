@@ -32,6 +32,16 @@ the declaration set individuate against every existing definition, D1) are
 different tests, and only the second one is the one that actually gates
 authoring. This module now checks both.
 
+M17 added the missing word (ValuationQuestion.PERIODIC_NAV); M18 (see
+DECISION_LOG.md M18 entry) used it to author asset_definition_etf.md and
+transcribe ETF_V1 into library.py. ETF's row below transitions from
+VOCABULARY_GAP to DEFINED as a direct, hand-updated consequence of that
+authoring — not an automatic recomputation, the same discipline every other
+row in this table already follows (module docstring, "no automatic
+decisions"). test_defined_status_matches_library_ladders is what actually
+verifies this row is honest against library.DEFINITION_LADDERS, in both
+directions, for every AssetType member.
+
 Per the M15 brief ("No automatic decisions"): DEFINITION_READINESS below is
 hand-authored, not derived by scanning capability shapes — the same
 discipline enforcement_decisions.py already applies to FutureAction, for
@@ -100,22 +110,15 @@ DEFINITION_READINESS: Tuple[DefinitionReadiness, ...] = (
     ),
     DefinitionReadiness(
         binding=AssetType.ETF.value,
-        status=ReadinessStatus.VOCABULARY_GAP,
-        missing_requirements=(
-            "vocabulary: ValuationQuestion has no periodic-NAV member (only IDENTITY, "
-            "CONTINUOUS_QUOTATION) — per asset_definitions.md §9's own ETF walk, "
-            "periodic-NAV valuation is ETF's individuating declaration against Equity; "
-            "without it every other axis (venue-traded, discrete, cycle-settled, "
-            "dividend flow, Equity's corporate-action set, Equity's relationship set) is "
-            "identical to Equity v1, which D1 forbids as a duplicate definition",
-        ),
+        status=ReadinessStatus.DEFINED,
+        missing_requirements=(),
         note=(
-            "M15 classified this VOCABULARY_READY — wrong, corrected in M16 (see "
-            "DECISION_LOG.md M16 entry) when authoring was actually attempted and "
-            "produced a declaration set indistinguishable from Equity v1. The vocabulary "
-            "gate (asset_definition_library.md §3.1's second gate) was checked in M15; "
-            "the individuation gate (§3.1's first gate, D1) was not — checking readiness "
-            "and checking authorability turned out not to be the same test."
+            "ETF v1 is canonical (M18); individuated from Equity v1 via "
+            "ValuationQuestion.PERIODIC_NAV (M17's governed vocabulary extension). "
+            "Lineage: M15 wrongly classified this VOCABULARY_READY; M16 attempted "
+            "authoring, found it blocked by D1, and corrected the classification to "
+            "VOCABULARY_GAP; M17 added the missing vocabulary word; M18 authored the "
+            "definition and closed the gap for real."
         ),
     ),
     DefinitionReadiness(

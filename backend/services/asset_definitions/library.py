@@ -6,6 +6,7 @@ database rows or runtime-loaded configuration).
 Every value below is copied from exactly one row of one document:
   - docs/definitions/asset_definition_cash.md   ("Capability Projection")
   - docs/definitions/asset_definition_equity.md ("Capability Projection")
+  - docs/definitions/asset_definition_etf.md    ("Capability Projection")
 
 Nothing here reasons about *why* — the "why" lives only in those documents
 and is never transcribed (M9 TDD Section 3.1). If a review needs to check
@@ -15,12 +16,12 @@ backend/tests/test_asset_definitions_conformance.py automates.
 
 Binding spellings reuse services.asset_domain.AssetType (Reuse Before Create,
 ENGINEERING_PRINCIPLES.md) rather than inventing a parallel vocabulary.
-Deliberately, only CASH and EQUITY are transcribed here: the other seven
-AssetType members (ETF, FUND, BOND, CRYPTO, COMMODITY, PROPERTY, OTHER) name
-kinds no canonical definition describes yet (M9 TDD Section 10.2). They are
-not placeholders and never will silently gain one — a binding the registry
-does not carry refuses loudly (DefinitionRegistry.exists() is False;
-resolution raises UnresolvedBindingError), never defaults.
+CASH, EQUITY, and ETF (M18) are transcribed here; the other six AssetType
+members (FUND, BOND, CRYPTO, COMMODITY, PROPERTY, OTHER) name kinds no
+canonical definition describes yet (M9 TDD Section 10.2). They are not
+placeholders and never will silently gain one — a binding the registry does
+not carry refuses loudly (DefinitionRegistry.exists() is False; resolution
+raises UnresolvedBindingError), never defaults.
 
 PINNED_FINGERPRINTS is intentionally NOT derived from the transcriptions
 below at import time — see fingerprint.py's module docstring for why a
@@ -118,12 +119,51 @@ EQUITY_V1 = DefinitionTranscription(
     ),
 )
 
+ETF_V1 = DefinitionTranscription(
+    name="ETF",
+    version="v1",
+    binding=AssetType.ETF.value,
+    source_document="docs/definitions/asset_definition_etf.md",
+    effective_from="2026-07-13",  # M18 shipped date
+    unit=UnitDeclaration(
+        divisibility=Divisibility.DISCRETE,
+        quantity_equals_value=False,
+        allows_negative=False,
+        permits_fractional_refinement=True,
+        permits_lot_refinement=True,
+    ),
+    acquisition=AcquisitionDeclaration(semantics=AcquisitionSemantics.VENUE_TRADED),
+    settlement=SettlementDeclaration(pattern=SettlementPattern.CYCLE_BASED, permits_cycle_length_refinement=True),
+    valuation=ValuationDeclaration(question=ValuationQuestion.PERIODIC_NAV),  # the individuating declaration (D1)
+    flows=FlowGrants(granted=frozenset({FlowType.DIVIDEND})),
+    event_families=EventFamilyGrants(
+        granted=frozenset({
+            EventFamily.SPLIT,
+            EventFamily.MERGER,
+            EventFamily.SPIN_OFF,
+            EventFamily.RENAME,
+            EventFamily.SUSPENSION,
+            EventFamily.DELISTING,
+        })
+    ),
+    existence=ExistenceDeclaration(
+        pattern=ExistencePattern.OPEN_ENDED,
+        permitted_relationships=frozenset({
+            RelationshipKind.SAME_ENTITY,
+            RelationshipKind.WRAPS,
+            RelationshipKind.SUCCESSOR_OF,
+        }),
+        mandatory_relationships=frozenset(),
+    ),
+)
+
 # The version ladder, per definition, ordered ascending by effective_from
 # (M9 TDD Section 5.2). Each definition has exactly one rung today — the
 # ladder shape exists so a second rung is additive data, not new code.
 DEFINITION_LADDERS: Dict[str, Tuple[DefinitionTranscription, ...]] = {
     AssetType.CASH.value: (CASH_V1,),
     AssetType.EQUITY.value: (EQUITY_V1,),
+    AssetType.ETF.value: (ETF_V1,),
 }
 
 # Pinned expected digests — see module docstring. Populated by running
@@ -132,4 +172,5 @@ DEFINITION_LADDERS: Dict[str, Tuple[DefinitionTranscription, ...]] = {
 PINNED_FINGERPRINTS: Dict[Tuple[str, str], str] = {
     (AssetType.CASH.value, "v1"): "e69a3c1ae4739ce63587e80dd640dbfc9427152742e9e75b1ebcb6853dcdfb71",
     (AssetType.EQUITY.value, "v1"): "603e6833fd3141f7b495af0dad3d5ae565a01b662e1e66ad2c32be07f84b7305",
+    (AssetType.ETF.value, "v1"): "9aeb81273432ba38b0352600b6b786a6afce4c351bcd5247520cadce42a3421d",
 }

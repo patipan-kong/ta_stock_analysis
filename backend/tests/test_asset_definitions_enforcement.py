@@ -46,8 +46,16 @@ from services.asset_definitions.enforcement_decisions import (
 from services.asset_definitions.registry import DefinitionRegistry
 from services.asset_domain import AssetType
 
-_DEFINED = {AssetType.CASH.value, AssetType.EQUITY.value}
-_UNDEFINED = {m.value for m in AssetType} - _DEFINED
+_NO_GAP = {AssetType.CASH.value, AssetType.EQUITY.value}
+# M18: ETF_V1 was authored — the runtime now resolves it (registry-defined,
+# like CASH/EQUITY), but its enforcement decision is deliberately still
+# MIGRATE, not NOT_APPLICABLE (see enforcement_decisions.py's ETF row and
+# DECISION_LOG.md's M18 entry) — a definition existing is necessary but not
+# sufficient for an enforcement policy decision, which remains separate.
+_FUTURE_ENFORCEMENT_CANDIDATES = {AssetType.ETF.value}
+_DEFINED = _NO_GAP | _FUTURE_ENFORCEMENT_CANDIDATES  # registry.exists() is True
+_UNDEFINED = {m.value for m in AssetType} - _DEFINED  # registry.exists() is False
+_MIGRATION_REQUIRED_OR_LEGACY = _UNDEFINED  # decision.gap_type != NO_GAP; runtime disagrees
 
 
 # ── 1-2. Coverage report shape ──────────────────────────────────────────────
@@ -72,7 +80,12 @@ def test_defined_bindings_report_their_capabilities():
     assert "DIVIDEND" in equity.flows_granted
     assert "SAME_ENTITY" in equity.permitted_relationships
 
-    assert report.defined_count == 2
+    etf = by_binding[AssetType.ETF.value]
+    assert etf.defined is True
+    assert "DIVIDEND" in etf.flows_granted
+    assert "SAME_ENTITY" in etf.permitted_relationships
+
+    assert report.defined_count == 3
 
 
 def test_undefined_bindings_report_empty_capabilities():
@@ -135,7 +148,7 @@ def test_decision_for_unknown_binding_raises():
 def test_no_gap_decisions_agree_with_live_runtime():
     from services.asset_registry import _consult_runtime_for_mint
 
-    for binding in _DEFINED:
+    for binding in _NO_GAP:
         decision = decision_for(binding)
         assert decision.gap_type == GapType.NO_GAP
         assert decision.future_action == FutureAction.NOT_APPLICABLE
@@ -146,12 +159,36 @@ def test_no_gap_decisions_agree_with_live_runtime():
         assert log.findings == ()
 
 
+def test_future_enforcement_candidates_agree_with_runtime_but_stay_at_migrate():
+    """M18: ETF_V1 now exists, so asset_registry.mint()'s shadow consultation
+    genuinely agrees with the runtime for this binding — the same way it
+    already does for CASH/EQUITY. Unlike those two, ETF's future_action is
+    deliberately left at MIGRATE rather than promoted to NOT_APPLICABLE: a
+    definition existing closes the *capability* gap this table's gap_type
+    axis describes, but does not by itself authorize an enforcement *policy*
+    decision — that remains a separate, explicit, human-led step (M18
+    brief's non-goal: "do not enable additional enforcement"; see
+    DECISION_LOG.md's M18 entry and enforcement_decisions.py's ETF row)."""
+    from services.asset_registry import _consult_runtime_for_mint
+
+    for binding in _FUTURE_ENFORCEMENT_CANDIDATES:
+        decision = decision_for(binding)
+        assert decision.gap_type == GapType.FUTURE_ENFORCEMENT_CANDIDATE
+        assert decision.future_action == FutureAction.MIGRATE
+
+        log = _consult_runtime_for_mint(AssetType(binding))
+        assert log.consulted == 1
+        assert log.agreements == 1
+        assert log.findings == ()
+
+
 def test_non_no_gap_decisions_disagree_with_live_runtime():
     from services.asset_registry import _consult_runtime_for_mint
 
-    for binding in _UNDEFINED:
+    for binding in _MIGRATION_REQUIRED_OR_LEGACY:
         decision = decision_for(binding)
         assert decision.gap_type != GapType.NO_GAP
+        assert decision.gap_type != GapType.FUTURE_ENFORCEMENT_CANDIDATE
         assert decision.future_action != FutureAction.NOT_APPLICABLE
 
         log = _consult_runtime_for_mint(AssetType(binding))
@@ -207,7 +244,8 @@ def test_render_text_smoke():
     text = render_coverage_text(report)
     assert "Asset Type Coverage" in text
     assert "CASH" in text and "defined" in text
-    assert "ETF" in text and "missing" in text
+    assert "ETF" in text  # M18: ETF is now "defined", not "missing" — see test_asset_definition_etf.py
+    assert "FUND" in text and "missing" in text
 
     decisions_text = render_decisions_text()
     assert "Enforcement Boundary Decisions" in decisions_text

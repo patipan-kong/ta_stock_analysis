@@ -120,21 +120,21 @@ def test_defined_status_matches_library_ladders(asset_type):
         assert not has_ladder, f"{asset_type} has a library.DEFINITION_LADDERS entry but is not marked DEFINED"
 
 
-def test_etf_reclassified_as_vocabulary_gap_by_m16():
-    """M15 classified ETF VOCABULARY_READY. M16 attempted to actually author
-    the definition and found that wrong (see DECISION_LOG.md M16 entry): the
-    constitution's own ETF walk (asset_definitions.md §9) individuates ETF
-    from Equity by exactly one declaration — periodic-NAV valuation — and
-    ValuationQuestion has no such member. Without it ETF has no axis where it
-    differs from Equity, which D1 forbids as a duplicate definition. Pinned
-    so this correction cannot silently regress back to VOCABULARY_READY."""
+def test_etf_reached_defined_through_m16_m17_m18_lineage():
+    """The full arc, pinned so no step can silently regress: M15 wrongly
+    classified ETF VOCABULARY_READY; M16 attempted authoring, found it
+    blocked by D1 (see DECISION_LOG.md M16 entry), and corrected the
+    classification to VOCABULARY_GAP; M17 added the missing vocabulary word
+    (ValuationQuestion.PERIODIC_NAV); M18 used it to actually author
+    asset_definition_etf.md and transcribe ETF_V1 into library.py. Readiness
+    now correctly reports DEFINED, matching library.DEFINITION_LADDERS."""
     readiness = readiness_for(AssetType.ETF.value)
-    assert readiness.status == ReadinessStatus.VOCABULARY_GAP
-    assert AssetType.ETF.value not in library.DEFINITION_LADDERS
-    assert len(readiness.missing_requirements) > 0
+    assert readiness.status == ReadinessStatus.DEFINED
+    assert AssetType.ETF.value in library.DEFINITION_LADDERS
+    assert readiness.missing_requirements == ()
 
 
-@pytest.mark.parametrize("asset_type", [AssetType.ETF, AssetType.FUND, AssetType.BOND, AssetType.PROPERTY])
+@pytest.mark.parametrize("asset_type", [AssetType.FUND, AssetType.BOND, AssetType.PROPERTY])
 def test_vocabulary_gap_bindings_have_missing_requirements_listed(asset_type):
     readiness = readiness_for(asset_type.value)
     assert readiness.status == ReadinessStatus.VOCABULARY_GAP
@@ -175,7 +175,7 @@ def test_render_text_answers_the_four_required_questions():
     assert "Vocabulary-ready, awaiting authoring" in text
     assert "Blocked (definition incomplete)" in text
     assert "Intentionally exempt" in text
-    assert AssetType.ETF.value in text
+    assert AssetType.FUND.value in text  # M18: ETF is DEFINED now, no longer a "blocked" example
     assert AssetType.OTHER.value in text
 
 
