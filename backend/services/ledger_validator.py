@@ -53,6 +53,11 @@ from services.asset_domain import AssetType
 from services.data_fetcher import fetch_history
 from services.ledger_repair import apply_repair_overlay
 from services.replay_key import replay_key
+from services.runtime_consultation import (
+    RuntimeConsultationLog,
+    RuntimeFindingCategory,
+    RuntimeValidationFinding,
+)
 from services.transaction_canonicalizer import (
     CanonicalTransaction,
     canonicalize_transactions,
@@ -100,60 +105,6 @@ class LedgerFinding:
     details:           dict[str, Any] = field(default_factory=dict)
     # Populated only in effective mode: "RAW" = transaction present; None = raw mode.
     origin:            str | None     = None
-
-
-class RuntimeFindingCategory(str, Enum):
-    """Taxonomy for Stage R1 Legacy-vs-Runtime disagreements (M11 brief).
-
-    Only RUNTIME_MISMATCH and MISSING_BINDING are reachable by the current
-    consultations in _consult_runtime_capabilities() — the ledger has no
-    transaction type that exercises an Axis-6 (event-family) or an
-    unrecognized-vocabulary-word decision today, so UNKNOWN_CAPABILITY and
-    UNEXPECTED_GRANT have no live trigger. They are named here anyway,
-    verbatim from the brief, so the taxonomy is complete when a future
-    consultation needs them — not dead code, an unused enum member costs
-    nothing and documents the full category space.
-    """
-    RUNTIME_MISMATCH   = "RuntimeMismatch"
-    UNKNOWN_CAPABILITY = "UnknownCapability"
-    MISSING_BINDING    = "MissingBinding"
-    UNEXPECTED_GRANT   = "UnexpectedGrant"
-
-
-@dataclass(frozen=True)
-class RuntimeValidationFinding:
-    """One Legacy-vs-Runtime disagreement, or a MissingBinding refusal.
-
-    Purely observational (M11 brief: "Do NOT throw / reject / change
-    behavior / change validation result"). Never added to
-    LedgerValidationReport.findings, never affects overall_severity.
-    """
-    category:        str
-    check_id:        str
-    transaction_ids: tuple[int, ...]
-    binding:         str
-    question:        str
-    legacy_result:   bool
-    runtime_result:  bool | None
-    detail:          str
-
-
-@dataclass(frozen=True)
-class RuntimeConsultationLog:
-    """Stage R1 shadow-comparison output for one validation run.
-
-    consulted   — number of Legacy-vs-Runtime questions asked.
-    agreements  — number of those where legacy_result == runtime_result.
-    findings    — every disagreement / refusal, as RuntimeValidationFinding.
-
-    Additive metadata on LedgerValidationReport. Its presence or contents
-    never influence report.findings, report.overall_severity, or any other
-    existing field — see _consult_runtime_capabilities()'s docstring for
-    which legacy decisions are shadowed and why.
-    """
-    consulted:  int
-    agreements: int
-    findings:   tuple[RuntimeValidationFinding, ...]
 
 
 @dataclass
