@@ -13,7 +13,7 @@ reasons, and this module is what tells them apart:
     reviewed the document yet (VOCABULARY_READY — no MIGRATE binding
     qualifies today; see the M16 correction below), versus
   - the domain model itself is incomplete: authoring would require a
-    governed vocabulary extension (VOCABULARY_GAP — BOND, PROPERTY) or a
+    governed vocabulary extension (VOCABULARY_GAP — PROPERTY) or a
     platform-scope decision that has nothing to do with vocabulary
     (SCOPE_UNDECIDED — CRYPTO, COMMODITY).
 
@@ -51,6 +51,16 @@ M22 (see DECISION_LOG.md M22 entry) used it to author
 asset_definition_fund.md and transcribe FUND_V1 into library.py, the same
 VOCABULARY_GAP-to-DEFINED transition ETF walked in M18, one binding later.
 
+M20's gap analysis also found this module's own BOND row imprecise: it
+named the event-family axis as Bond's gap ("no maturity/coupon-redemption
+member"), but the constitution's own §9 Bond walk names the flow axis
+(COUPON) and the existence axis (SCHEDULED_TERMINAL) as the two required
+words, leaving any event-family question open rather than confirmed. M23
+added both words; M24 (see DECISION_LOG.md M24 entry) used them to author
+asset_definition_bond.md and transcribe BOND_V1 into library.py — the same
+VOCABULARY_GAP-to-DEFINED transition, two bindings later, with no
+event-family extension needed after all.
+
 Per the M15 brief ("No automatic decisions"): DEFINITION_READINESS below is
 hand-authored, not derived by scanning capability shapes — the same
 discipline enforcement_decisions.py already applies to FutureAction, for
@@ -86,9 +96,9 @@ class ReadinessStatus(str, Enum):
     """Whether a canonical definition could be authored for this binding
     today, using only vocabulary.py's existing closed vocabulary."""
 
-    DEFINED           = "Defined"            # CASH, EQUITY, ETF, FUND — already in library.py
+    DEFINED           = "Defined"            # CASH, EQUITY, ETF, FUND, BOND — already in library.py
     VOCABULARY_READY  = "VocabularyReady"     # none today — see M16 correction in module docstring
-    VOCABULARY_GAP    = "VocabularyGap"       # BOND, PROPERTY — needs a governed vocabulary extension
+    VOCABULARY_GAP    = "VocabularyGap"       # PROPERTY — needs a governed vocabulary extension
     SCOPE_UNDECIDED   = "ScopeUndecided"      # CRYPTO, COMMODITY — needs a platform-scope decision first
     EXEMPT            = "Exempt"              # OTHER — no definition is ever anticipated
 
@@ -145,11 +155,17 @@ DEFINITION_READINESS: Tuple[DefinitionReadiness, ...] = (
     ),
     DefinitionReadiness(
         binding=AssetType.BOND.value,
-        status=ReadinessStatus.VOCABULARY_GAP,
-        missing_requirements=(
-            "vocabulary: EventFamily has no maturity/coupon-redemption member",
+        status=ReadinessStatus.DEFINED,
+        missing_requirements=(),
+        note=(
+            "Bond v1 is canonical (M24); individuated from Equity v1 via FlowType.COUPON and "
+            "ExistencePattern.SCHEDULED_TERMINAL (M23's governed vocabulary extensions). "
+            "Lineage: this row previously named the event-family axis as the gap ('no "
+            "maturity/coupon-redemption member'); M20's gap analysis found that imprecise — the "
+            "constitution's own §9 Bond walk names the flow and existence axes instead; M23 added "
+            "both missing words and M24 authored the definition, closing the gap for real with no "
+            "event-family extension needed."
         ),
-        note="Bond structural events have no analog in the current closed EventFamily set.",
     ),
     DefinitionReadiness(
         binding=AssetType.CRYPTO.value,

@@ -149,7 +149,24 @@ def test_fund_reached_defined_through_m20_m21_m22_lineage():
     assert readiness.missing_requirements == ()
 
 
-@pytest.mark.parametrize("asset_type", [AssetType.BOND, AssetType.PROPERTY])
+def test_bond_reached_defined_through_m20_m23_m24_lineage():
+    """The analogous arc, two bindings later: M20's gap analysis found
+    readiness_report.py's (and enforcement_decisions.py's) BOND row
+    imprecise — both named the event-family axis as the gap ("no
+    maturity/coupon-redemption member"), but the constitution's own §9 Bond
+    walk names the flow axis (COUPON) and the existence axis
+    (SCHEDULED_TERMINAL) as the two required words instead; M23 added both
+    missing vocabulary words; M24 used them to author asset_definition_bond.md
+    and transcribe BOND_V1 into library.py — no event-family extension
+    was needed after all. Readiness now correctly reports DEFINED, matching
+    library.DEFINITION_LADDERS."""
+    readiness = readiness_for(AssetType.BOND.value)
+    assert readiness.status == ReadinessStatus.DEFINED
+    assert AssetType.BOND.value in library.DEFINITION_LADDERS
+    assert readiness.missing_requirements == ()
+
+
+@pytest.mark.parametrize("asset_type", [AssetType.PROPERTY])
 def test_vocabulary_gap_bindings_have_missing_requirements_listed(asset_type):
     readiness = readiness_for(asset_type.value)
     assert readiness.status == ReadinessStatus.VOCABULARY_GAP
@@ -190,7 +207,7 @@ def test_render_text_answers_the_four_required_questions():
     assert "Vocabulary-ready, awaiting authoring" in text
     assert "Blocked (definition incomplete)" in text
     assert "Intentionally exempt" in text
-    assert AssetType.BOND.value in text  # M22: FUND is DEFINED now too, no longer a "blocked" example
+    assert AssetType.PROPERTY.value in text  # M24: BOND is DEFINED now too, no longer a "blocked" example
     assert AssetType.OTHER.value in text
 
 

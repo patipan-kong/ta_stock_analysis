@@ -127,15 +127,21 @@ ENFORCEMENT_DECISIONS: Tuple[EnforcementDecision, ...] = (
     EnforcementDecision(
         binding=AssetType.BOND.value,
         consumer="asset_registry.mint()",
-        gap_type=GapType.MIGRATION_REQUIRED,
+        gap_type=GapType.FUTURE_ENFORCEMENT_CANDIDATE,
         future_action=FutureAction.MIGRATE,
         rationale=(
-            "Bonds carry maturity/coupon-redemption structural events with no analog in the "
-            "current EventFamily closed set (SPLIT/MERGER/SPIN_OFF/RENAME/SUSPENSION/DELISTING). "
-            "INTEREST already exists as a flow, but the event-family axis likely needs extension "
-            "before BOND_V1 can be authored honestly."
+            "BOND_V1 was authored and fingerprint-pinned in M24 (see DECISION_LOG.md), after M23's "
+            "vocabulary extension (FlowType.COUPON, ExistencePattern.SCHEDULED_TERMINAL) made it "
+            "individuable from Equity v1 under D1. asset_registry.mint()'s shadow consultation now "
+            "genuinely agrees with the runtime for this binding — the gap this table originally "
+            "recorded (MIGRATION_REQUIRED, on what M20's gap analysis later showed was the wrong "
+            "axis: event families, not flow/existence) has closed. future_action is deliberately "
+            "left at MIGRATE, not promoted to NOT_APPLICABLE: a definition existing is necessary but "
+            "not sufficient for an enforcement policy decision, which remains a separate, explicit, "
+            "human-led step (M24 brief's own non-goal: 'do not enable enforcement'), the same "
+            "posture ETF's and FUND's rows took in M18/M22."
         ),
-        r2_note="Not a future enforcement candidate until the event-family-axis question is resolved.",
+        r2_note="Realized: BOND_V1 exists and passes conformance tests. Awaiting a separate, explicit R2 authorization to promote past MIGRATE.",
     ),
     EnforcementDecision(
         binding=AssetType.CRYPTO.value,

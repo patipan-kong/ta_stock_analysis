@@ -7,7 +7,9 @@ and which the M20 gap analysis (asset_model_gap_analysis.md §3.2, §5
 concepts C6/C8) confirms are BOND's entire remaining vocabulary gap. This
 milestone adds only the two words. No BOND definition is authored:
 `library.DEFINITION_LADDERS` is still exactly CASH, EQUITY, ETF, FUND,
-unchanged.
+unchanged. (M24 subsequently authored BOND_V1 using exactly these two
+words — see test_asset_definition_bond.py and this file's own tests below,
+updated at that time to reflect BOND's real presence in the library.)
 
 Coverage, per the brief's "Required Tests":
   1. Vocabulary Acceptance — both words construct, flow through a full
@@ -128,8 +130,9 @@ def test_real_library_still_boots_clean():
     assert registry.exists("EQUITY")
     assert registry.exists("ETF")
     assert registry.exists("FUND")
-    # No definition uses either new word yet — BOND remains unauthored.
-    assert registry.exists("BOND") is False
+    # M24: BOND was subsequently authored using exactly these two words —
+    # see test_asset_definition_bond.py for that milestone's own coverage.
+    assert registry.exists("BOND") is True
 
 
 def test_cash_equity_etf_fund_declarations_are_unchanged():
@@ -154,7 +157,9 @@ def test_cash_equity_etf_fund_fingerprints_are_unchanged():
 
 
 def test_definition_ladders_untouched_by_this_milestone():
-    assert set(library.DEFINITION_LADDERS.keys()) == {"CASH", "EQUITY", "ETF", "FUND"}
+    # M24: BOND was subsequently added — see test_asset_definition_bond.py's
+    # own version of this assertion for that milestone.
+    assert set(library.DEFINITION_LADDERS.keys()) == {"CASH", "EQUITY", "ETF", "FUND", "BOND"}
 
 
 # ── 3. Closed Vocabulary Integrity ──────────────────────────────────────────
@@ -266,10 +271,17 @@ def test_sharing_both_new_words_together_does_not_bypass_d1():
 def test_bond_shaped_declaration_individuates_against_the_real_library():
     """A bond-shaped synthetic (COUPON + SCHEDULED_TERMINAL) checked against
     the real, currently-canonical library — proving the two new words
-    genuinely open a path to a future BOND definition, the reuse this
-    milestone's brief anticipates, without asserting one exists yet."""
+    genuinely open a path to a future definition reusing them, the reuse
+    this milestone's brief anticipates. M24 subsequently authored the real
+    BOND_V1 using exactly these two words (see
+    test_asset_definition_bond.py's own D1 coverage against BOND_V1
+    directly) — this synthetic now binds to "OTHER" (a binding with no
+    canonical definition and none anticipated, M9 TDD Section 10.2) rather
+    than "BOND", so this test keeps checking a *hypothetical* reuse of the
+    pair against the real, current library, including the real BOND_V1
+    itself, without colliding with BOND's own now-real ladder entry."""
     bond_shaped = _synthetic(
-        "BOND",
+        "OTHER",
         flow_type=FlowType.COUPON,
         existence_pattern=ExistencePattern.SCHEDULED_TERMINAL,
     )
@@ -279,9 +291,9 @@ def test_bond_shaped_declaration_individuates_against_the_real_library():
     }
     fingerprints = dict(library.PINNED_FINGERPRINTS)
     combined_bindings = dict(real)
-    combined_bindings["BOND"] = (bond_shaped,)
+    combined_bindings["OTHER"] = (bond_shaped,)
     combined_fingerprints = dict(fingerprints)
-    combined_fingerprints[("BOND", "v1")] = compute_fingerprint(bond_shaped)
+    combined_fingerprints[("OTHER", "v1")] = compute_fingerprint(bond_shaped)
 
     findings = _validate(combined_bindings, combined_fingerprints)
     assert not any(f.rule == "duplicate-declarations" for f in findings)

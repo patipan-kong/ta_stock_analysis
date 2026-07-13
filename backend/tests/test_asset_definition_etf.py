@@ -211,7 +211,7 @@ def test_unknown_bindings_still_unresolved_after_etf_addition():
     from services.asset_definitions import UnresolvedBindingError
 
     resolver = _resolver()
-    for ghost in ("BOND", "CRYPTO", "COMMODITY", "PROPERTY", "OTHER"):
+    for ghost in ("CRYPTO", "COMMODITY", "PROPERTY", "OTHER"):
         with pytest.raises(UnresolvedBindingError):
             resolver.resolve(ghost)
 
@@ -225,13 +225,14 @@ def test_etf_readiness_is_defined():
 
 
 def test_other_asset_types_readiness_unchanged_by_etf_authoring():
-    # M22: FUND was subsequently authored and moved to DEFINED — this
-    # assertion is updated to reflect that later, unrelated milestone rather
-    # than left pinned to a fact this file's own scope never re-verifies.
+    # M22: FUND was subsequently authored and moved to DEFINED; M24: BOND
+    # was subsequently authored and moved to DEFINED — this assertion is
+    # updated to reflect those later, unrelated milestones rather than left
+    # pinned to a fact this file's own scope never re-verifies.
     assert readiness_for(AssetType.CASH.value).status == ReadinessStatus.DEFINED
     assert readiness_for(AssetType.EQUITY.value).status == ReadinessStatus.DEFINED
     assert readiness_for(AssetType.FUND.value).status == ReadinessStatus.DEFINED
-    assert readiness_for(AssetType.BOND.value).status == ReadinessStatus.VOCABULARY_GAP
+    assert readiness_for(AssetType.BOND.value).status == ReadinessStatus.DEFINED
     assert readiness_for(AssetType.PROPERTY.value).status == ReadinessStatus.VOCABULARY_GAP
     assert readiness_for(AssetType.CRYPTO.value).status == ReadinessStatus.SCOPE_UNDECIDED
     assert readiness_for(AssetType.COMMODITY.value).status == ReadinessStatus.SCOPE_UNDECIDED
@@ -251,9 +252,10 @@ def test_equity_v1_declarations_and_fingerprint_unchanged():
 
 
 def test_definition_ladders_now_exactly_three():
-    # M22: FUND was subsequently added — see test_asset_definition_fund.py's
-    # own test_definition_ladders_now_exactly_four for that milestone's
-    # version of this assertion.
+    # M22: FUND was subsequently added; M24: BOND was subsequently added —
+    # see test_asset_definition_fund.py's and test_asset_definition_bond.py's
+    # own versions of this assertion for those milestones.
     assert set(library.DEFINITION_LADDERS.keys()) == {
-        AssetType.CASH.value, AssetType.EQUITY.value, AssetType.ETF.value, AssetType.FUND.value,
+        AssetType.CASH.value, AssetType.EQUITY.value, AssetType.ETF.value,
+        AssetType.FUND.value, AssetType.BOND.value,
     }
