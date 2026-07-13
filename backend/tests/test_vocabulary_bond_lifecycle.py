@@ -177,8 +177,10 @@ def test_unknown_existence_word_still_fails_to_construct():
 def test_flow_type_member_set_is_pinned():
     """Guards against silent vocabulary drift — mirrors the discipline
     test_vocabulary_periodic_nav.py/test_vocabulary_nav_window_acquisition.py
-    apply to their own axes."""
-    assert {m.value for m in FlowType} == {"INTEREST", "DIVIDEND", "COUPON"}
+    apply to their own axes. M26 added RENT (Property vocabulary bundle) —
+    updated here rather than left stale, the same discipline M22/M24
+    applied to this file's own DEFINITION_LADDERS assertion below."""
+    assert {m.value for m in FlowType} == {"INTEREST", "DIVIDEND", "COUPON", "RENT"}
 
 
 def test_existence_pattern_member_set_is_pinned():

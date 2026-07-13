@@ -55,18 +55,61 @@ class AcquisitionSemantics(str, Enum):
     value today — the word is declarative vocabulary only, per D2; a future
     subscription/redemption workflow is what will eventually behave
     differently because of it.
+
+    NEGOTIATED_TRANSFER added M26 (governed vocabulary extension per
+    asset_definitions.md §8.1 Step 2 — see DECISION_LOG.md M26 entry,
+    implementing the bundle M25 designed): acquisition and disposal by
+    bilateral, case-by-case negotiation between counterparties — no
+    continuous venue matching bids and offers (unlike VENUE_TRADED), no
+    periodic published NAV to transact against (unlike NAV_WINDOW), and
+    unlike NOT_TRANSACTABLE a change of hands does occur, just never
+    through a venue or a window. Per asset_definitions.md §5.1 axis 2's own
+    worked phrase ("venue-traded, NAV-window subscription/redemption,
+    negotiated private transfer, or not transactable at all") and the M20
+    gap analysis (asset_model_gap_analysis.md §3.3, concept C3), this is
+    the word that lets a bilaterally-negotiated kind (property) individuate
+    from every acquisition mechanism above. Owning engine: Asset Foundation
+    (the same owner named for NAV_WINDOW). No engine branches on this value
+    today — the word is declarative vocabulary only, per D2; a future
+    bilateral-transfer registration workflow is what will eventually behave
+    differently because of it. Reusable beyond Property by any future kind
+    whose acquisition is genuinely bespoke and bilateral rather than venue-
+    or NAV-window-mediated — see property_vocabulary_bundle_design.md §4.
     """
 
     NOT_TRANSACTABLE = "NOT_TRANSACTABLE"
     VENUE_TRADED = "VENUE_TRADED"
     NAV_WINDOW = "NAV_WINDOW"
+    NEGOTIATED_TRANSFER = "NEGOTIATED_TRANSFER"
 
 
 class SettlementPattern(str, Enum):
-    """Axis 3 (Settlement Semantics)."""
+    """Axis 3 (Settlement Semantics) — when a change of hands becomes real.
+
+    NEGOTIATED_CLOSING added M26 (governed vocabulary extension per
+    asset_definitions.md §8.1 Step 2 — see DECISION_LOG.md M26 entry,
+    implementing the bundle M25 designed): a settlement date and process
+    individually agreed per transaction — not a standard fixed-length cycle
+    after trade (unlike CYCLE_BASED, which is refined per-instance in
+    length but is structurally the same shape for every trade of the kind),
+    and not instantaneous (unlike INSTANT). Per asset_definitions.md §5.1
+    axis 3 and the M20 gap analysis (asset_model_gap_analysis.md §3.3,
+    concept C4), this is the word that lets a bespoke-negotiated closing
+    (property) individuate from a standard settlement cycle without
+    collapsing to an identical declaration set (D1). Owning engine: Ledger
+    & Accounting (the subdomain that books a change of hands as real; the
+    same owner that already consumes INSTANT/CYCLE_BASED). No engine
+    branches on this value today — the word is declarative vocabulary only,
+    per D2; a future negotiated-closing booking workflow is what will
+    eventually behave differently because of it. Reusable beyond Property
+    by any future kind whose settlement date is itself a bilaterally
+    negotiated term rather than a standard cycle — see
+    property_vocabulary_bundle_design.md §4.
+    """
 
     INSTANT = "INSTANT"
     CYCLE_BASED = "CYCLE_BASED"
+    NEGOTIATED_CLOSING = "NEGOTIATED_CLOSING"
 
 
 class ValuationQuestion(str, Enum):
@@ -85,11 +128,34 @@ class ValuationQuestion(str, Enum):
     the word is declarative vocabulary only, per D2; a future Market
     Intelligence pricing engine is what will eventually behave differently
     because of it.
+
+    APPRAISAL_ON_EVENT added M26 (governed vocabulary extension per
+    asset_definitions.md §8.1 Step 2 — see DECISION_LOG.md M26 entry,
+    implementing the bundle M25 designed): worth is established by a
+    professional appraisal triggered by an event (a sale, a refinancing, a
+    holder-chosen revaluation date) — a third, distinct question-shape from
+    CONTINUOUS_QUOTATION (a continuously observed market price) and
+    PERIODIC_NAV (a scheduled, formula-driven periodic calculation): an
+    appraisal has no continuous market and no fixed recurring cadence, only
+    an event-triggered professional judgment. Per asset_definitions.md
+    §5.1.4's own phrase ("continuous quotation, periodic NAV,
+    appraisal-on-event, or identity") and the M20 gap analysis
+    (asset_model_gap_analysis.md §3.3, concept C2), this is the word that
+    lets an appraisal-valued kind (property) individuate from every
+    existing valuation question. Owning engine: Market Intelligence (the
+    same owner named for CONTINUOUS_QUOTATION and PERIODIC_NAV). No engine
+    branches on this value today — the word is declarative vocabulary only,
+    per D2; a future appraisal-intake workflow is what will eventually
+    behave differently because of it. Reusable beyond Property by any
+    future kind valued through event-triggered professional judgment rather
+    than a market or a formula — see property_vocabulary_bundle_design.md
+    §4, the bundle's highest-confidence reuse candidate.
     """
 
     IDENTITY = "IDENTITY"
     CONTINUOUS_QUOTATION = "CONTINUOUS_QUOTATION"
     PERIODIC_NAV = "PERIODIC_NAV"
+    APPRAISAL_ON_EVENT = "APPRAISAL_ON_EVENT"
 
 
 class FlowType(str, Enum):
@@ -116,11 +182,33 @@ class FlowType(str, Enum):
     what will eventually behave differently because of it. Reusable
     beyond Bond by any future kind with a contractually-fixed, scheduled
     income character (e.g. private debt).
+
+    RENT added M26 (governed vocabulary extension per asset_definitions.md
+    §8.1 Step 2 — see DECISION_LOG.md M26 entry, implementing the bundle
+    M25 designed): a holding-generated income flow arising from a
+    counterparty's continued occupancy or use of a physical asset under a
+    lease or similar arrangement — distinct from DIVIDEND (discretionary,
+    issuer-declared), INTEREST (balance accrual), and COUPON (a
+    contractually-fixed yield against a held instrument's principal, with a
+    redemption relationship rent does not have). Per asset_definitions.md
+    §5.1.5 and §9's own Property walk, and the M20 gap analysis
+    (asset_model_gap_analysis.md §3.3, concept C7), this is the word that
+    lets a property's rental income be admitted by the ledger without
+    borrowing DIVIDEND's discretionary character, INTEREST's
+    balance-accrual character, or COUPON's principal/redemption character.
+    Owning engine: Ledger & Accounting (the same owner named for
+    COUPON/DIVIDEND/INTEREST). No engine branches on this value today — the
+    word is declarative vocabulary only, per D2; a future rent
+    accrual/collection workflow is what will eventually behave differently
+    because of it. Confirmed Property-only by the M20/M25 reuse analysis,
+    with a tentative, unconfirmed Infrastructure usage-fee case noted for
+    completeness — see property_vocabulary_bundle_design.md §4.
     """
 
     INTEREST = "INTEREST"
     DIVIDEND = "DIVIDEND"
     COUPON = "COUPON"
+    RENT = "RENT"
 
 
 class EventFamily(str, Enum):

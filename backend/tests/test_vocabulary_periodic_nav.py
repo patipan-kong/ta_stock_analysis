@@ -139,8 +139,13 @@ def test_unknown_valuation_word_still_fails_to_construct():
 def test_valuation_question_member_set_is_pinned():
     """Guards against silent vocabulary drift — any future addition or
     removal on this axis must update this assertion deliberately, the same
-    discipline test_definition_readiness.py applies to ENFORCEMENT_DECISIONS."""
-    assert {m.value for m in ValuationQuestion} == {"IDENTITY", "CONTINUOUS_QUOTATION", "PERIODIC_NAV"}
+    discipline test_definition_readiness.py applies to ENFORCEMENT_DECISIONS.
+    M26 added APPRAISAL_ON_EVENT (Property vocabulary bundle) — updated
+    here rather than left stale, the same discipline M22/M24 applied to
+    this file's own DEFINITION_LADDERS assertion below."""
+    assert {m.value for m in ValuationQuestion} == {
+        "IDENTITY", "CONTINUOUS_QUOTATION", "PERIODIC_NAV", "APPRAISAL_ON_EVENT",
+    }
 
 
 # ── 4. Duplicate Protection (D1) ────────────────────────────────────────────

@@ -466,17 +466,33 @@ The declaration the Accounting Engine can never do without.
 How a kind changes hands.
 
 Not transactable. Venue-traded. NAV-window subscription/redemption.
+Negotiated, bilateral transfer.
 
 The mechanism, never the venue — venues are instance facts.
+
+
+## Settlement Semantics
+
+When an agreed change of hands becomes real.
+
+Instant. Cycle-based. Negotiated closing.
+
+A negotiated closing carries no standard cycle length — the date is
+itself an agreed term of the transaction, not a fixed number of days
+after trade.
 
 
 ## Valuation Semantics
 
 What question, if any, establishes a kind's worth.
 
-Identity. Continuous quotation. Periodic NAV.
+Identity. Continuous quotation. Periodic NAV. Appraisal-on-event.
 
 No definition ever states the arithmetic — only that the question exists.
+
+An appraisal-on-event question is triggered by a sale, a refinancing, or
+a holder-chosen revaluation date — never a continuous market, never a
+fixed recurring schedule.
 
 The declaration Market Intelligence answers, never derives.
 
@@ -488,6 +504,9 @@ One kind of holding-generated flow a definition may grant.
 Dividend. Coupon. Interest. Rent. Staking. Distribution.
 
 Each carries its income character.
+
+Rent is income from a counterparty's occupancy or use of a physical
+asset — not a coupon's yield against a held instrument's principal.
 
 An ungranted flow is a flow the ledger refuses.
 
