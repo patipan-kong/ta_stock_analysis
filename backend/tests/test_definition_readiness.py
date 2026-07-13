@@ -120,21 +120,80 @@ def test_defined_status_matches_library_ladders(asset_type):
         assert not has_ladder, f"{asset_type} has a library.DEFINITION_LADDERS entry but is not marked DEFINED"
 
 
-def test_etf_is_vocabulary_ready_but_not_yet_authored():
-    """The one binding M13's rationale calls out as domain-complete. M15
-    deliberately stops at classification — see DECISION_LOG.md M15 entry —
-    so ETF must not have gained a library entry as a side effect of this
-    milestone."""
+def test_etf_reached_defined_through_m16_m17_m18_lineage():
+    """The full arc, pinned so no step can silently regress: M15 wrongly
+    classified ETF VOCABULARY_READY; M16 attempted authoring, found it
+    blocked by D1 (see DECISION_LOG.md M16 entry), and corrected the
+    classification to VOCABULARY_GAP; M17 added the missing vocabulary word
+    (ValuationQuestion.PERIODIC_NAV); M18 used it to actually author
+    asset_definition_etf.md and transcribe ETF_V1 into library.py. Readiness
+    now correctly reports DEFINED, matching library.DEFINITION_LADDERS."""
     readiness = readiness_for(AssetType.ETF.value)
-    assert readiness.status == ReadinessStatus.VOCABULARY_READY
-    assert AssetType.ETF.value not in library.DEFINITION_LADDERS
+    assert readiness.status == ReadinessStatus.DEFINED
+    assert AssetType.ETF.value in library.DEFINITION_LADDERS
+    assert readiness.missing_requirements == ()
 
 
-@pytest.mark.parametrize("asset_type", [AssetType.FUND, AssetType.BOND, AssetType.PROPERTY])
-def test_vocabulary_gap_bindings_have_missing_requirements_listed(asset_type):
-    readiness = readiness_for(asset_type.value)
-    assert readiness.status == ReadinessStatus.VOCABULARY_GAP
-    assert len(readiness.missing_requirements) > 0
+def test_fund_reached_defined_through_m20_m21_m22_lineage():
+    """The analogous arc, one binding later: M20's gap analysis found
+    readiness_report.py's FUND row stale (it kept citing a missing
+    valuation word after M17 had already shipped PERIODIC_NAV) and located
+    the real gap on the acquisition axis instead; M21 added the missing
+    vocabulary word (AcquisitionSemantics.NAV_WINDOW); M22 used it to author
+    asset_definition_fund.md and transcribe FUND_V1 into library.py.
+    Readiness now correctly reports DEFINED, matching
+    library.DEFINITION_LADDERS."""
+    readiness = readiness_for(AssetType.FUND.value)
+    assert readiness.status == ReadinessStatus.DEFINED
+    assert AssetType.FUND.value in library.DEFINITION_LADDERS
+    assert readiness.missing_requirements == ()
+
+
+def test_bond_reached_defined_through_m20_m23_m24_lineage():
+    """The analogous arc, two bindings later: M20's gap analysis found
+    readiness_report.py's (and enforcement_decisions.py's) BOND row
+    imprecise — both named the event-family axis as the gap ("no
+    maturity/coupon-redemption member"), but the constitution's own §9 Bond
+    walk names the flow axis (COUPON) and the existence axis
+    (SCHEDULED_TERMINAL) as the two required words instead; M23 added both
+    missing vocabulary words; M24 used them to author asset_definition_bond.md
+    and transcribe BOND_V1 into library.py — no event-family extension
+    was needed after all. Readiness now correctly reports DEFINED, matching
+    library.DEFINITION_LADDERS."""
+    readiness = readiness_for(AssetType.BOND.value)
+    assert readiness.status == ReadinessStatus.DEFINED
+    assert AssetType.BOND.value in library.DEFINITION_LADDERS
+    assert readiness.missing_requirements == ()
+
+
+def test_property_reached_defined_through_m20_m25_m26_m27_lineage():
+    """The widest arc of the four: M20's gap analysis found PROPERTY needed
+    four words, not one or two — the most vocabulary-hungry of the five
+    remaining bindings. Rather than stagger four independently-optimized
+    words across separate milestones, M25 designed all four as one coherent
+    bundle (property_vocabulary_bundle_design.md) before any were shipped;
+    M26 shipped the bundle as one governed vocabulary extension
+    (AcquisitionSemantics.NEGOTIATED_TRANSFER, SettlementPattern.
+    NEGOTIATED_CLOSING, ValuationQuestion.APPRAISAL_ON_EVENT, FlowType.RENT);
+    M27 used them to author asset_definition_property.md and transcribe
+    PROPERTY_V1 into library.py. Readiness now correctly reports DEFINED,
+    matching library.DEFINITION_LADDERS — and closes the last binding that
+    was ever classified VOCABULARY_GAP (see
+    test_no_binding_remains_vocabulary_gap_after_property below)."""
+    readiness = readiness_for(AssetType.PROPERTY.value)
+    assert readiness.status == ReadinessStatus.DEFINED
+    assert AssetType.PROPERTY.value in library.DEFINITION_LADDERS
+    assert readiness.missing_requirements == ()
+
+
+def test_no_binding_remains_vocabulary_gap_after_property():
+    """PROPERTY was the sole remaining VOCABULARY_GAP binding (M20's gap
+    analysis; property_vocabulary_bundle_design.md §1). M27 closed it —
+    this test replaces the old parametrized
+    test_vocabulary_gap_bindings_have_missing_requirements_listed(), whose
+    only case (PROPERTY) no longer belongs to this status. Updated here
+    rather than left stale or silently emptied of test cases."""
+    assert all(row.status != ReadinessStatus.VOCABULARY_GAP for row in DEFINITION_READINESS)
 
 
 @pytest.mark.parametrize("asset_type", [AssetType.CRYPTO, AssetType.COMMODITY])
@@ -171,7 +230,7 @@ def test_render_text_answers_the_four_required_questions():
     assert "Vocabulary-ready, awaiting authoring" in text
     assert "Blocked (definition incomplete)" in text
     assert "Intentionally exempt" in text
-    assert AssetType.ETF.value in text
+    assert AssetType.CRYPTO.value in text  # M27: PROPERTY is DEFINED now too, no longer a "blocked" example
     assert AssetType.OTHER.value in text
 
 

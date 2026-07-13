@@ -32,9 +32,10 @@ def test_resolve_known_binding_returns_capability_view():
 
 
 def test_resolve_unknown_binding_refuses_loudly_never_defaults():
+    # M27: PROPERTY is now defined; CRYPTO is the still-undefined example now.
     with pytest.raises(UnresolvedBindingError) as excinfo:
-        _resolver().resolve("ETF")
-    assert "ETF" in str(excinfo.value)
+        _resolver().resolve("CRYPTO")
+    assert "CRYPTO" in str(excinfo.value)
 
 
 def test_resolve_never_returns_none_on_failure_only_raises():

@@ -92,42 +92,56 @@ ENFORCEMENT_DECISIONS: Tuple[EnforcementDecision, ...] = (
     EnforcementDecision(
         binding=AssetType.ETF.value,
         consumer="asset_registry.mint()",
-        gap_type=GapType.MISSING_DEFINITION,
+        gap_type=GapType.FUTURE_ENFORCEMENT_CANDIDATE,
         future_action=FutureAction.MIGRATE,
         rationale=(
-            "ETF's capability shape (venue-traded, cycle-settled, distribution-like flow, "
-            "corporate-action events) looks expressible in the existing seven axes without new "
-            "vocabulary — closest of the seven gaps to Equity's own shape — but it has not been "
-            "authored, reviewed against docs/definitions/asset_definition_library.md's authoring "
-            "gates, or fingerprint-pinned."
+            "ETF_V1 was authored and fingerprint-pinned in M18 (see DECISION_LOG.md), after M17's "
+            "vocabulary extension (ValuationQuestion.PERIODIC_NAV) made it individuable from "
+            "Equity v1 under D1. asset_registry.mint()'s shadow consultation now genuinely agrees "
+            "with the runtime for this binding — the gap this table originally recorded "
+            "(MISSING_DEFINITION) has closed. future_action is deliberately left at MIGRATE, not "
+            "promoted to NOT_APPLICABLE: a definition existing is necessary but not sufficient for "
+            "an enforcement policy decision, which remains a separate, explicit, human-led step "
+            "(M18 brief's own non-goal: 'do not enable additional enforcement')."
         ),
-        r2_note="Future enforcement candidate once ETF_V1 exists and passes conformance tests.",
+        r2_note="Realized: ETF_V1 exists and passes conformance tests. Awaiting a separate, explicit R2 authorization to promote past MIGRATE.",
     ),
     EnforcementDecision(
         binding=AssetType.FUND.value,
         consumer="asset_registry.mint()",
-        gap_type=GapType.MIGRATION_REQUIRED,
+        gap_type=GapType.FUTURE_ENFORCEMENT_CANDIDATE,
         future_action=FutureAction.MIGRATE,
         rationale=(
-            "Open-ended/mutual funds are typically NAV-priced, not continuously quoted. "
-            "vocabulary.ValuationQuestion currently offers only IDENTITY and CONTINUOUS_QUOTATION "
-            "— neither honestly describes NAV pricing — so FUND_V1 likely needs a governed "
-            "vocabulary extension (constitution Section 8.1 Step 2) before it can be authored."
+            "FUND_V1 was authored and fingerprint-pinned in M22 (see DECISION_LOG.md), after M21's "
+            "vocabulary extension (AcquisitionSemantics.NAV_WINDOW) made it individuable from ETF v1 "
+            "under D1. asset_registry.mint()'s shadow consultation now genuinely agrees with the "
+            "runtime for this binding — the gap this table originally recorded (MIGRATION_REQUIRED, "
+            "on what M20's gap analysis later showed was the wrong axis: valuation, not acquisition) "
+            "has closed. future_action is deliberately left at MIGRATE, not promoted to "
+            "NOT_APPLICABLE: a definition existing is necessary but not sufficient for an enforcement "
+            "policy decision, which remains a separate, explicit, human-led step (M22 brief's own "
+            "non-goal: 'do not change enforcement policy'), the same posture ETF's row took in M18."
         ),
-        r2_note="Not a future enforcement candidate until the valuation-axis question is resolved.",
+        r2_note="Realized: FUND_V1 exists and passes conformance tests. Awaiting a separate, explicit R2 authorization to promote past MIGRATE.",
     ),
     EnforcementDecision(
         binding=AssetType.BOND.value,
         consumer="asset_registry.mint()",
-        gap_type=GapType.MIGRATION_REQUIRED,
+        gap_type=GapType.FUTURE_ENFORCEMENT_CANDIDATE,
         future_action=FutureAction.MIGRATE,
         rationale=(
-            "Bonds carry maturity/coupon-redemption structural events with no analog in the "
-            "current EventFamily closed set (SPLIT/MERGER/SPIN_OFF/RENAME/SUSPENSION/DELISTING). "
-            "INTEREST already exists as a flow, but the event-family axis likely needs extension "
-            "before BOND_V1 can be authored honestly."
+            "BOND_V1 was authored and fingerprint-pinned in M24 (see DECISION_LOG.md), after M23's "
+            "vocabulary extension (FlowType.COUPON, ExistencePattern.SCHEDULED_TERMINAL) made it "
+            "individuable from Equity v1 under D1. asset_registry.mint()'s shadow consultation now "
+            "genuinely agrees with the runtime for this binding — the gap this table originally "
+            "recorded (MIGRATION_REQUIRED, on what M20's gap analysis later showed was the wrong "
+            "axis: event families, not flow/existence) has closed. future_action is deliberately "
+            "left at MIGRATE, not promoted to NOT_APPLICABLE: a definition existing is necessary but "
+            "not sufficient for an enforcement policy decision, which remains a separate, explicit, "
+            "human-led step (M24 brief's own non-goal: 'do not enable enforcement'), the same "
+            "posture ETF's and FUND's rows took in M18/M22."
         ),
-        r2_note="Not a future enforcement candidate until the event-family-axis question is resolved.",
+        r2_note="Realized: BOND_V1 exists and passes conformance tests. Awaiting a separate, explicit R2 authorization to promote past MIGRATE.",
     ),
     EnforcementDecision(
         binding=AssetType.CRYPTO.value,
@@ -156,14 +170,23 @@ ENFORCEMENT_DECISIONS: Tuple[EnforcementDecision, ...] = (
     EnforcementDecision(
         binding=AssetType.PROPERTY.value,
         consumer="asset_registry.mint()",
-        gap_type=GapType.MIGRATION_REQUIRED,
+        gap_type=GapType.FUTURE_ENFORCEMENT_CANDIDATE,
         future_action=FutureAction.MIGRATE,
         rationale=(
-            "Illiquid, appraisal-based valuation has no existing ValuationQuestion member "
-            "(only IDENTITY/CONTINUOUS_QUOTATION); PROPERTY_V1 likely needs a governed vocabulary "
-            "extension before it can be authored."
+            "PROPERTY_V1 was authored and fingerprint-pinned in M27 (see DECISION_LOG.md), after "
+            "M25 designed and M26 shipped a four-word governed vocabulary extension "
+            "(AcquisitionSemantics.NEGOTIATED_TRANSFER, SettlementPattern.NEGOTIATED_CLOSING, "
+            "ValuationQuestion.APPRAISAL_ON_EVENT, FlowType.RENT) that made it individuable from "
+            "every existing definition under D1. asset_registry.mint()'s shadow consultation now "
+            "genuinely agrees with the runtime for this binding — the gap this table originally "
+            "recorded (MIGRATION_REQUIRED, naming only the valuation axis) has closed. "
+            "future_action is deliberately left at MIGRATE, not promoted to NOT_APPLICABLE: a "
+            "definition existing is necessary but not sufficient for an enforcement policy "
+            "decision, which remains a separate, explicit, human-led step (M27 brief's own "
+            "non-goal: 'do not enable enforcement'), the same posture ETF's, FUND's, and BOND's "
+            "rows took in M18/M22/M24."
         ),
-        r2_note="Not a future enforcement candidate until the valuation-axis question is resolved.",
+        r2_note="Realized: PROPERTY_V1 exists and passes conformance tests. Awaiting a separate, explicit R2 authorization to promote past MIGRATE.",
     ),
     EnforcementDecision(
         binding=AssetType.OTHER.value,

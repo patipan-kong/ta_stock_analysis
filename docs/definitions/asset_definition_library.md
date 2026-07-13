@@ -5,8 +5,8 @@ _The canonical library of Asset Definitions — the official, versioned registry
 | | |
 |---|---|
 | **Library version** | v1 |
-| **Definitions** | 2 — [Cash](asset_definition_cash.md) v1 · [Equity](asset_definition_equity.md) v1 |
-| **Vocabulary status** | Frozen — the seven axes and their words, per the ratified constitution |
+| **Definitions** | 5 — [Cash](asset_definition_cash.md) v1 · [Equity](asset_definition_equity.md) v1 · [ETF](asset_definition_etf.md) v1 · [Fund](asset_definition_fund.md) v1 · [Bond](asset_definition_bond.md) v1 |
+| **Vocabulary status** | Frozen — the seven axes and their words, per the ratified constitution (extended three times: M17 `ValuationQuestion.PERIODIC_NAV`, M21 `AcquisitionSemantics.NAV_WINDOW`, M23 `FlowType.COUPON` + `ExistencePattern.SCHEDULED_TERMINAL`) |
 
 ---
 
@@ -52,6 +52,8 @@ What the pair deliberately does **not** validate — recorded so nobody mistakes
 
 The process is the constitution's evolution ladder (§8.1), operationalized. An author proposing a new definition follows these steps in order, and the review checklist at the end is mandatory.
 
+_As of M19, this section's steps are also available as an eight-stage, tool-by-tool walkthrough — [asset_definition_authoring_guide.md](asset_definition_authoring_guide.md) — with ETF v1's actual authoring run (M15–M18) worked through each stage, plus a formal pass/fail form, [definition_review_checklist.md](definition_review_checklist.md), to attach to the PR that admits a new definition. This section remains the conceptual statement; the guide is the operational one._
+
 ### 3.1 Before writing: two gates
 
 1. **The individuation gate (D1).** State the declaration the new kind makes that no existing definition makes — axis and value, precisely. If none exists, there is no new definition: the "new class" is an existing kind plus classification (the fate of preferred shares and DRs inside Equity v1). This gate is checked *first* because it is the cheapest and the most often failed.
@@ -89,5 +91,10 @@ Any implementation of the definition mechanism — enums, dataclasses, storage, 
 - [asset_definitions.md](../architecture/asset_definitions.md) — the constitution: the seven axes, laws D1–D12, the evolution ladder
 - [asset_definition_cash.md](asset_definition_cash.md) — Cash v1
 - [asset_definition_equity.md](asset_definition_equity.md) — Equity v1
+- [asset_definition_etf.md](asset_definition_etf.md) — ETF v1, the first definition admitted after the founding pair (M18); differs from Equity v1 by exactly one axis (periodic NAV valuation, M17's vocabulary extension)
+- [asset_definition_fund.md](asset_definition_fund.md) — Fund v1, the second definition admitted after the founding pair (M22); differs from ETF v1 by exactly one axis (NAV-window acquisition, M21's vocabulary extension)
+- [asset_definition_bond.md](asset_definition_bond.md) — Bond v1, the third definition admitted after the founding pair (M24); differs from Equity v1 by exactly two axes (coupon flow, scheduled-terminal existence — M23's vocabulary extension)
+- [asset_definition_authoring_guide.md](asset_definition_authoring_guide.md) — the governed authoring workflow (M19), §3 above operationalized stage by stage
+- [definition_review_checklist.md](definition_review_checklist.md) — the same workflow as a formal pass/fail checklist (M19)
 - [asset_foundation.md](../architecture/asset_foundation.md) — the parent domain constitution; §8 states why the founding pair is deliberately two
 - [../engineering/DECISION_LOG.md](../engineering/DECISION_LOG.md) — where every future vocabulary extension and definition version is recorded

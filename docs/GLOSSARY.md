@@ -461,6 +461,42 @@ What one unit is. Discrete or continuous. Sign. Conservation.
 The declaration the Accounting Engine can never do without.
 
 
+## Acquisition Semantics
+
+How a kind changes hands.
+
+Not transactable. Venue-traded. NAV-window subscription/redemption.
+Negotiated, bilateral transfer.
+
+The mechanism, never the venue — venues are instance facts.
+
+
+## Settlement Semantics
+
+When an agreed change of hands becomes real.
+
+Instant. Cycle-based. Negotiated closing.
+
+A negotiated closing carries no standard cycle length — the date is
+itself an agreed term of the transaction, not a fixed number of days
+after trade.
+
+
+## Valuation Semantics
+
+What question, if any, establishes a kind's worth.
+
+Identity. Continuous quotation. Periodic NAV. Appraisal-on-event.
+
+No definition ever states the arithmetic — only that the question exists.
+
+An appraisal-on-event question is triggered by a sale, a refinancing, or
+a holder-chosen revaluation date — never a continuous market, never a
+fixed recurring schedule.
+
+The declaration Market Intelligence answers, never derives.
+
+
 ## Flow Type
 
 One kind of holding-generated flow a definition may grant.
@@ -468,6 +504,9 @@ One kind of holding-generated flow a definition may grant.
 Dividend. Coupon. Interest. Rent. Staking. Distribution.
 
 Each carries its income character.
+
+Rent is income from a counterparty's occupancy or use of a physical
+asset — not a coupon's yield against a held instrument's principal.
 
 An ungranted flow is a flow the ledger refuses.
 
@@ -480,6 +519,21 @@ Split. Merger. Spin-off. Redemption. Expiry. Exercise.
 
 Definitions grant the family; Lifecycle & Structural Events
 interprets the actual event.
+
+
+## Existence Pattern
+
+The lifecycle shape a kind follows, until its story ends.
+
+Open-ended. Scheduled-terminal.
+
+A scheduled-terminal kind carries a known-in-advance terminal event —
+a bond's maturity, an option's expiry.
+
+The definition declares only that the event exists in the pattern —
+never an instance's actual date, never whether it has already happened.
+
+The declaration Lifecycle & Structural Events tracks against, never predicts.
 
 
 ## Definition Version

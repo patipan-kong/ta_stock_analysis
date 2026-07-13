@@ -10,14 +10,68 @@ can be MIGRATE (not yet safe to enforce) for two structurally different
 reasons, and this module is what tells them apart:
 
   - the domain model is already expressible; nobody has written and
-    reviewed the document yet (VOCABULARY_READY — ETF, per the M13
-    rationale's own words: "expressible in the existing seven axes without
-    new vocabulary... has not been authored, reviewed... or
-    fingerprint-pinned"), versus
+    reviewed the document yet (VOCABULARY_READY — no MIGRATE binding
+    qualifies today; see the M16 correction below), versus
   - the domain model itself is incomplete: authoring would require a
-    governed vocabulary extension (VOCABULARY_GAP — FUND, BOND, PROPERTY)
-    or a platform-scope decision that has nothing to do with vocabulary
+    governed vocabulary extension (VOCABULARY_GAP — PROPERTY) or a
+    platform-scope decision that has nothing to do with vocabulary
     (SCOPE_UNDECIDED — CRYPTO, COMMODITY).
+
+M16 correction (see DECISION_LOG.md M16 entry): M15 classified ETF
+VOCABULARY_READY on the strength of coverage_report.py's capability-shape
+prose. M16 attempted to actually author the definition and found that
+classification wrong — asset_definitions.md §9's own ETF walk individuates
+ETF from Equity by exactly one declaration, periodic-NAV valuation, and
+ValuationQuestion has no such member (only IDENTITY, CONTINUOUS_QUOTATION).
+Without it, every axis ETF would declare (venue-traded, discrete,
+cycle-settled, dividend flow, Equity's corporate-action set, Equity's
+relationship set) is identical to Equity v1 — which D1 ("no two definitions
+with identical declarations") forbids outright. The lesson generalized:
+*readiness* (is the capability shape describable) and *authorability* (does
+the declaration set individuate against every existing definition, D1) are
+different tests, and only the second one is the one that actually gates
+authoring. This module now checks both.
+
+M17 added the missing word (ValuationQuestion.PERIODIC_NAV); M18 (see
+DECISION_LOG.md M18 entry) used it to author asset_definition_etf.md and
+transcribe ETF_V1 into library.py. ETF's row below transitions from
+VOCABULARY_GAP to DEFINED as a direct, hand-updated consequence of that
+authoring — not an automatic recomputation, the same discipline every other
+row in this table already follows (module docstring, "no automatic
+decisions"). test_defined_status_matches_library_ladders is what actually
+verifies this row is honest against library.DEFINITION_LADDERS, in both
+directions, for every AssetType member.
+
+M20's gap analysis found this module's own FUND row stale: it kept citing a
+missing NAV-pricing valuation word after M17 had already shipped
+ValuationQuestion.PERIODIC_NAV (for ETF's need, but the word is
+binding-agnostic). FUND's real remaining gap was narrower — Axis 2
+(Acquisition), not Axis 4 — closed by M21's AcquisitionSemantics.NAV_WINDOW.
+M22 (see DECISION_LOG.md M22 entry) used it to author
+asset_definition_fund.md and transcribe FUND_V1 into library.py, the same
+VOCABULARY_GAP-to-DEFINED transition ETF walked in M18, one binding later.
+
+M20's gap analysis also found this module's own BOND row imprecise: it
+named the event-family axis as Bond's gap ("no maturity/coupon-redemption
+member"), but the constitution's own §9 Bond walk names the flow axis
+(COUPON) and the existence axis (SCHEDULED_TERMINAL) as the two required
+words, leaving any event-family question open rather than confirmed. M23
+added both words; M24 (see DECISION_LOG.md M24 entry) used them to author
+asset_definition_bond.md and transcribe BOND_V1 into library.py — the same
+VOCABULARY_GAP-to-DEFINED transition, two bindings later, with no
+event-family extension needed after all.
+
+PROPERTY's row named only the Axis 4 (valuation) gap as its blocker — the
+same class of staleness M20 found and left uncorrected for FUND's and
+BOND's rows in their own turn, because fixing hand-authored rationale text
+is in scope only for the milestone that actually closes the gap, not an
+earlier analysis or design pass (`property_vocabulary_bundle_design.md` §8
+records this explicitly for PROPERTY's own row). M25 designed a four-word
+bundle (Acquisition, Settlement, Valuation, Flows); M26 shipped all four
+words as one governed vocabulary extension; M27 (see DECISION_LOG.md M27
+entry) used them to author asset_definition_property.md and transcribe
+PROPERTY_V1 into library.py — the same VOCABULARY_GAP-to-DEFINED
+transition, this time closing all four axes at once rather than one or two.
 
 Per the M15 brief ("No automatic decisions"): DEFINITION_READINESS below is
 hand-authored, not derived by scanning capability shapes — the same
@@ -54,9 +108,9 @@ class ReadinessStatus(str, Enum):
     """Whether a canonical definition could be authored for this binding
     today, using only vocabulary.py's existing closed vocabulary."""
 
-    DEFINED           = "Defined"            # CASH, EQUITY — already in library.py
-    VOCABULARY_READY  = "VocabularyReady"     # ETF — expressible today, not yet authored
-    VOCABULARY_GAP    = "VocabularyGap"       # FUND, BOND, PROPERTY — needs a governed vocabulary extension
+    DEFINED           = "Defined"            # CASH, EQUITY, ETF, FUND, BOND — already in library.py
+    VOCABULARY_READY  = "VocabularyReady"     # none today — see M16 correction in module docstring
+    VOCABULARY_GAP    = "VocabularyGap"       # PROPERTY — needs a governed vocabulary extension
     SCOPE_UNDECIDED   = "ScopeUndecided"      # CRYPTO, COMMODITY — needs a platform-scope decision first
     EXEMPT            = "Exempt"              # OTHER — no definition is ever anticipated
 
@@ -87,36 +141,43 @@ DEFINITION_READINESS: Tuple[DefinitionReadiness, ...] = (
     ),
     DefinitionReadiness(
         binding=AssetType.ETF.value,
-        status=ReadinessStatus.VOCABULARY_READY,
-        missing_requirements=(
-            "authoring: no canonical document drafted",
-            "review: asset_definition_library.md §3's mandatory authoring-gate checklist not run",
-            "fingerprint: no PINNED_FINGERPRINTS entry",
-        ),
+        status=ReadinessStatus.DEFINED,
+        missing_requirements=(),
         note=(
-            "Capability shape (venue-traded, cycle-settled, distribution-like flow, "
-            "corporate-action events) looks expressible in the existing seven axes "
-            "without a vocabulary extension — the only MIGRATE binding of which that "
-            "is true today. Domain-complete in principle; not authored. M15 deliberately "
-            "stops here (see DECISION_LOG.md M15 entry) — authoring a canonical, "
-            "immutable definition is a human-reviewed step, not a generated one."
+            "ETF v1 is canonical (M18); individuated from Equity v1 via "
+            "ValuationQuestion.PERIODIC_NAV (M17's governed vocabulary extension). "
+            "Lineage: M15 wrongly classified this VOCABULARY_READY; M16 attempted "
+            "authoring, found it blocked by D1, and corrected the classification to "
+            "VOCABULARY_GAP; M17 added the missing vocabulary word; M18 authored the "
+            "definition and closed the gap for real."
         ),
     ),
     DefinitionReadiness(
         binding=AssetType.FUND.value,
-        status=ReadinessStatus.VOCABULARY_GAP,
-        missing_requirements=(
-            "vocabulary: ValuationQuestion has no NAV-pricing member (only IDENTITY, CONTINUOUS_QUOTATION)",
+        status=ReadinessStatus.DEFINED,
+        missing_requirements=(),
+        note=(
+            "Fund v1 is canonical (M22); individuated from ETF v1 via "
+            "AcquisitionSemantics.NAV_WINDOW (M21's governed vocabulary extension). "
+            "Lineage: this row was stale after M17 (it kept claiming the missing word was a "
+            "NAV-pricing valuation member, even after PERIODIC_NAV shipped for ETF); M20's gap "
+            "analysis found the real, narrower gap (Axis 2, acquisition); M21 added the missing "
+            "vocabulary word; M22 authored the definition and closed the gap for real."
         ),
-        note="Open-ended/mutual funds are NAV-priced; needs a governed vocabulary extension before authoring.",
     ),
     DefinitionReadiness(
         binding=AssetType.BOND.value,
-        status=ReadinessStatus.VOCABULARY_GAP,
-        missing_requirements=(
-            "vocabulary: EventFamily has no maturity/coupon-redemption member",
+        status=ReadinessStatus.DEFINED,
+        missing_requirements=(),
+        note=(
+            "Bond v1 is canonical (M24); individuated from Equity v1 via FlowType.COUPON and "
+            "ExistencePattern.SCHEDULED_TERMINAL (M23's governed vocabulary extensions). "
+            "Lineage: this row previously named the event-family axis as the gap ('no "
+            "maturity/coupon-redemption member'); M20's gap analysis found that imprecise — the "
+            "constitution's own §9 Bond walk names the flow and existence axes instead; M23 added "
+            "both missing words and M24 authored the definition, closing the gap for real with no "
+            "event-family extension needed."
         ),
-        note="Bond structural events have no analog in the current closed EventFamily set.",
     ),
     DefinitionReadiness(
         binding=AssetType.CRYPTO.value,
@@ -137,11 +198,20 @@ DEFINITION_READINESS: Tuple[DefinitionReadiness, ...] = (
     ),
     DefinitionReadiness(
         binding=AssetType.PROPERTY.value,
-        status=ReadinessStatus.VOCABULARY_GAP,
-        missing_requirements=(
-            "vocabulary: ValuationQuestion has no appraisal-pricing member",
+        status=ReadinessStatus.DEFINED,
+        missing_requirements=(),
+        note=(
+            "Property v1 is canonical (M27); individuated from every existing definition via "
+            "AcquisitionSemantics.NEGOTIATED_TRANSFER, SettlementPattern.NEGOTIATED_CLOSING, "
+            "ValuationQuestion.APPRAISAL_ON_EVENT, and FlowType.RENT (M26's governed vocabulary "
+            "extension, designed in depth by M25). "
+            "Lineage: this row previously named only the valuation axis as the gap ('no "
+            "appraisal-pricing member'); M20's gap analysis found three more axes (acquisition, "
+            "settlement, flows) also missing; M25 designed all four words as one coherent bundle; "
+            "M26 shipped the bundle; M27 authored the definition and closed the gap for real — the "
+            "largest single vocabulary investment (four words) and the largest D1 margin (four "
+            "axes) of any definition admitted to the library so far."
         ),
-        note="Illiquid, appraisal-based valuation has no existing ValuationQuestion member.",
     ),
     DefinitionReadiness(
         binding=AssetType.OTHER.value,
