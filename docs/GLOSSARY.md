@@ -461,6 +461,17 @@ What one unit is. Discrete or continuous. Sign. Conservation.
 The declaration the Accounting Engine can never do without.
 
 
+## Valuation Semantics
+
+What question, if any, establishes a kind's worth.
+
+Identity. Continuous quotation. Periodic NAV.
+
+No definition ever states the arithmetic — only that the question exists.
+
+The declaration Market Intelligence answers, never derives.
+
+
 ## Flow Type
 
 One kind of holding-generated flow a definition may grant.

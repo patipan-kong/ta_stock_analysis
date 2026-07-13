@@ -1,17 +1,23 @@
 """The closed, platform-owned vocabulary (asset_definitions.md D3) spelled as
 enums for the first time.
 
-No new vocabulary is introduced here — every member below names a word
-already declared in a canonical document (docs/definitions/). This module
-only gives the words a level-6 Python spelling (constitution Section 7.1),
-which is what makes "every declaration's every word is a member of the
-closed vocabulary" (M9 TDD Section 6.1) a type-system guarantee instead of a
-runtime string comparison: a transcription that misspells a word fails to
-import, not fails a boot check.
+Almost every member below names a word already declared in a canonical
+document (docs/definitions/) — this module gives such words a level-6 Python
+spelling (constitution Section 7.1), which is what makes "every
+declaration's every word is a member of the closed vocabulary" (M9 TDD
+Section 6.1) a type-system guarantee instead of a runtime string comparison:
+a transcription that misspells a word fails to import, not fails a boot
+check.
 
 Adding a member here is a governed vocabulary extension (constitution
 Section 8.1 Step 2: behavioral difference, one owning engine, glossary,
-DECISION_LOG) — never a routine code change.
+DECISION_LOG) — never a routine code change. `ValuationQuestion.PERIODIC_NAV`
+(M17) is this module's first genuine Step 2 addition: the word was named in
+prose by the constitution itself (asset_definitions.md §9's ETF walk) before
+any canonical document's Capability Projection table used it — no definition
+transcribes it yet (library.py still ships only CASH_V1/EQUITY_V1), so it
+exists here purely as an available word, not yet a declared fact about any
+kind.
 """
 from __future__ import annotations
 
@@ -40,10 +46,26 @@ class SettlementPattern(str, Enum):
 
 
 class ValuationQuestion(str, Enum):
-    """Axis 4 (Valuation Semantics) — what question, if any, exists."""
+    """Axis 4 (Valuation Semantics) — what question, if any, exists.
+
+    PERIODIC_NAV added M17 (governed vocabulary extension per
+    asset_definitions.md §8.1 Step 2 — see DECISION_LOG.md M17 entry): a
+    periodic, published net-asset-value calculation. Distinct from IDENTITY
+    (worth is a fixed face amount; no calculation exists) and
+    CONTINUOUS_QUOTATION (worth is a continuously observed market price) —
+    per asset_definitions.md §9's own ETF walk, this is the word that lets
+    a periodic-NAV kind individuate from a continuously-quoted one without
+    collapsing to an identical declaration set (D1). Owning engine: Market
+    Intelligence (asset_definitions.md §5.1 axis 4; §6.2 "to know what
+    identified things are worth"). No engine branches on this value today —
+    the word is declarative vocabulary only, per D2; a future Market
+    Intelligence pricing engine is what will eventually behave differently
+    because of it.
+    """
 
     IDENTITY = "IDENTITY"
     CONTINUOUS_QUOTATION = "CONTINUOUS_QUOTATION"
+    PERIODIC_NAV = "PERIODIC_NAV"
 
 
 class FlowType(str, Enum):
