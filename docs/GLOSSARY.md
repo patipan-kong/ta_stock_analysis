@@ -502,6 +502,21 @@ Definitions grant the family; Lifecycle & Structural Events
 interprets the actual event.
 
 
+## Existence Pattern
+
+The lifecycle shape a kind follows, until its story ends.
+
+Open-ended. Scheduled-terminal.
+
+A scheduled-terminal kind carries a known-in-advance terminal event —
+a bond's maturity, an option's expiry.
+
+The definition declares only that the event exists in the pattern —
+never an instance's actual date, never whether it has already happened.
+
+The declaration Lifecycle & Structural Events tracks against, never predicts.
+
+
 ## Definition Version
 
 One immutable published state of an asset definition.
