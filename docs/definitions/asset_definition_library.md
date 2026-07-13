@@ -5,8 +5,8 @@ _The canonical library of Asset Definitions — the official, versioned registry
 | | |
 |---|---|
 | **Library version** | v1 |
-| **Definitions** | 3 — [Cash](asset_definition_cash.md) v1 · [Equity](asset_definition_equity.md) v1 · [ETF](asset_definition_etf.md) v1 |
-| **Vocabulary status** | Frozen — the seven axes and their words, per the ratified constitution (extended once, M17: `ValuationQuestion.PERIODIC_NAV`) |
+| **Definitions** | 4 — [Cash](asset_definition_cash.md) v1 · [Equity](asset_definition_equity.md) v1 · [ETF](asset_definition_etf.md) v1 · [Fund](asset_definition_fund.md) v1 |
+| **Vocabulary status** | Frozen — the seven axes and their words, per the ratified constitution (extended twice: M17 `ValuationQuestion.PERIODIC_NAV`, M21 `AcquisitionSemantics.NAV_WINDOW`) |
 
 ---
 
@@ -92,6 +92,7 @@ Any implementation of the definition mechanism — enums, dataclasses, storage, 
 - [asset_definition_cash.md](asset_definition_cash.md) — Cash v1
 - [asset_definition_equity.md](asset_definition_equity.md) — Equity v1
 - [asset_definition_etf.md](asset_definition_etf.md) — ETF v1, the first definition admitted after the founding pair (M18); differs from Equity v1 by exactly one axis (periodic NAV valuation, M17's vocabulary extension)
+- [asset_definition_fund.md](asset_definition_fund.md) — Fund v1, the second definition admitted after the founding pair (M22); differs from ETF v1 by exactly one axis (NAV-window acquisition, M21's vocabulary extension)
 - [asset_definition_authoring_guide.md](asset_definition_authoring_guide.md) — the governed authoring workflow (M19), §3 above operationalized stage by stage
 - [definition_review_checklist.md](definition_review_checklist.md) — the same workflow as a formal pass/fail checklist (M19)
 - [asset_foundation.md](../architecture/asset_foundation.md) — the parent domain constitution; §8 states why the founding pair is deliberately two

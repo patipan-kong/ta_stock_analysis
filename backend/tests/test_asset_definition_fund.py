@@ -1,24 +1,26 @@
-"""M18 brief: ETF Canonical Definition Authoring.
+"""M22 brief: FUND Canonical Definition Authoring.
 
-ETF_V1 is the third canonical Asset Definition — the first admitted after
-the founding pair (Cash, Equity) and after the Runtime architecture (M9-M17)
-was already in place. It differs from Equity v1 on exactly one axis
-(Valuation Semantics: PERIODIC_NAV, not CONTINUOUS_QUOTATION) — the
-declaration M17's governed vocabulary extension made possible, per
-asset_definitions.md §9's own ETF walk.
+FUND_V1 is the fourth canonical Asset Definition — the second admitted after
+the Runtime architecture (M9-M21) was already in place, following ETF's
+(M15-M18) exact precedent one binding later. It differs from ETF v1 on
+exactly one axis (Acquisition Semantics: NAV_WINDOW, not VENUE_TRADED) — the
+declaration M21's governed vocabulary extension made possible, per
+asset_model_gap_analysis.md §3.1's finding that FUND and ETF already share
+ValuationQuestion.PERIODIC_NAV (M17) and would otherwise collide under D1.
 
 Coverage, per the brief's "Required Tests":
-  1. Constitution Conformance — ETF satisfies D1; not equivalent to Equity.
+  1. Constitution Conformance — FUND satisfies D1; not equivalent to ETF.
   2. Runtime Projection — CapabilityView and GovernanceProjection agree with
-     each other and with docs/definitions/asset_definition_etf.md's own
+     each other and with docs/definitions/asset_definition_fund.md's own
      Capability Projection table, row by row.
   3. Fingerprint Integrity — the pinned digest validates; tampering fails
-     boot, the same way it already does for CASH/EQUITY.
-  4. Registry Integration — DefinitionRegistry.exists("ETF") is True;
+     boot, the same way it already does for CASH/EQUITY/ETF.
+  4. Registry Integration — DefinitionRegistry.exists("FUND") is True;
      BindingResolver resolves it; unknown bindings remain unresolved.
-  5. Readiness — ETF reports DEFINED; other AssetTypes are unchanged.
-  6. Regression — CASH and EQUITY remain byte-identical to their pre-M18
-     declarations and pinned fingerprints.
+  5. Readiness Transition — FUND reports DEFINED; other AssetTypes are
+     unchanged.
+  6. Regression — CASH, EQUITY, and ETF remain byte-identical to their
+     pre-M22 declarations and pinned fingerprints.
 """
 import os
 import sys
@@ -54,44 +56,43 @@ def _resolver():
 
 # ── 1. Constitution Conformance (D1) ────────────────────────────────────────
 
-def test_etf_v1_differs_from_equity_v1_on_exactly_one_axis():
-    """The individuation this whole milestone exists to make: ETF's payload
-    must differ from Equity's, and the difference must be Axis 4 alone —
+def test_fund_v1_differs_from_etf_v1_on_exactly_one_axis():
+    """The individuation this whole milestone exists to make: FUND's payload
+    must differ from ETF's, and the difference must be Axis 2 alone —
     proving the definition is neither an accidental duplicate (D1) nor
-    over-differentiated (the brief's "do not add declarations merely to
-    increase differentiation")."""
-    assert library.ETF_V1.unit == library.EQUITY_V1.unit
-    assert library.ETF_V1.acquisition == library.EQUITY_V1.acquisition
-    assert library.ETF_V1.settlement == library.EQUITY_V1.settlement
-    assert library.ETF_V1.flows == library.EQUITY_V1.flows
-    assert library.ETF_V1.event_families == library.EQUITY_V1.event_families
-    assert library.ETF_V1.existence == library.EQUITY_V1.existence
+    over-differentiated (the brief's "minimal semantic differentiation")."""
+    assert library.FUND_V1.unit == library.ETF_V1.unit
+    assert library.FUND_V1.settlement == library.ETF_V1.settlement
+    assert library.FUND_V1.valuation == library.ETF_V1.valuation
+    assert library.FUND_V1.flows == library.ETF_V1.flows
+    assert library.FUND_V1.event_families == library.ETF_V1.event_families
+    assert library.FUND_V1.existence == library.ETF_V1.existence
 
-    assert library.ETF_V1.valuation != library.EQUITY_V1.valuation
-    assert library.ETF_V1.valuation.question == ValuationQuestion.PERIODIC_NAV
-    assert library.EQUITY_V1.valuation.question == ValuationQuestion.CONTINUOUS_QUOTATION
-
-
-def test_etf_v1_is_not_equivalent_to_equity_v1():
-    assert compute_fingerprint(library.ETF_V1) != compute_fingerprint(library.EQUITY_V1)
+    assert library.FUND_V1.acquisition != library.ETF_V1.acquisition
+    assert library.FUND_V1.acquisition.semantics == AcquisitionSemantics.NAV_WINDOW
+    assert library.ETF_V1.acquisition.semantics == AcquisitionSemantics.VENUE_TRADED
 
 
-def test_real_library_boots_clean_with_etf_present():
+def test_fund_v1_is_not_equivalent_to_etf_v1():
+    assert compute_fingerprint(library.FUND_V1) != compute_fingerprint(library.ETF_V1)
+
+
+def test_real_library_boots_clean_with_fund_present():
     """D1 is a boot-time check (registry.py's duplicate-declarations rule) —
     the real library actually passing DefinitionRegistry.build() is the
     strongest form of this assertion, stronger than a synthetic fixture."""
     registry = DefinitionRegistry.build()
-    assert registry.exists("ETF") is True
+    assert registry.exists("FUND") is True
 
 
 # ── 2. Runtime Projection ───────────────────────────────────────────────────
-# Row-by-row transcription of asset_definition_etf.md's own Capability
-# Projection table, mirroring test_asset_definitions_conformance.py's style.
+# Row-by-row transcription of asset_definition_fund.md's own Capability
+# Projection table, mirroring test_asset_definition_etf.py's style.
 
-def test_etf_v1_unit_row():
-    # | Unit | one share |
-    # | Quantity | whole-share default; fractional/lot: instance facts; non-negative |
-    view = _resolver().resolve("ETF")
+def test_fund_v1_unit_row():
+    # | Unit | one fund unit |
+    # | Quantity | whole-unit default; fractional/lot: instance facts; non-negative |
+    view = _resolver().resolve("FUND")
     assert view.unit_divisibility() == Divisibility.DISCRETE
     assert view.unit_quantity_equals_value() is False
     assert view.unit_allows_negative() is False
@@ -99,35 +100,35 @@ def test_etf_v1_unit_row():
     assert view.unit_permits_lot_refinement() is True
 
 
-def test_etf_v1_acquisition_row():
-    # | Acquisition | venue-traded |
-    view = _resolver().resolve("ETF")
-    assert view.acquisition_semantics() == AcquisitionSemantics.VENUE_TRADED
+def test_fund_v1_acquisition_row():
+    # | Acquisition | NAV-window subscription/redemption |
+    view = _resolver().resolve("FUND")
+    assert view.acquisition_semantics() == AcquisitionSemantics.NAV_WINDOW
 
 
-def test_etf_v1_settlement_row():
+def test_fund_v1_settlement_row():
     # | Settlement | cycle-based (length: instance fact) |
-    view = _resolver().resolve("ETF")
+    view = _resolver().resolve("FUND")
     assert view.settlement_pattern() == SettlementPattern.CYCLE_BASED
     assert view.settlement_permits_cycle_length_refinement() is True
 
 
-def test_etf_v1_valuation_row():
+def test_fund_v1_valuation_row():
     # | Valuation question | periodic NAV |
-    view = _resolver().resolve("ETF")
+    view = _resolver().resolve("FUND")
     assert view.valuation_question() == ValuationQuestion.PERIODIC_NAV
 
 
-def test_etf_v1_flows_row():
+def test_fund_v1_flows_row():
     # | Flows admissible | dividend |
-    view = _resolver().resolve("ETF")
+    view = _resolver().resolve("FUND")
     assert view.grants_flow(FlowType.DIVIDEND) is True
     assert view.grants_flow(FlowType.INTEREST) is False
 
 
-def test_etf_v1_event_families_row():
+def test_fund_v1_event_families_row():
     # | Event families | split, merger, spin-off, rename, suspension, delisting |
-    view = _resolver().resolve("ETF")
+    view = _resolver().resolve("FUND")
     granted = {
         EventFamily.SPLIT, EventFamily.MERGER, EventFamily.SPIN_OFF,
         EventFamily.RENAME, EventFamily.SUSPENSION, EventFamily.DELISTING,
@@ -136,9 +137,9 @@ def test_etf_v1_event_families_row():
         assert view.grants_event_family(family) is (family in granted)
 
 
-def test_etf_v1_existence_row():
+def test_fund_v1_existence_row():
     # | Existence | open-ended; may relate: same-entity, wraps, successor-of |
-    view = _resolver().resolve("ETF")
+    view = _resolver().resolve("FUND")
     assert view.existence_pattern() == ExistencePattern.OPEN_ENDED
     permitted = {RelationshipKind.SAME_ENTITY, RelationshipKind.WRAPS, RelationshipKind.SUCCESSOR_OF}
     for kind in RelationshipKind:
@@ -146,15 +147,15 @@ def test_etf_v1_existence_row():
         assert view.relationship_mandatory(kind) is False
 
 
-def test_governance_projection_matches_capability_view_for_etf():
+def test_governance_projection_matches_capability_view_for_fund():
     registry = DefinitionRegistry.build()
     resolver = BindingResolver(registry)
-    view = resolver.resolve("ETF")
-    projection = registry.get("ETF").as_dict()
+    view = resolver.resolve("FUND")
+    projection = registry.get("FUND").as_dict()
 
-    assert projection["name"] == "ETF"
-    assert projection["binding"] == AssetType.ETF.value
-    assert projection["source_document"] == "docs/definitions/asset_definition_etf.md"
+    assert projection["name"] == "Fund"
+    assert projection["binding"] == AssetType.FUND.value
+    assert projection["source_document"] == "docs/definitions/asset_definition_fund.md"
     assert projection["unit"]["divisibility"] == view.unit_divisibility().value
     assert projection["acquisition"] == view.acquisition_semantics().value
     assert projection["settlement"]["pattern"] == view.settlement_pattern().value
@@ -170,21 +171,21 @@ def test_governance_projection_matches_capability_view_for_etf():
 
 # ── 3. Fingerprint Integrity ────────────────────────────────────────────────
 
-def test_etf_pinned_fingerprint_validates():
-    assert compute_fingerprint(library.ETF_V1) == library.PINNED_FINGERPRINTS[(AssetType.ETF.value, "v1")]
+def test_fund_pinned_fingerprint_validates():
+    assert compute_fingerprint(library.FUND_V1) == library.PINNED_FINGERPRINTS[(AssetType.FUND.value, "v1")]
 
 
-def test_tampered_etf_fingerprint_fails_boot():
+def test_tampered_fund_fingerprint_fails_boot():
     import services.asset_definitions.registry as registry_module
 
     original = registry_module.library.PINNED_FINGERPRINTS
     try:
         registry_module.library.PINNED_FINGERPRINTS = dict(original)
-        registry_module.library.PINNED_FINGERPRINTS[(AssetType.ETF.value, "v1")] = "0" * 64
+        registry_module.library.PINNED_FINGERPRINTS[(AssetType.FUND.value, "v1")] = "0" * 64
         with pytest.raises(DefinitionRegistryError) as excinfo:
             DefinitionRegistry.build()
         assert any(
-            f.rule == "fingerprint-mismatch" and f.binding == AssetType.ETF.value
+            f.rule == "fingerprint-mismatch" and f.binding == AssetType.FUND.value
             for f in excinfo.value.findings
         )
     finally:
@@ -193,21 +194,19 @@ def test_tampered_etf_fingerprint_fails_boot():
 
 # ── 4. Registry Integration ─────────────────────────────────────────────────
 
-def test_definition_registry_exists_etf():
-    assert DefinitionRegistry.build().exists("ETF") is True
+def test_definition_registry_exists_fund():
+    assert DefinitionRegistry.build().exists("FUND") is True
 
 
-def test_binding_resolver_resolves_etf():
-    view = _resolver().resolve("ETF")
-    assert view.acquisition_semantics() == AcquisitionSemantics.VENUE_TRADED
+def test_binding_resolver_resolves_fund():
+    view = _resolver().resolve("FUND")
+    assert view.acquisition_semantics() == AcquisitionSemantics.NAV_WINDOW
 
 
-def test_unknown_bindings_still_unresolved_after_etf_addition():
-    """Adding ETF must not widen resolution to any other still-undefined
+def test_unknown_bindings_still_unresolved_after_fund_addition():
+    """Adding FUND must not widen resolution to any other still-undefined
     binding — a sibling entry cannot accidentally loosen refusal for
-    bindings that never asked for one. M22: FUND was subsequently authored
-    and is excluded from this ghost list for that reason (see
-    test_asset_definition_fund.py's own version of this assertion)."""
+    bindings that never asked for one."""
     from services.asset_definitions import UnresolvedBindingError
 
     resolver = _resolver()
@@ -218,19 +217,16 @@ def test_unknown_bindings_still_unresolved_after_etf_addition():
 
 # ── 5. Readiness ─────────────────────────────────────────────────────────────
 
-def test_etf_readiness_is_defined():
-    readiness = readiness_for(AssetType.ETF.value)
+def test_fund_readiness_is_defined():
+    readiness = readiness_for(AssetType.FUND.value)
     assert readiness.status == ReadinessStatus.DEFINED
     assert readiness.missing_requirements == ()
 
 
-def test_other_asset_types_readiness_unchanged_by_etf_authoring():
-    # M22: FUND was subsequently authored and moved to DEFINED — this
-    # assertion is updated to reflect that later, unrelated milestone rather
-    # than left pinned to a fact this file's own scope never re-verifies.
+def test_other_asset_types_readiness_unchanged_by_fund_authoring():
     assert readiness_for(AssetType.CASH.value).status == ReadinessStatus.DEFINED
     assert readiness_for(AssetType.EQUITY.value).status == ReadinessStatus.DEFINED
-    assert readiness_for(AssetType.FUND.value).status == ReadinessStatus.DEFINED
+    assert readiness_for(AssetType.ETF.value).status == ReadinessStatus.DEFINED
     assert readiness_for(AssetType.BOND.value).status == ReadinessStatus.VOCABULARY_GAP
     assert readiness_for(AssetType.PROPERTY.value).status == ReadinessStatus.VOCABULARY_GAP
     assert readiness_for(AssetType.CRYPTO.value).status == ReadinessStatus.SCOPE_UNDECIDED
@@ -238,7 +234,7 @@ def test_other_asset_types_readiness_unchanged_by_etf_authoring():
     assert readiness_for(AssetType.OTHER.value).status == ReadinessStatus.EXEMPT
 
 
-# ── 6. Regression: CASH and EQUITY are untouched ────────────────────────────
+# ── 6. Regression: CASH, EQUITY, and ETF are untouched ──────────────────────
 
 def test_cash_v1_declarations_and_fingerprint_unchanged():
     assert library.CASH_V1.valuation.question == ValuationQuestion.IDENTITY
@@ -250,10 +246,13 @@ def test_equity_v1_declarations_and_fingerprint_unchanged():
     assert compute_fingerprint(library.EQUITY_V1) == library.PINNED_FINGERPRINTS[(AssetType.EQUITY.value, "v1")]
 
 
-def test_definition_ladders_now_exactly_three():
-    # M22: FUND was subsequently added — see test_asset_definition_fund.py's
-    # own test_definition_ladders_now_exactly_four for that milestone's
-    # version of this assertion.
+def test_etf_v1_declarations_and_fingerprint_unchanged():
+    assert library.ETF_V1.acquisition.semantics == AcquisitionSemantics.VENUE_TRADED
+    assert library.ETF_V1.valuation.question == ValuationQuestion.PERIODIC_NAV
+    assert compute_fingerprint(library.ETF_V1) == library.PINNED_FINGERPRINTS[(AssetType.ETF.value, "v1")]
+
+
+def test_definition_ladders_now_exactly_four():
     assert set(library.DEFINITION_LADDERS.keys()) == {
         AssetType.CASH.value, AssetType.EQUITY.value, AssetType.ETF.value, AssetType.FUND.value,
     }

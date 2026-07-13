@@ -64,8 +64,9 @@ def test_build_succeeds_against_the_real_library():
 
 
 def test_exists_is_false_for_bindings_with_no_definition():
+    # M22: FUND is now defined; the remaining ghosts are still undefined.
     registry = DefinitionRegistry.build()
-    for ghost in ("FUND", "BOND", "CRYPTO", "COMMODITY", "PROPERTY", "OTHER"):
+    for ghost in ("BOND", "CRYPTO", "COMMODITY", "PROPERTY", "OTHER"):
         assert registry.exists(ghost) is False, f"{ghost} has no canonical definition and must not resolve"
 
 
@@ -75,14 +76,14 @@ def test_get_returns_governance_projection_or_none():
     assert cash is not None
     assert cash.name == "Cash"
     assert cash.version == "v1"
-    assert registry.get("FUND") is None
+    assert registry.get("BOND") is None  # M22: FUND is now defined; BOND remains the undefined example
 
 
 def test_all_returns_every_loaded_definition_sorted_by_binding():
     registry = DefinitionRegistry.build()
     bindings = [g.binding for g in registry.all()]
     assert bindings == sorted(bindings)
-    assert set(bindings) == {"CASH", "EQUITY", "ETF"}
+    assert set(bindings) == {"CASH", "EQUITY", "ETF", "FUND"}
 
 
 # ── Boot validation: each defect class refuses with a named rule ─────────

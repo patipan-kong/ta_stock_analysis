@@ -32,9 +32,10 @@ def test_resolve_known_binding_returns_capability_view():
 
 
 def test_resolve_unknown_binding_refuses_loudly_never_defaults():
+    # M22: FUND is now defined; BOND remains the still-undefined example.
     with pytest.raises(UnresolvedBindingError) as excinfo:
-        _resolver().resolve("FUND")
-    assert "FUND" in str(excinfo.value)
+        _resolver().resolve("BOND")
+    assert "BOND" in str(excinfo.value)
 
 
 def test_resolve_never_returns_none_on_failure_only_raises():

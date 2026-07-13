@@ -134,7 +134,22 @@ def test_etf_reached_defined_through_m16_m17_m18_lineage():
     assert readiness.missing_requirements == ()
 
 
-@pytest.mark.parametrize("asset_type", [AssetType.FUND, AssetType.BOND, AssetType.PROPERTY])
+def test_fund_reached_defined_through_m20_m21_m22_lineage():
+    """The analogous arc, one binding later: M20's gap analysis found
+    readiness_report.py's FUND row stale (it kept citing a missing
+    valuation word after M17 had already shipped PERIODIC_NAV) and located
+    the real gap on the acquisition axis instead; M21 added the missing
+    vocabulary word (AcquisitionSemantics.NAV_WINDOW); M22 used it to author
+    asset_definition_fund.md and transcribe FUND_V1 into library.py.
+    Readiness now correctly reports DEFINED, matching
+    library.DEFINITION_LADDERS."""
+    readiness = readiness_for(AssetType.FUND.value)
+    assert readiness.status == ReadinessStatus.DEFINED
+    assert AssetType.FUND.value in library.DEFINITION_LADDERS
+    assert readiness.missing_requirements == ()
+
+
+@pytest.mark.parametrize("asset_type", [AssetType.BOND, AssetType.PROPERTY])
 def test_vocabulary_gap_bindings_have_missing_requirements_listed(asset_type):
     readiness = readiness_for(asset_type.value)
     assert readiness.status == ReadinessStatus.VOCABULARY_GAP
@@ -175,7 +190,7 @@ def test_render_text_answers_the_four_required_questions():
     assert "Vocabulary-ready, awaiting authoring" in text
     assert "Blocked (definition incomplete)" in text
     assert "Intentionally exempt" in text
-    assert AssetType.FUND.value in text  # M18: ETF is DEFINED now, no longer a "blocked" example
+    assert AssetType.BOND.value in text  # M22: FUND is DEFINED now too, no longer a "blocked" example
     assert AssetType.OTHER.value in text
 
 

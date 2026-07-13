@@ -13,9 +13,9 @@ reasons, and this module is what tells them apart:
     reviewed the document yet (VOCABULARY_READY — no MIGRATE binding
     qualifies today; see the M16 correction below), versus
   - the domain model itself is incomplete: authoring would require a
-    governed vocabulary extension (VOCABULARY_GAP — ETF, FUND, BOND,
-    PROPERTY) or a platform-scope decision that has nothing to do with
-    vocabulary (SCOPE_UNDECIDED — CRYPTO, COMMODITY).
+    governed vocabulary extension (VOCABULARY_GAP — BOND, PROPERTY) or a
+    platform-scope decision that has nothing to do with vocabulary
+    (SCOPE_UNDECIDED — CRYPTO, COMMODITY).
 
 M16 correction (see DECISION_LOG.md M16 entry): M15 classified ETF
 VOCABULARY_READY on the strength of coverage_report.py's capability-shape
@@ -41,6 +41,15 @@ row in this table already follows (module docstring, "no automatic
 decisions"). test_defined_status_matches_library_ladders is what actually
 verifies this row is honest against library.DEFINITION_LADDERS, in both
 directions, for every AssetType member.
+
+M20's gap analysis found this module's own FUND row stale: it kept citing a
+missing NAV-pricing valuation word after M17 had already shipped
+ValuationQuestion.PERIODIC_NAV (for ETF's need, but the word is
+binding-agnostic). FUND's real remaining gap was narrower — Axis 2
+(Acquisition), not Axis 4 — closed by M21's AcquisitionSemantics.NAV_WINDOW.
+M22 (see DECISION_LOG.md M22 entry) used it to author
+asset_definition_fund.md and transcribe FUND_V1 into library.py, the same
+VOCABULARY_GAP-to-DEFINED transition ETF walked in M18, one binding later.
 
 Per the M15 brief ("No automatic decisions"): DEFINITION_READINESS below is
 hand-authored, not derived by scanning capability shapes — the same
@@ -77,9 +86,9 @@ class ReadinessStatus(str, Enum):
     """Whether a canonical definition could be authored for this binding
     today, using only vocabulary.py's existing closed vocabulary."""
 
-    DEFINED           = "Defined"            # CASH, EQUITY — already in library.py
+    DEFINED           = "Defined"            # CASH, EQUITY, ETF, FUND — already in library.py
     VOCABULARY_READY  = "VocabularyReady"     # none today — see M16 correction in module docstring
-    VOCABULARY_GAP    = "VocabularyGap"       # ETF, FUND, BOND, PROPERTY — needs a governed vocabulary extension
+    VOCABULARY_GAP    = "VocabularyGap"       # BOND, PROPERTY — needs a governed vocabulary extension
     SCOPE_UNDECIDED   = "ScopeUndecided"      # CRYPTO, COMMODITY — needs a platform-scope decision first
     EXEMPT            = "Exempt"              # OTHER — no definition is ever anticipated
 
@@ -123,11 +132,16 @@ DEFINITION_READINESS: Tuple[DefinitionReadiness, ...] = (
     ),
     DefinitionReadiness(
         binding=AssetType.FUND.value,
-        status=ReadinessStatus.VOCABULARY_GAP,
-        missing_requirements=(
-            "vocabulary: ValuationQuestion has no NAV-pricing member (only IDENTITY, CONTINUOUS_QUOTATION)",
+        status=ReadinessStatus.DEFINED,
+        missing_requirements=(),
+        note=(
+            "Fund v1 is canonical (M22); individuated from ETF v1 via "
+            "AcquisitionSemantics.NAV_WINDOW (M21's governed vocabulary extension). "
+            "Lineage: this row was stale after M17 (it kept claiming the missing word was a "
+            "NAV-pricing valuation member, even after PERIODIC_NAV shipped for ETF); M20's gap "
+            "analysis found the real, narrower gap (Axis 2, acquisition); M21 added the missing "
+            "vocabulary word; M22 authored the definition and closed the gap for real."
         ),
-        note="Open-ended/mutual funds are NAV-priced; needs a governed vocabulary extension before authoring.",
     ),
     DefinitionReadiness(
         binding=AssetType.BOND.value,

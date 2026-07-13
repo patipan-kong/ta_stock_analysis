@@ -121,9 +121,11 @@ def test_cash_and_equity_fingerprints_are_unchanged():
 
 
 def test_definition_ladders_untouched_by_this_milestone():
-    # True as of M17; M18 later added ETF using this milestone's word — see
-    # test_asset_definition_etf.py. Updated here rather than left stale.
-    assert set(library.DEFINITION_LADDERS.keys()) == {"CASH", "EQUITY", "ETF"}
+    # True as of M17; M18 later added ETF using this milestone's word, and
+    # M22 later added FUND, which also declares PERIODIC_NAV (see
+    # test_asset_definition_etf.py, test_asset_definition_fund.py). Updated
+    # here rather than left stale.
+    assert set(library.DEFINITION_LADDERS.keys()) == {"CASH", "EQUITY", "ETF", "FUND"}
 
 
 # ── 3. Closed Vocabulary Integrity ──────────────────────────────────────────

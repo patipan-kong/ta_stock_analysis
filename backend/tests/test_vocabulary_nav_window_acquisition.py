@@ -105,8 +105,13 @@ def test_real_library_still_boots_clean():
     assert registry.exists("CASH")
     assert registry.exists("EQUITY")
     assert registry.exists("ETF")
-    # As of M21 no definition uses the new word yet — FUND remains unauthored.
-    assert registry.exists("FUND") is False
+    # As of M21 no definition used the new word yet, so FUND did not exist
+    # here. M22 authored asset_definition_fund.md using NAV_WINDOW, so this
+    # assertion documents the word's later consequence rather than its own
+    # (still true) claim that adding a vocabulary member alone does not
+    # author a definition — see test_asset_definition_fund.py for M22's own
+    # dedicated coverage of that milestone.
+    assert registry.exists("FUND") is True
 
 
 def test_cash_equity_etf_declarations_are_unchanged():
@@ -125,7 +130,9 @@ def test_cash_equity_etf_fingerprints_are_unchanged():
 
 
 def test_definition_ladders_untouched_by_this_milestone():
-    assert set(library.DEFINITION_LADDERS.keys()) == {"CASH", "EQUITY", "ETF"}
+    # True as of M21; M22 later added FUND using this milestone's word — see
+    # test_asset_definition_fund.py. Updated here rather than left stale.
+    assert set(library.DEFINITION_LADDERS.keys()) == {"CASH", "EQUITY", "ETF", "FUND"}
 
 
 # ── 3. Closed Vocabulary Integrity ──────────────────────────────────────────

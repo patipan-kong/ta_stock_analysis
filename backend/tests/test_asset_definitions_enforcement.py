@@ -52,7 +52,10 @@ _NO_GAP = {AssetType.CASH.value, AssetType.EQUITY.value}
 # MIGRATE, not NOT_APPLICABLE (see enforcement_decisions.py's ETF row and
 # DECISION_LOG.md's M18 entry) — a definition existing is necessary but not
 # sufficient for an enforcement policy decision, which remains separate.
-_FUTURE_ENFORCEMENT_CANDIDATES = {AssetType.ETF.value}
+# M22: FUND_V1 was authored one binding later, through the exact same
+# lineage (see DECISION_LOG.md's M22 entry) — it joins ETF here for the
+# identical reason.
+_FUTURE_ENFORCEMENT_CANDIDATES = {AssetType.ETF.value, AssetType.FUND.value}
 _DEFINED = _NO_GAP | _FUTURE_ENFORCEMENT_CANDIDATES  # registry.exists() is True
 _UNDEFINED = {m.value for m in AssetType} - _DEFINED  # registry.exists() is False
 _MIGRATION_REQUIRED_OR_LEGACY = _UNDEFINED  # decision.gap_type != NO_GAP; runtime disagrees
@@ -85,7 +88,12 @@ def test_defined_bindings_report_their_capabilities():
     assert "DIVIDEND" in etf.flows_granted
     assert "SAME_ENTITY" in etf.permitted_relationships
 
-    assert report.defined_count == 3
+    fund = by_binding[AssetType.FUND.value]
+    assert fund.defined is True
+    assert "DIVIDEND" in fund.flows_granted
+    assert "SAME_ENTITY" in fund.permitted_relationships
+
+    assert report.defined_count == 4
 
 
 def test_undefined_bindings_report_empty_capabilities():
@@ -168,7 +176,9 @@ def test_future_enforcement_candidates_agree_with_runtime_but_stay_at_migrate():
     axis describes, but does not by itself authorize an enforcement *policy*
     decision — that remains a separate, explicit, human-led step (M18
     brief's non-goal: "do not enable additional enforcement"; see
-    DECISION_LOG.md's M18 entry and enforcement_decisions.py's ETF row)."""
+    DECISION_LOG.md's M18 entry and enforcement_decisions.py's ETF row).
+    M22: FUND_V1 joined this same bucket one binding later, for the
+    identical reason (see enforcement_decisions.py's FUND row)."""
     from services.asset_registry import _consult_runtime_for_mint
 
     for binding in _FUTURE_ENFORCEMENT_CANDIDATES:
@@ -245,7 +255,8 @@ def test_render_text_smoke():
     assert "Asset Type Coverage" in text
     assert "CASH" in text and "defined" in text
     assert "ETF" in text  # M18: ETF is now "defined", not "missing" — see test_asset_definition_etf.py
-    assert "FUND" in text and "missing" in text
+    assert "FUND" in text  # M22: FUND is now "defined" too — see test_asset_definition_fund.py
+    assert "BOND" in text and "missing" in text
 
     decisions_text = render_decisions_text()
     assert "Enforcement Boundary Decisions" in decisions_text
