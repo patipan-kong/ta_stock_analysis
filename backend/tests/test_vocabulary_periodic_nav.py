@@ -122,11 +122,13 @@ def test_cash_and_equity_fingerprints_are_unchanged():
 
 def test_definition_ladders_untouched_by_this_milestone():
     # True as of M17; M18 later added ETF using this milestone's word, M22
-    # later added FUND, which also declares PERIODIC_NAV, and M24 later
-    # added BOND (which does not — BOND uses CONTINUOUS_QUOTATION) (see
-    # test_asset_definition_etf.py, test_asset_definition_fund.py,
-    # test_asset_definition_bond.py). Updated here rather than left stale.
-    assert set(library.DEFINITION_LADDERS.keys()) == {"CASH", "EQUITY", "ETF", "FUND", "BOND"}
+    # later added FUND, which also declares PERIODIC_NAV, M24 later added
+    # BOND (which does not — BOND uses CONTINUOUS_QUOTATION), and M27 later
+    # added PROPERTY (which does not either — PROPERTY uses
+    # APPRAISAL_ON_EVENT) (see test_asset_definition_etf.py,
+    # test_asset_definition_fund.py, test_asset_definition_bond.py,
+    # test_asset_definition_property.py). Updated here rather than left stale.
+    assert set(library.DEFINITION_LADDERS.keys()) == {"CASH", "EQUITY", "ETF", "FUND", "BOND", "PROPERTY"}
 
 
 # ── 3. Closed Vocabulary Integrity ──────────────────────────────────────────

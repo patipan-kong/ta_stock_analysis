@@ -174,10 +174,11 @@ def test_real_library_still_boots_clean():
     assert registry.exists("ETF")
     assert registry.exists("FUND")
     assert registry.exists("BOND")
-    # This milestone is vocabulary-only, per its own non-goals ("do not
-    # author PROPERTY") — PROPERTY stays unresolved until a future
-    # authoring milestone (M27) uses these four words for real.
-    assert registry.exists("PROPERTY") is False
+    # M26 was vocabulary-only, per its own non-goals ("do not author
+    # PROPERTY") — PROPERTY stayed unresolved until M27 used these four
+    # words for real. Updated here rather than left stale, the same
+    # discipline this file's own comment once flagged for a future milestone.
+    assert registry.exists("PROPERTY") is True
 
 
 def test_existing_definitions_declarations_are_unchanged():
@@ -214,9 +215,10 @@ def test_existing_fingerprints_are_unchanged():
 
 
 def test_definition_ladders_untouched_by_this_milestone():
-    # Vocabulary-only milestone: PROPERTY is not added here. A future
-    # authoring milestone (M27) is expected to add it using these words.
-    assert set(library.DEFINITION_LADDERS.keys()) == {"CASH", "EQUITY", "ETF", "FUND", "BOND"}
+    # True as of M26 (vocabulary-only); M27 later added PROPERTY using these
+    # four words — see test_asset_definition_property.py. Updated here
+    # rather than left stale.
+    assert set(library.DEFINITION_LADDERS.keys()) == {"CASH", "EQUITY", "ETF", "FUND", "BOND", "PROPERTY"}
 
 
 # ── 3. Closed Vocabulary Integrity ──────────────────────────────────────────

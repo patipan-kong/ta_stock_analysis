@@ -170,14 +170,23 @@ ENFORCEMENT_DECISIONS: Tuple[EnforcementDecision, ...] = (
     EnforcementDecision(
         binding=AssetType.PROPERTY.value,
         consumer="asset_registry.mint()",
-        gap_type=GapType.MIGRATION_REQUIRED,
+        gap_type=GapType.FUTURE_ENFORCEMENT_CANDIDATE,
         future_action=FutureAction.MIGRATE,
         rationale=(
-            "Illiquid, appraisal-based valuation has no existing ValuationQuestion member "
-            "(only IDENTITY/CONTINUOUS_QUOTATION); PROPERTY_V1 likely needs a governed vocabulary "
-            "extension before it can be authored."
+            "PROPERTY_V1 was authored and fingerprint-pinned in M27 (see DECISION_LOG.md), after "
+            "M25 designed and M26 shipped a four-word governed vocabulary extension "
+            "(AcquisitionSemantics.NEGOTIATED_TRANSFER, SettlementPattern.NEGOTIATED_CLOSING, "
+            "ValuationQuestion.APPRAISAL_ON_EVENT, FlowType.RENT) that made it individuable from "
+            "every existing definition under D1. asset_registry.mint()'s shadow consultation now "
+            "genuinely agrees with the runtime for this binding — the gap this table originally "
+            "recorded (MIGRATION_REQUIRED, naming only the valuation axis) has closed. "
+            "future_action is deliberately left at MIGRATE, not promoted to NOT_APPLICABLE: a "
+            "definition existing is necessary but not sufficient for an enforcement policy "
+            "decision, which remains a separate, explicit, human-led step (M27 brief's own "
+            "non-goal: 'do not enable enforcement'), the same posture ETF's, FUND's, and BOND's "
+            "rows took in M18/M22/M24."
         ),
-        r2_note="Not a future enforcement candidate until the valuation-axis question is resolved.",
+        r2_note="Realized: PROPERTY_V1 exists and passes conformance tests. Awaiting a separate, explicit R2 authorization to promote past MIGRATE.",
     ),
     EnforcementDecision(
         binding=AssetType.OTHER.value,

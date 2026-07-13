@@ -61,6 +61,18 @@ asset_definition_bond.md and transcribe BOND_V1 into library.py — the same
 VOCABULARY_GAP-to-DEFINED transition, two bindings later, with no
 event-family extension needed after all.
 
+PROPERTY's row named only the Axis 4 (valuation) gap as its blocker — the
+same class of staleness M20 found and left uncorrected for FUND's and
+BOND's rows in their own turn, because fixing hand-authored rationale text
+is in scope only for the milestone that actually closes the gap, not an
+earlier analysis or design pass (`property_vocabulary_bundle_design.md` §8
+records this explicitly for PROPERTY's own row). M25 designed a four-word
+bundle (Acquisition, Settlement, Valuation, Flows); M26 shipped all four
+words as one governed vocabulary extension; M27 (see DECISION_LOG.md M27
+entry) used them to author asset_definition_property.md and transcribe
+PROPERTY_V1 into library.py — the same VOCABULARY_GAP-to-DEFINED
+transition, this time closing all four axes at once rather than one or two.
+
 Per the M15 brief ("No automatic decisions"): DEFINITION_READINESS below is
 hand-authored, not derived by scanning capability shapes — the same
 discipline enforcement_decisions.py already applies to FutureAction, for
@@ -186,11 +198,20 @@ DEFINITION_READINESS: Tuple[DefinitionReadiness, ...] = (
     ),
     DefinitionReadiness(
         binding=AssetType.PROPERTY.value,
-        status=ReadinessStatus.VOCABULARY_GAP,
-        missing_requirements=(
-            "vocabulary: ValuationQuestion has no appraisal-pricing member",
+        status=ReadinessStatus.DEFINED,
+        missing_requirements=(),
+        note=(
+            "Property v1 is canonical (M27); individuated from every existing definition via "
+            "AcquisitionSemantics.NEGOTIATED_TRANSFER, SettlementPattern.NEGOTIATED_CLOSING, "
+            "ValuationQuestion.APPRAISAL_ON_EVENT, and FlowType.RENT (M26's governed vocabulary "
+            "extension, designed in depth by M25). "
+            "Lineage: this row previously named only the valuation axis as the gap ('no "
+            "appraisal-pricing member'); M20's gap analysis found three more axes (acquisition, "
+            "settlement, flows) also missing; M25 designed all four words as one coherent bundle; "
+            "M26 shipped the bundle; M27 authored the definition and closed the gap for real — the "
+            "largest single vocabulary investment (four words) and the largest D1 margin (four "
+            "axes) of any definition admitted to the library so far."
         ),
-        note="Illiquid, appraisal-based valuation has no existing ValuationQuestion member.",
     ),
     DefinitionReadiness(
         binding=AssetType.OTHER.value,

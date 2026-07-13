@@ -210,7 +210,8 @@ def test_unknown_bindings_still_unresolved_after_fund_addition():
     from services.asset_definitions import UnresolvedBindingError
 
     resolver = _resolver()
-    for ghost in ("CRYPTO", "COMMODITY", "PROPERTY", "OTHER"):
+    # M27: PROPERTY is now defined too — see test_asset_definition_property.py.
+    for ghost in ("CRYPTO", "COMMODITY", "OTHER"):
         with pytest.raises(UnresolvedBindingError):
             resolver.resolve(ghost)
 
@@ -230,7 +231,8 @@ def test_other_asset_types_readiness_unchanged_by_fund_authoring():
     assert readiness_for(AssetType.EQUITY.value).status == ReadinessStatus.DEFINED
     assert readiness_for(AssetType.ETF.value).status == ReadinessStatus.DEFINED
     assert readiness_for(AssetType.BOND.value).status == ReadinessStatus.DEFINED
-    assert readiness_for(AssetType.PROPERTY.value).status == ReadinessStatus.VOCABULARY_GAP
+    # M27: PROPERTY is now DEFINED too — see test_asset_definition_property.py.
+    assert readiness_for(AssetType.PROPERTY.value).status == ReadinessStatus.DEFINED
     assert readiness_for(AssetType.CRYPTO.value).status == ReadinessStatus.SCOPE_UNDECIDED
     assert readiness_for(AssetType.COMMODITY.value).status == ReadinessStatus.SCOPE_UNDECIDED
     assert readiness_for(AssetType.OTHER.value).status == ReadinessStatus.EXEMPT
@@ -255,9 +257,10 @@ def test_etf_v1_declarations_and_fingerprint_unchanged():
 
 
 def test_definition_ladders_now_exactly_four():
-    # M24: BOND was subsequently added — see test_asset_definition_bond.py's
-    # own version of this assertion for that milestone.
+    # M24: BOND was subsequently added; M27: PROPERTY was subsequently added —
+    # see test_asset_definition_bond.py's and test_asset_definition_property.py's
+    # own versions of this assertion for those milestones.
     assert set(library.DEFINITION_LADDERS.keys()) == {
         AssetType.CASH.value, AssetType.EQUITY.value, AssetType.ETF.value,
-        AssetType.FUND.value, AssetType.BOND.value,
+        AssetType.FUND.value, AssetType.BOND.value, AssetType.PROPERTY.value,
     }

@@ -58,7 +58,12 @@ _NO_GAP = {AssetType.CASH.value, AssetType.EQUITY.value}
 # M24: BOND_V1 was authored two bindings later, through the exact same
 # lineage (see DECISION_LOG.md's M24 entry) — it joins ETF and FUND here
 # for the identical reason.
-_FUTURE_ENFORCEMENT_CANDIDATES = {AssetType.ETF.value, AssetType.FUND.value, AssetType.BOND.value}
+# M27: PROPERTY_V1 was authored through the analogous M20/M25/M26/M27
+# lineage (see DECISION_LOG.md's M27 entry) — it joins ETF, FUND, and BOND
+# here for the identical reason, closing the last VOCABULARY_GAP binding.
+_FUTURE_ENFORCEMENT_CANDIDATES = {
+    AssetType.ETF.value, AssetType.FUND.value, AssetType.BOND.value, AssetType.PROPERTY.value,
+}
 _DEFINED = _NO_GAP | _FUTURE_ENFORCEMENT_CANDIDATES  # registry.exists() is True
 _UNDEFINED = {m.value for m in AssetType} - _DEFINED  # registry.exists() is False
 _MIGRATION_REQUIRED_OR_LEGACY = _UNDEFINED  # decision.gap_type != NO_GAP; runtime disagrees
@@ -101,7 +106,12 @@ def test_defined_bindings_report_their_capabilities():
     assert "COUPON" in bond.flows_granted
     assert "SAME_ENTITY" in bond.permitted_relationships
 
-    assert report.defined_count == 5
+    property_ = by_binding[AssetType.PROPERTY.value]
+    assert property_.defined is True
+    assert "RENT" in property_.flows_granted
+    assert property_.permitted_relationships == ()
+
+    assert report.defined_count == 6
 
 
 def test_undefined_bindings_report_empty_capabilities():
@@ -267,7 +277,7 @@ def test_render_text_smoke():
     assert "ETF" in text  # M18: ETF is now "defined", not "missing" — see test_asset_definition_etf.py
     assert "FUND" in text  # M22: FUND is now "defined" too — see test_asset_definition_fund.py
     assert "BOND" in text  # M24: BOND is now "defined" too — see test_asset_definition_bond.py
-    assert "PROPERTY" in text and "missing" in text
+    assert "PROPERTY" in text  # M27: PROPERTY is now "defined" too — see test_asset_definition_property.py
 
     decisions_text = render_decisions_text()
     assert "Enforcement Boundary Decisions" in decisions_text

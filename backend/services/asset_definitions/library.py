@@ -4,11 +4,12 @@ the same deployable artifact as the engines that honor them, never as
 database rows or runtime-loaded configuration).
 
 Every value below is copied from exactly one row of one document:
-  - docs/definitions/asset_definition_cash.md   ("Capability Projection")
-  - docs/definitions/asset_definition_equity.md ("Capability Projection")
-  - docs/definitions/asset_definition_etf.md    ("Capability Projection")
-  - docs/definitions/asset_definition_fund.md   ("Capability Projection")
-  - docs/definitions/asset_definition_bond.md   ("Capability Projection")
+  - docs/definitions/asset_definition_cash.md     ("Capability Projection")
+  - docs/definitions/asset_definition_equity.md   ("Capability Projection")
+  - docs/definitions/asset_definition_etf.md      ("Capability Projection")
+  - docs/definitions/asset_definition_fund.md     ("Capability Projection")
+  - docs/definitions/asset_definition_bond.md     ("Capability Projection")
+  - docs/definitions/asset_definition_property.md ("Capability Projection")
 
 Nothing here reasons about *why* — the "why" lives only in those documents
 and is never transcribed (M9 TDD Section 3.1). If a review needs to check
@@ -18,12 +19,13 @@ backend/tests/test_asset_definitions_conformance.py automates.
 
 Binding spellings reuse services.asset_domain.AssetType (Reuse Before Create,
 ENGINEERING_PRINCIPLES.md) rather than inventing a parallel vocabulary.
-CASH, EQUITY, ETF (M18), FUND (M22), and BOND (M24) are transcribed here; the
-other four AssetType members (CRYPTO, COMMODITY, PROPERTY, OTHER) name kinds
-no canonical definition describes yet (M9 TDD Section 10.2). They are not
-placeholders and never will silently gain one — a binding the registry does
-not carry refuses loudly (DefinitionRegistry.exists() is False; resolution
-raises UnresolvedBindingError), never defaults.
+CASH, EQUITY, ETF (M18), FUND (M22), BOND (M24), and PROPERTY (M27) are
+transcribed here; the other three AssetType members (CRYPTO, COMMODITY,
+OTHER) name kinds no canonical definition describes yet (M9 TDD Section
+10.2). They are not placeholders and never will silently gain one — a
+binding the registry does not carry refuses loudly (DefinitionRegistry.
+exists() is False; resolution raises UnresolvedBindingError), never
+defaults.
 
 PINNED_FINGERPRINTS is intentionally NOT derived from the transcriptions
 below at import time — see fingerprint.py's module docstring for why a
@@ -235,6 +237,31 @@ BOND_V1 = DefinitionTranscription(
     ),
 )
 
+PROPERTY_V1 = DefinitionTranscription(
+    name="Property",
+    version="v1",
+    binding=AssetType.PROPERTY.value,
+    source_document="docs/definitions/asset_definition_property.md",
+    effective_from="2026-07-13",  # M27 shipped date
+    unit=UnitDeclaration(
+        divisibility=Divisibility.DISCRETE,
+        quantity_equals_value=False,
+        allows_negative=False,
+        permits_fractional_refinement=False,  # indivisible — the definition's own fact, not an instance refinement
+        permits_lot_refinement=False,
+    ),
+    acquisition=AcquisitionDeclaration(semantics=AcquisitionSemantics.NEGOTIATED_TRANSFER),  # individuating (D1)
+    settlement=SettlementDeclaration(pattern=SettlementPattern.NEGOTIATED_CLOSING, permits_cycle_length_refinement=False),  # individuating (D1)
+    valuation=ValuationDeclaration(question=ValuationQuestion.APPRAISAL_ON_EVENT),  # individuating (D1)
+    flows=FlowGrants(granted=frozenset({FlowType.RENT})),  # individuating (D1)
+    event_families=EventFamilyGrants(granted=frozenset()),  # honest absence — no issuer to administer one
+    existence=ExistenceDeclaration(
+        pattern=ExistencePattern.OPEN_ENDED,
+        permitted_relationships=frozenset(),  # no genuinely anticipated relationship kind for this kind today
+        mandatory_relationships=frozenset(),
+    ),
+)
+
 # The version ladder, per definition, ordered ascending by effective_from
 # (M9 TDD Section 5.2). Each definition has exactly one rung today — the
 # ladder shape exists so a second rung is additive data, not new code.
@@ -244,6 +271,7 @@ DEFINITION_LADDERS: Dict[str, Tuple[DefinitionTranscription, ...]] = {
     AssetType.ETF.value: (ETF_V1,),
     AssetType.FUND.value: (FUND_V1,),
     AssetType.BOND.value: (BOND_V1,),
+    AssetType.PROPERTY.value: (PROPERTY_V1,),
 }
 
 # Pinned expected digests — see module docstring. Populated by running
@@ -255,4 +283,5 @@ PINNED_FINGERPRINTS: Dict[Tuple[str, str], str] = {
     (AssetType.ETF.value, "v1"): "9aeb81273432ba38b0352600b6b786a6afce4c351bcd5247520cadce42a3421d",
     (AssetType.FUND.value, "v1"): "fc5f39514d150ec3fe691d33cdd88b1d3500560fbc0c9a41d7bfff9b21f64841",
     (AssetType.BOND.value, "v1"): "b0f1b2ea41c71eb2d4571b7b4786e884b1c0cb71490d7a1819aa2910b33189ce",
+    (AssetType.PROPERTY.value, "v1"): "5533b7cf47a96d241cfbe25dcd89764662f60ca2c4bb4d99d2639577a6a5592f",
 }

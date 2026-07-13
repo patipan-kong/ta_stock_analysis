@@ -166,11 +166,34 @@ def test_bond_reached_defined_through_m20_m23_m24_lineage():
     assert readiness.missing_requirements == ()
 
 
-@pytest.mark.parametrize("asset_type", [AssetType.PROPERTY])
-def test_vocabulary_gap_bindings_have_missing_requirements_listed(asset_type):
-    readiness = readiness_for(asset_type.value)
-    assert readiness.status == ReadinessStatus.VOCABULARY_GAP
-    assert len(readiness.missing_requirements) > 0
+def test_property_reached_defined_through_m20_m25_m26_m27_lineage():
+    """The widest arc of the four: M20's gap analysis found PROPERTY needed
+    four words, not one or two — the most vocabulary-hungry of the five
+    remaining bindings. Rather than stagger four independently-optimized
+    words across separate milestones, M25 designed all four as one coherent
+    bundle (property_vocabulary_bundle_design.md) before any were shipped;
+    M26 shipped the bundle as one governed vocabulary extension
+    (AcquisitionSemantics.NEGOTIATED_TRANSFER, SettlementPattern.
+    NEGOTIATED_CLOSING, ValuationQuestion.APPRAISAL_ON_EVENT, FlowType.RENT);
+    M27 used them to author asset_definition_property.md and transcribe
+    PROPERTY_V1 into library.py. Readiness now correctly reports DEFINED,
+    matching library.DEFINITION_LADDERS — and closes the last binding that
+    was ever classified VOCABULARY_GAP (see
+    test_no_binding_remains_vocabulary_gap_after_property below)."""
+    readiness = readiness_for(AssetType.PROPERTY.value)
+    assert readiness.status == ReadinessStatus.DEFINED
+    assert AssetType.PROPERTY.value in library.DEFINITION_LADDERS
+    assert readiness.missing_requirements == ()
+
+
+def test_no_binding_remains_vocabulary_gap_after_property():
+    """PROPERTY was the sole remaining VOCABULARY_GAP binding (M20's gap
+    analysis; property_vocabulary_bundle_design.md §1). M27 closed it —
+    this test replaces the old parametrized
+    test_vocabulary_gap_bindings_have_missing_requirements_listed(), whose
+    only case (PROPERTY) no longer belongs to this status. Updated here
+    rather than left stale or silently emptied of test cases."""
+    assert all(row.status != ReadinessStatus.VOCABULARY_GAP for row in DEFINITION_READINESS)
 
 
 @pytest.mark.parametrize("asset_type", [AssetType.CRYPTO, AssetType.COMMODITY])
@@ -207,7 +230,7 @@ def test_render_text_answers_the_four_required_questions():
     assert "Vocabulary-ready, awaiting authoring" in text
     assert "Blocked (definition incomplete)" in text
     assert "Intentionally exempt" in text
-    assert AssetType.PROPERTY.value in text  # M24: BOND is DEFINED now too, no longer a "blocked" example
+    assert AssetType.CRYPTO.value in text  # M27: PROPERTY is DEFINED now too, no longer a "blocked" example
     assert AssetType.OTHER.value in text
 
 

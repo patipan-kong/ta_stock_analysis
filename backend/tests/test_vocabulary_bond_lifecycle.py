@@ -157,9 +157,10 @@ def test_cash_equity_etf_fund_fingerprints_are_unchanged():
 
 
 def test_definition_ladders_untouched_by_this_milestone():
-    # M24: BOND was subsequently added — see test_asset_definition_bond.py's
-    # own version of this assertion for that milestone.
-    assert set(library.DEFINITION_LADDERS.keys()) == {"CASH", "EQUITY", "ETF", "FUND", "BOND"}
+    # M24: BOND was subsequently added; M27: PROPERTY was subsequently added
+    # — see test_asset_definition_bond.py's and
+    # test_asset_definition_property.py's own versions of this assertion.
+    assert set(library.DEFINITION_LADDERS.keys()) == {"CASH", "EQUITY", "ETF", "FUND", "BOND", "PROPERTY"}
 
 
 # ── 3. Closed Vocabulary Integrity ──────────────────────────────────────────
