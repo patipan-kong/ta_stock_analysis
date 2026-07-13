@@ -32,10 +32,34 @@ class Divisibility(str, Enum):
 
 
 class AcquisitionSemantics(str, Enum):
-    """Axis 2 (Acquisition Semantics)."""
+    """Axis 2 (Acquisition Semantics) — the mechanism by which instances are
+    acquired and disposed.
+
+    NAV_WINDOW added M21 (governed vocabulary extension per
+    asset_definitions.md §8.1 Step 2 — see DECISION_LOG.md M21 entry):
+    acquisition and disposal through a periodic net-asset-value window —
+    subscription and redemption struck against the issuer at a published
+    NAV, never a continuous order-book match. Distinct from VENUE_TRADED
+    (a continuous market matches buyer and seller) and NOT_TRANSACTABLE (no
+    change of hands exists at all) — per asset_definitions.md §5.1 axis 2's
+    own worked phrase ("venue-traded, NAV-window subscription/redemption,
+    negotiated private transfer, or not transactable at all") and the M20
+    gap analysis (asset_model_gap_analysis.md §3.1), this is the word that
+    lets a NAV-window-acquired kind (fund) individuate from a
+    venue-traded, periodic-NAV-valued kind (ETF) without collapsing to an
+    identical declaration set (D1) now that both already share
+    ValuationQuestion.PERIODIC_NAV. Owning engine: Asset Foundation
+    (asset_definitions.md §5.1 axis 2 — the mint/registration path that
+    knows how an instance actually changes hands, distinct from Market
+    Intelligence's axis-4 valuation question). No engine branches on this
+    value today — the word is declarative vocabulary only, per D2; a future
+    subscription/redemption workflow is what will eventually behave
+    differently because of it.
+    """
 
     NOT_TRANSACTABLE = "NOT_TRANSACTABLE"
     VENUE_TRADED = "VENUE_TRADED"
+    NAV_WINDOW = "NAV_WINDOW"
 
 
 class SettlementPattern(str, Enum):

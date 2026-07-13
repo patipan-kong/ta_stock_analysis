@@ -461,6 +461,15 @@ What one unit is. Discrete or continuous. Sign. Conservation.
 The declaration the Accounting Engine can never do without.
 
 
+## Acquisition Semantics
+
+How a kind changes hands.
+
+Not transactable. Venue-traded. NAV-window subscription/redemption.
+
+The mechanism, never the venue — venues are instance facts.
+
+
 ## Valuation Semantics
 
 What question, if any, establishes a kind's worth.
