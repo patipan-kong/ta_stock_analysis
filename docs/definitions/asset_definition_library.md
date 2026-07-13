@@ -52,6 +52,8 @@ What the pair deliberately does **not** validate — recorded so nobody mistakes
 
 The process is the constitution's evolution ladder (§8.1), operationalized. An author proposing a new definition follows these steps in order, and the review checklist at the end is mandatory.
 
+_As of M19, this section's steps are also available as an eight-stage, tool-by-tool walkthrough — [asset_definition_authoring_guide.md](asset_definition_authoring_guide.md) — with ETF v1's actual authoring run (M15–M18) worked through each stage, plus a formal pass/fail form, [definition_review_checklist.md](definition_review_checklist.md), to attach to the PR that admits a new definition. This section remains the conceptual statement; the guide is the operational one._
+
 ### 3.1 Before writing: two gates
 
 1. **The individuation gate (D1).** State the declaration the new kind makes that no existing definition makes — axis and value, precisely. If none exists, there is no new definition: the "new class" is an existing kind plus classification (the fate of preferred shares and DRs inside Equity v1). This gate is checked *first* because it is the cheapest and the most often failed.
@@ -90,5 +92,7 @@ Any implementation of the definition mechanism — enums, dataclasses, storage, 
 - [asset_definition_cash.md](asset_definition_cash.md) — Cash v1
 - [asset_definition_equity.md](asset_definition_equity.md) — Equity v1
 - [asset_definition_etf.md](asset_definition_etf.md) — ETF v1, the first definition admitted after the founding pair (M18); differs from Equity v1 by exactly one axis (periodic NAV valuation, M17's vocabulary extension)
+- [asset_definition_authoring_guide.md](asset_definition_authoring_guide.md) — the governed authoring workflow (M19), §3 above operationalized stage by stage
+- [definition_review_checklist.md](definition_review_checklist.md) — the same workflow as a formal pass/fail checklist (M19)
 - [asset_foundation.md](../architecture/asset_foundation.md) — the parent domain constitution; §8 states why the founding pair is deliberately two
 - [../engineering/DECISION_LOG.md](../engineering/DECISION_LOG.md) — where every future vocabulary extension and definition version is recorded
