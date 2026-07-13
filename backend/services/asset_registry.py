@@ -10,6 +10,7 @@ Done). It exists as a self-contained foundation for later milestones.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Dict, FrozenSet, Optional, Sequence
 
@@ -17,14 +18,23 @@ from sqlalchemy.orm import Session
 
 from models.asset import Asset, AssetClassification, AssetIdentifier, AssetRelationship
 from services import asset_repository as repo
+from services.asset_definitions import DefinitionRegistry, DefinitionRegistryError
 from services.asset_domain import (
     AssetClaim,
     AssetId,
     AssetStatus,
+    AssetType,
     ClassificationDimension,
     IdentifierRecord,
     RelationshipType,
 )
+from services.runtime_consultation import (
+    RuntimeConsultationLog,
+    RuntimeFindingCategory,
+    RuntimeValidationFinding,
+)
+
+_log = logging.getLogger(__name__)
 
 # Legal forward-only transitions out of each status (ASSET_REGISTRY.md
 # Section 6). ARCHIVED is terminal. Minting always produces ACTIVE, never
@@ -44,16 +54,87 @@ class AssetRegistryError(ValueError):
     callers should check for None themselves in that case."""
 
 
+# ── Stage R1 runtime consultation (M12 brief, first Asset Registry consumer) ──
+#
+# mint() has no AssetType allow-list today — every one of AssetType's nine
+# members is structurally accepted (ASSET_REGISTRY.md defines lifecycle and
+# identity rules, not which asset types may exist). That absence of a gate
+# *is* the legacy decision being shadowed here: "legacy permits minting this
+# asset_type" is always True, and the runtime counterpart is
+# DefinitionRegistry.exists(asset_type.value) — does the Asset Definition
+# Library actually have a canonical definition for it? For CASH/EQUITY the
+# two agree. For the other seven members (ETF, FUND, BOND, CRYPTO,
+# COMMODITY, PROPERTY, OTHER) they disagree by construction — this is the
+# exact gap M9 TDD Section 10.2 already documented ("mint gate needed").
+# Recording it as a finding makes that documented gap observable per-mint,
+# without acting on it: mint() still succeeds regardless (R1 = observe only,
+# gating is R2's job).
+def _consult_runtime_for_mint(asset_type: AssetType) -> RuntimeConsultationLog:
+    """Never raises — a runtime boot failure becomes one MissingBinding
+    finding, consistent with the pattern established for the ledger
+    validator (M11)."""
+    try:
+        registry = DefinitionRegistry.build()
+    except DefinitionRegistryError as exc:
+        finding = RuntimeValidationFinding(
+            category        = RuntimeFindingCategory.MISSING_BINDING.value,
+            check_id        = "RUNTIME_REGISTRY_BOOT_FAILED",
+            transaction_ids = (),
+            binding         = asset_type.value,
+            question        = "DefinitionRegistry.build()",
+            legacy_result   = True,
+            runtime_result  = None,
+            detail          = str(exc),
+        )
+        return RuntimeConsultationLog(consulted=0, agreements=0, findings=(finding,))
+
+    legacy_result = True  # mint() has no AssetType allow-list; every member is structurally accepted
+    runtime_result = registry.exists(asset_type.value)
+
+    if runtime_result == legacy_result:
+        return RuntimeConsultationLog(consulted=1, agreements=1, findings=())
+
+    finding = RuntimeValidationFinding(
+        category        = RuntimeFindingCategory.UNKNOWN_CAPABILITY.value,
+        check_id        = "RUNTIME_MINT_ASSET_TYPE_DEFINITION",
+        transaction_ids = (),
+        binding         = asset_type.value,
+        question        = f"DefinitionRegistry.exists({asset_type.value!r})",
+        legacy_result   = legacy_result,
+        runtime_result  = runtime_result,
+        detail          = (
+            f"mint() accepted asset_type={asset_type.value!r} (no legacy allow-list exists), but the "
+            "Asset Definition Runtime has no canonical definition registered for it yet (M9 TDD Section 10.2)."
+        ),
+    )
+    return RuntimeConsultationLog(consulted=1, agreements=0, findings=(finding,))
+
+
 def mint(db: Session, claim: AssetClaim, *, identifiers: Optional[Sequence[IdentifierRecord]] = None) -> Asset:
     """The one irreversible moment: creates a permanent asset_id and
     canonical_symbol from a pre-mint claim. Minting always produces status
     ACTIVE — ClaimStatus (Discovery/Candidate) is pre-mint vocabulary only
     and is not itself persisted.
+
+    Stage R1 (M12): consults the Asset Definition Runtime as a read-only
+    shadow (see _consult_runtime_for_mint()) — observational only, never
+    raised, never gates minting. The runtime is not yet a source of truth.
     """
     if not claim.canonical_symbol or not claim.canonical_symbol.strip():
         raise AssetRegistryError("canonical_symbol must be non-empty")
     if not claim.market or not claim.exchange or not claim.currency:
         raise AssetRegistryError("market, exchange, and currency are required to mint an asset")
+
+    try:
+        runtime_log = _consult_runtime_for_mint(claim.asset_type)
+    except Exception as exc:
+        _log.warning("runtime consultation failed for mint asset_type=%s: %s", claim.asset_type.value, exc)
+    else:
+        for finding in runtime_log.findings:
+            _log.warning(
+                "runtime consultation finding on mint: check_id=%s category=%s binding=%s detail=%s",
+                finding.check_id, finding.category, finding.binding, finding.detail,
+            )
 
     existing = repo.get_asset_by_canonical_symbol(db, claim.canonical_symbol)
     if existing is not None:
