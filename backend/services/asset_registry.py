@@ -19,6 +19,10 @@ from sqlalchemy.orm import Session
 from models.asset import Asset, AssetClassification, AssetIdentifier, AssetRelationship
 from services import asset_repository as repo
 from services.asset_definitions import DefinitionRegistry, DefinitionRegistryError
+from services.asset_definitions.enforcement_gate import (
+    EnforcementMode,
+    evaluate_mint_enforcement,
+)
 from services.asset_domain import (
     AssetClaim,
     AssetId,
@@ -110,7 +114,13 @@ def _consult_runtime_for_mint(asset_type: AssetType) -> RuntimeConsultationLog:
     return RuntimeConsultationLog(consulted=1, agreements=0, findings=(finding,))
 
 
-def mint(db: Session, claim: AssetClaim, *, identifiers: Optional[Sequence[IdentifierRecord]] = None) -> Asset:
+def mint(
+    db: Session,
+    claim: AssetClaim,
+    *,
+    identifiers: Optional[Sequence[IdentifierRecord]] = None,
+    enforcement_mode: Optional[EnforcementMode] = None,
+) -> Asset:
     """The one irreversible moment: creates a permanent asset_id and
     canonical_symbol from a pre-mint claim. Minting always produces status
     ACTIVE — ClaimStatus (Discovery/Candidate) is pre-mint vocabulary only
@@ -119,6 +129,16 @@ def mint(db: Session, claim: AssetClaim, *, identifiers: Optional[Sequence[Ident
     Stage R1 (M12): consults the Asset Definition Runtime as a read-only
     shadow (see _consult_runtime_for_mint()) — observational only, never
     raised, never gates minting. The runtime is not yet a source of truth.
+
+    Stage R2 (M14): additionally evaluates the M13 enforcement decision
+    table (see services/asset_definitions/enforcement_gate.py). `blocked`
+    can only ever be True when `enforcement_mode` resolves to ENFORCE *and*
+    that asset_type's recorded decision is future_action=REJECT — as of
+    this milestone no decision is REJECT, so ENFORCE is a documented no-op
+    against real data. `enforcement_mode` defaults to None, which resolves
+    to the ASSET_MINT_ENFORCEMENT_MODE environment variable, which itself
+    defaults to OFF — an existing caller that never passes this argument
+    gets byte-identical behavior to before this milestone.
     """
     if not claim.canonical_symbol or not claim.canonical_symbol.strip():
         raise AssetRegistryError("canonical_symbol must be non-empty")
@@ -135,6 +155,19 @@ def mint(db: Session, claim: AssetClaim, *, identifiers: Optional[Sequence[Ident
                 "runtime consultation finding on mint: check_id=%s category=%s binding=%s detail=%s",
                 finding.check_id, finding.category, finding.binding, finding.detail,
             )
+
+    enforcement = evaluate_mint_enforcement(claim.asset_type, mode=enforcement_mode)
+    _log.info(
+        "asset_definition_enforcement: asset_type=%s mode=%s gap_type=%s intended_action=%s "
+        "effective_action=%s reason=%s",
+        enforcement.asset_type, enforcement.mode.value, enforcement.gap_type,
+        enforcement.intended_action.value, enforcement.effective_action.value, enforcement.reason,
+    )
+    if enforcement.blocked:
+        raise AssetRegistryError(
+            f"minting asset_type={claim.asset_type.value!r} is blocked by Asset Definition Runtime "
+            f"Stage R2 enforcement (mode={enforcement.mode.value}): {enforcement.reason}"
+        )
 
     existing = repo.get_asset_by_canonical_symbol(db, claim.canonical_symbol)
     if existing is not None:
