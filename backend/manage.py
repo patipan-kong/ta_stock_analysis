@@ -158,6 +158,14 @@ from services.migration_executor import ExecutionOutcome, ExecutionReport, execu
 from services.bootstrap_planner import BootstrapPlan, build_bootstrap_plan
 from services.registry_bootstrap import BootstrapOutcome, BootstrapReport, bootstrap_registry
 from services.registry_classification_seed import SeedReport, seed_sector_classification
+from services.asset_definitions.coverage_report import (
+    generate_coverage_report,
+    render_text as render_coverage_report_text,
+)
+from services.asset_definitions.enforcement_decisions import (
+    ENFORCEMENT_DECISIONS,
+    render_text as render_enforcement_decisions_text,
+)
 from services.registry_replay_parity import (
     GoldenBaseline,
     ParityReport,
@@ -2869,6 +2877,27 @@ async def _cmd_validate_ledger(args: argparse.Namespace) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Asset Definition Runtime: asset_definition_coverage  (M13, Stage R1.5)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _cmd_asset_definition_coverage(args: argparse.Namespace) -> int:
+    """Read-only report over the Asset Definition Runtime. Never touches the
+    database, never mutates anything — see services/asset_definitions/
+    coverage_report.py and enforcement_decisions.py for what this describes.
+    Exit code is always 0: this is informational tooling, not a gate."""
+    report = generate_coverage_report()
+    print(f"\n{_hr()}")
+    print(render_coverage_report_text(report))
+
+    if getattr(args, "decisions", False):
+        print(_hr())
+        print(render_enforcement_decisions_text(ENFORCEMENT_DECISIONS))
+
+    print(_hr())
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Golden Baseline: golden_baseline  (M5 Track B Stage 1)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -4367,6 +4396,36 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── asset_definition_coverage ────────────────────────────────────────────────
+    coverage = sub.add_parser(
+        "asset_definition_coverage",
+        help="Read-only Asset Definition Runtime coverage report (Stage R1.5)",
+        description=textwrap.dedent("""\
+            Reports which AssetType members have an Asset Definition Runtime
+            definition loaded, what each defined one grants, and which R1
+            runtime consumers (ledger_validator, asset_registry.mint()) are
+            affected by an undefined one.
+
+            NEVER modifies the database. NEVER modifies the runtime.
+            Purely descriptive — this is Stage R1.5 preparation for a future
+            Stage R2 enforcement decision, not enforcement itself.
+
+            Pass --decisions to also print the hand-authored Enforcement
+            Boundary Decisions table (services/asset_definitions/
+            enforcement_decisions.py): for each AssetType member, whether the
+            current gap (if any) is intentional legacy behavior, a missing
+            definition, or requires migration — and whether a future Stage R2
+            should preserve, migrate, or reject it. That table is authored,
+            not computed; this command only prints it.
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    coverage.add_argument(
+        "--decisions",
+        action="store_true",
+        help="Also print the Enforcement Boundary Decisions table",
+    )
+
     # ── golden_baseline ─────────────────────────────────────────────────────────
     baseline = sub.add_parser(
         "golden_baseline",
@@ -4903,6 +4962,9 @@ def main() -> None:
         sys.exit(exit_code)
     elif args.command == "validate_ledger":
         exit_code = asyncio.run(_cmd_validate_ledger(args))
+        sys.exit(exit_code)
+    elif args.command == "asset_definition_coverage":
+        exit_code = _cmd_asset_definition_coverage(args)
         sys.exit(exit_code)
     elif args.command == "golden_baseline":
         exit_code = asyncio.run(_cmd_golden_baseline(args))
