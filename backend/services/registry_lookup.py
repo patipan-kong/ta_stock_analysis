@@ -101,6 +101,11 @@ class AssetView:
     currency: str
     asset_type: AssetType
     classification: Mapping[str, str] = field(default_factory=dict)
+    classification_provenance: Mapping[str, str] = field(default_factory=dict)
+    tradable: bool = True
+    fractional_support: bool = False
+    lot_size: Optional[int] = None
+    settlement_cycle: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -113,6 +118,7 @@ class Unresolved:
 
     query: str
     reason: str
+    verdict: ResolutionVerdict = ResolutionVerdict.UNKNOWN
 
 
 _REASON_NOT_FOUND = "no matching asset"
@@ -141,6 +147,11 @@ def _to_asset_view(asset, db: Session) -> AssetView:
         currency=asset.currency,
         asset_type=AssetType(asset.asset_type),
         classification={c.dimension: c.value for c in classifications},
+        classification_provenance={c.dimension: c.source for c in classifications},
+        tradable=asset.tradable,
+        fractional_support=asset.fractional_support,
+        lot_size=asset.lot_size,
+        settlement_cycle=asset.settlement_cycle,
     )
 
 
@@ -266,7 +277,11 @@ def _resolve_symbol(db: Session, symbol: str) -> Union[AssetView, Unresolved]:
     _log.debug("registry_lookup: cache miss symbol=%r — calling identity_resolver.resolve", normalized)
 
     if not normalized:
-        result: Union[AssetView, Unresolved] = Unresolved(query=normalized, reason=_REASON_NOT_FOUND)
+        result: Union[AssetView, Unresolved] = Unresolved(
+            query=normalized,
+            reason=_REASON_NOT_FOUND,
+            verdict=ResolutionVerdict.UNKNOWN,
+        )
         _cache.set(key, result)
         return result
 
@@ -286,13 +301,17 @@ def _resolve_symbol(db: Session, symbol: str) -> Union[AssetView, Unresolved]:
         if asset is None:
             # Should not happen (RESOLVED implies the asset exists), but
             # honesty over a stale cache entry if it ever does.
-            result = Unresolved(query=normalized, reason=_REASON_NOT_FOUND)
+            result = Unresolved(
+                query=normalized,
+                reason=_REASON_NOT_FOUND,
+                verdict=ResolutionVerdict.UNKNOWN,
+            )
         else:
             result = _to_asset_view(asset, db)
     else:
         reason = _VERDICT_REASON.get(resolution.verdict, _REASON_NOT_FOUND)
         _log.debug("registry_lookup: unresolved symbol=%r verdict=%s", normalized, resolution.verdict.value)
-        result = Unresolved(query=normalized, reason=reason)
+        result = Unresolved(query=normalized, reason=reason, verdict=resolution.verdict)
 
     _cache.set(key, result)
     return result
@@ -311,7 +330,11 @@ def _resolve_asset_id(db: Session, asset_id: AssetId) -> Union[AssetView, Unreso
     asset = registry_service.get_asset(db, asset_id)
     if asset is None:
         _log.debug("registry_lookup: unresolved asset_id=%r", int(asset_id))
-        result: Union[AssetView, Unresolved] = Unresolved(query=str(int(asset_id)), reason=_REASON_NO_ASSET_ID)
+        result: Union[AssetView, Unresolved] = Unresolved(
+            query=str(int(asset_id)),
+            reason=_REASON_NO_ASSET_ID,
+            verdict=ResolutionVerdict.UNKNOWN,
+        )
     else:
         result = _to_asset_view(asset, db)
 
