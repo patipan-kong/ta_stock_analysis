@@ -23,6 +23,12 @@ _LEGACY_ETF_TICKERS = frozenset(
 )
 
 
+def legacy_etf_review_symbols() -> tuple[str, ...]:
+    """Expose the legacy list to audit tooling as non-authoritative evidence."""
+
+    return tuple(sorted(_LEGACY_ETF_TICKERS))
+
+
 @dataclass(frozen=True)
 class LegacyCompatibilityClassification:
     asset_type: str

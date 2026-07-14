@@ -103,6 +103,7 @@ class ExecutionInstrumentFacts:
     underlying_asset_id: Optional[AssetId] = None
     provenance: Tuple[ExecutionFactProvenance, ...] = ()
     reason: Optional[str] = None
+    resolution_error: Optional[str] = None
 
 
 _IDENTITY_SOURCE = "services.registry_lookup.resolve_asset"
@@ -158,6 +159,7 @@ def resolve_execution_instruments(
     try:
         resolved_many = registry_lookup.resolve_many(db, unique_queries)
     except Exception as exc:  # optimizer boundary must degrade, never abort
+        error = f"{type(exc).__name__}: {exc}"
         reason = f"Registry facts batch resolution failed: {type(exc).__name__}"
         return {
             query: _unresolved(
@@ -165,6 +167,7 @@ def resolve_execution_instruments(
                 ExecutionResolutionOutcome.UNKNOWN,
                 reason,
                 ResolutionVerdict.UNKNOWN,
+                resolution_error=error,
             )
             for query in unique_queries
         }
@@ -183,6 +186,7 @@ def resolve_execution_instruments(
                 ExecutionResolutionOutcome.UNKNOWN,
                 f"Registry facts adaptation failed: {type(exc).__name__}",
                 ResolutionVerdict.UNKNOWN,
+                resolution_error=f"{type(exc).__name__}: {exc}",
             )
     return facts_by_query
 
@@ -358,6 +362,8 @@ def _unresolved(
     outcome: ExecutionResolutionOutcome,
     reason: str,
     registry_verdict: ResolutionVerdict,
+    *,
+    resolution_error: Optional[str] = None,
 ) -> ExecutionInstrumentFacts:
     return ExecutionInstrumentFacts(
         query=query,
@@ -372,4 +378,5 @@ def _unresolved(
             ),
         ),
         reason=reason,
+        resolution_error=resolution_error,
     )

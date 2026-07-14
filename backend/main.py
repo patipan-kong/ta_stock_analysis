@@ -2105,6 +2105,7 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
 
     # ── Phase 3B.10 — Execution quality context ───────────────────────────────
     execution_ctx: dict | None = None
+    execution_facts: dict = {}
     try:
         from services.execution_instrument_facts import resolve_execution_instruments
         from services.optimizer.execution_penalty import (
@@ -2585,6 +2586,41 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
         ).model_dump()
     except Exception as _eo_exc:
         _log.warning("analyze_optimizer: execution_optimization failed — continuing: %s", _eo_exc)
+
+    # M31.3 shadow-only eligibility: all legacy optimizer output and execution
+    # post-processing are complete. This emits telemetry and cannot alter the
+    # response, persisted recommendation, or allocation calculations.
+    try:
+        from services.execution_eligibility import (
+            ShadowExecutionAction,
+            consult_execution_eligibility_shadow,
+        )
+        _shadow_actions = [
+            ShadowExecutionAction(
+                requested_symbol=str(allocation.get("symbol", "")),
+                legacy_action=str(allocation.get("action", "")).upper(),
+                classification_agreement=(
+                    (execution_ctx or {}).get("per_symbol", {})
+                    .get(str(allocation.get("symbol", "")), {})
+                    .get("classification_agrees")
+                ),
+            )
+            for allocation in result.get("target_allocations", [])
+            if str(allocation.get("action", "")).upper()
+            in {"BUY", "SELL", "ACCUMULATE", "REDUCE"}
+            and allocation.get("symbol")
+        ]
+        consult_execution_eligibility_shadow(
+            _shadow_actions,
+            execution_facts,
+            legacy_path="OPTIMIZER_TARGET_ALLOCATION",
+            logger=_log,
+        )
+    except Exception as _eligibility_exc:
+        _log.warning(
+            "analyze_optimizer: eligibility shadow failed — response unchanged: %s",
+            _eligibility_exc,
+        )
 
     finish_run(body.portfolio_id, ok=True)
     return result
