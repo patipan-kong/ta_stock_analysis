@@ -14,7 +14,7 @@ Supported transaction types:
 
 Fee accounting
 --------------
-All BUY and SELL fees are calculated via broker_fees.calc_fees():
+All BUY and SELL fees are calculated via the shared broker fee quote engine:
     Commission   = Gross × 0.15%
     Trading Fee  = Gross × 0.006%
     Clearing Fee = Gross × 0.001%
@@ -51,13 +51,21 @@ from sqlalchemy.orm import Session
 
 from models.database import Portfolio, PortfolioItem, Transaction
 from services import capability_lookup_service, registry_lookup
-from services.broker_fees import FeeProfile, FeeBreakdown, calc_fees, resolve_fee_profile
+from services.broker_fees import FeeProfile, FeeQuoteStatus, TradeSide
+from services.broker_fees_compat import quote_transaction_fee_compat
+from services.capability_lookup_service import UnresolvedCapability
+from services.capability_safety import grants_dividend_flow, permits_quantity_valuation
 from services.execution_eligibility import (
     ShadowExecutionAction,
     consult_execution_eligibility_shadow,
 )
 from services.execution_eligibility_shadow import (
     resolve_execution_eligibility_shadow_facts,
+)
+from services.runtime_consultation import (
+    RuntimeConsultationLog,
+    RuntimeFindingCategory,
+    RuntimeValidationFinding,
 )
 
 _QUANT = Decimal("0.000001")
@@ -269,14 +277,24 @@ def execute_buy(
     d_shares = _d(shares)
     d_price  = _d(price_per_share)
     d_gross  = d_shares * d_price
-
-    profile  = fee_profile or resolve_fee_profile(symbol)
-    bd: FeeBreakdown = calc_fees(d_gross, profile)
-
-    total    = bd.net_buy_amount()                        # cash out
-    eff_price = total / d_shares                          # fee-inclusive cost per share
-
     tx_date = transaction_date or datetime.utcnow()
+
+    fee_quote = quote_transaction_fee_compat(
+        symbol,
+        side=TradeSide.BUY,
+        quantity=d_shares,
+        unit_price=d_price,
+        currency=currency,
+        quoted_at=tx_date,
+        effective_at=tx_date,
+        profile_override=fee_profile,
+    )
+    assert fee_quote.status == FeeQuoteStatus.QUOTED
+    assert fee_quote.net_cash_effect is not None
+    bd = fee_quote.to_fee_breakdown()
+
+    total    = -fee_quote.net_cash_effect                 # cash out
+    eff_price = total / d_shares                          # fee-inclusive cost per share
 
     resolved_asset_id = _resolve_write_time_asset_id(db, symbol)
 
@@ -342,7 +360,7 @@ def execute_buy(
         "total_amount": tx.total_amount,
         "fees": tx.fees,
         "taxes": tx.taxes,
-        "fee_profile": profile.name,
+        "fee_profile": fee_quote.schedule_id,
         "fee_breakdown": bd.to_dict(),
         "transaction_date": tx.transaction_date.isoformat() + "Z",
         "notes": tx.notes,
@@ -404,14 +422,25 @@ def execute_sell(
             f"Cannot sell {shares} shares of {symbol}; only {item.shares} held"
         )
 
-    profile  = fee_profile or resolve_fee_profile(symbol)
-    bd: FeeBreakdown = calc_fees(d_gross, profile)
+    tx_date = transaction_date or datetime.utcnow()
+    fee_quote = quote_transaction_fee_compat(
+        symbol,
+        side=TradeSide.SELL,
+        quantity=d_shares,
+        unit_price=d_price,
+        currency=currency,
+        quoted_at=tx_date,
+        effective_at=tx_date,
+        profile_override=fee_profile,
+    )
+    assert fee_quote.status == FeeQuoteStatus.QUOTED
+    assert fee_quote.net_cash_effect is not None
+    bd = fee_quote.to_fee_breakdown()
 
-    net_proceeds = bd.net_sell_proceeds()   # cash in
+    net_proceeds = fee_quote.net_cash_effect   # cash in
     d_avg        = _d(item.avg_cost)
     realized_pnl = (d_price - d_avg) * d_shares - bd.total_fees_incl_vat
 
-    tx_date      = transaction_date or datetime.utcnow()
     new_shares   = d_held - d_shares
     holding_removed = False
 
@@ -463,7 +492,7 @@ def execute_sell(
         "total_amount": tx.total_amount,
         "fees": tx.fees,
         "taxes": tx.taxes,
-        "fee_profile": profile.name,
+        "fee_profile": fee_quote.schedule_id,
         "fee_breakdown": bd.to_dict(),
         "realized_pnl": _f(realized_pnl),
         "transaction_date": tx.transaction_date.isoformat() + "Z",
