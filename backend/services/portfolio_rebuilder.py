@@ -84,11 +84,19 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from models.database import LedgerRepair, Portfolio, PortfolioItem, PortfolioSnapshot, Transaction
+from services import capability_lookup_service
+from services.capability_lookup_service import UnresolvedCapability
+from services.capability_safety import grants_dividend_flow, permits_quantity_valuation
 from services.data_fetcher import fetch_history
 from services.ledger_repair import apply_repair_overlay, load_active_repairs
 from services.ledger_validator import FindingSeverity, LedgerValidationReport, validate_portfolio_ledger
 from services.portfolio_metrics import compute_period_metrics
 from services.replay_key import replay_key
+from services.runtime_consultation import (
+    RuntimeConsultationLog,
+    RuntimeFindingCategory,
+    RuntimeValidationFinding,
+)
 from services.symbol_normalization import get_yfinance_symbol
 from services.symbol_resolver import is_dr
 from services.transaction_canonicalizer import CanonicalTransaction, canonicalize_transactions
@@ -1363,6 +1371,129 @@ def _commit_rebuild(
                 ))
 
 
+# ── Stage R1 runtime consultation (M30.3 brief; third portfolio-domain
+# shadow consumer, after portfolio_snapshots.py (M30.2)) ────────────────────
+#
+# Two legacy assumptions in this module's replay engine have no capability
+# gate today (M29 audit, SR-1 finding):
+#   1. `market_value = shares × price` is computed for every held symbol
+#      once historical snapshots are built — see _build_snapshot_day().
+#   2. DIVIDEND transactions are folded into cash_balance unconditionally
+#      during replay — see _apply_transaction()'s cash-inflow branch.
+# This function asks the runtime the same two questions legacy logic already
+# answers implicitly, and records any disagreement as a shadow finding —
+# mirrors portfolio_snapshots._consult_runtime_for_snapshot() (M30.2)
+# exactly: read-only, never raises, never gates, never changes any computed
+# value. Deliberately NOT wired into _apply_transaction() itself — that
+# function is a pure in-memory replay step called once per transaction
+# (including inside _replay_with_date_snapshots()'s per-date loop), so a
+# per-call DB-backed consultation there would be both a purity violation and
+# a performance regression. Consulted once here instead, after Stage 1
+# replay has already produced `final_state` and `all_txs`.
+#
+# `binding` on each finding is the holding's symbol, not an Asset Definition
+# binding spelling — CapabilityView is deliberately anonymous (D5).
+def _consult_runtime_for_rebuild(
+    db: Session,
+    final_state: _PortfolioState,
+    all_txs: list[CanonicalTransaction],
+    skip_snapshots: bool,
+) -> RuntimeConsultationLog:
+    """Never raises — resolve_capability_views() already turns an unminted
+    symbol, an undefined asset_type, or a registry boot failure into an
+    UnresolvedCapability per symbol rather than an exception; this function
+    just turns that into a MISSING_BINDING finding, same as the other
+    Stage R1 consumers.
+    """
+    dividend_tx_ids_by_symbol: dict[str, list[int]] = {}
+    for ctx in all_txs:
+        if ctx.transaction_type == "DIVIDEND" and ctx.raw_symbol:
+            dividend_tx_ids_by_symbol.setdefault(
+                ctx.raw_symbol.strip().upper(), []
+            ).append(ctx.id)
+
+    # market_value = shares × price is only ever computed when snapshots are
+    # actually built (Stage 2); with skip_snapshots=True, no valuation
+    # formula runs at all, so there is nothing to shadow-check.
+    valuation_symbols: dict[str, str] = {}  # normalized symbol -> report_symbol
+    if not skip_snapshots:
+        for h in final_state.holdings.values():
+            valuation_symbols[h.report_symbol.strip().upper()] = h.report_symbol
+
+    lookup_symbols = sorted(set(valuation_symbols) | set(dividend_tx_ids_by_symbol))
+    if not lookup_symbols:
+        return RuntimeConsultationLog(consulted=0, agreements=0, findings=())
+
+    views = capability_lookup_service.resolve_capability_views(db, lookup_symbols)
+
+    findings: list[RuntimeValidationFinding] = []
+    consulted  = 0
+    agreements = 0
+
+    # ── 1. market_value = shares × price ⇔ runtime permits quantity valuation ──
+    for normalized, report_symbol in valuation_symbols.items():
+        consulted += 1
+        legacy_result = True  # replay computes market_value = shares × price unconditionally
+        view = views[normalized]
+        if isinstance(view, UnresolvedCapability):
+            findings.append(RuntimeValidationFinding(
+                category=RuntimeFindingCategory.MISSING_BINDING.value,
+                check_id="RUNTIME_REBUILD_QUANTITY_VALUATION", transaction_ids=(),
+                binding=report_symbol, question="permits_quantity_valuation()",
+                legacy_result=legacy_result, runtime_result=None, detail=view.reason,
+            ))
+            continue
+        runtime_result = permits_quantity_valuation(view)
+        if runtime_result == legacy_result:
+            agreements += 1
+        else:
+            findings.append(RuntimeValidationFinding(
+                category=RuntimeFindingCategory.RUNTIME_MISMATCH.value,
+                check_id="RUNTIME_REBUILD_QUANTITY_VALUATION", transaction_ids=(),
+                binding=report_symbol, question="permits_quantity_valuation()",
+                legacy_result=legacy_result, runtime_result=runtime_result,
+                detail=(
+                    f"rebuild replay computes market_value = shares × price for "
+                    f"{report_symbol!r} unconditionally, but the runtime "
+                    "capability view does not permit quantity-based valuation "
+                    "for this asset."
+                ),
+            ))
+
+    # ── 2. DIVIDEND transaction accepted ⇔ runtime grants FlowType.DIVIDEND ────
+    for symbol, tx_ids in dividend_tx_ids_by_symbol.items():
+        consulted += 1
+        tx_ids_tuple = tuple(tx_ids)
+        legacy_result = True  # replay credits cash_balance for DIVIDEND unconditionally
+        view = views[symbol]
+        if isinstance(view, UnresolvedCapability):
+            findings.append(RuntimeValidationFinding(
+                category=RuntimeFindingCategory.MISSING_BINDING.value,
+                check_id="RUNTIME_REBUILD_DIVIDEND_FLOW", transaction_ids=tx_ids_tuple,
+                binding=symbol, question="grants_dividend_flow()",
+                legacy_result=legacy_result, runtime_result=None, detail=view.reason,
+            ))
+            continue
+        runtime_result = grants_dividend_flow(view)
+        if runtime_result == legacy_result:
+            agreements += 1
+        else:
+            findings.append(RuntimeValidationFinding(
+                category=RuntimeFindingCategory.RUNTIME_MISMATCH.value,
+                check_id="RUNTIME_REBUILD_DIVIDEND_FLOW", transaction_ids=tx_ids_tuple,
+                binding=symbol, question="grants_dividend_flow()",
+                legacy_result=legacy_result, runtime_result=runtime_result,
+                detail=(
+                    f"{len(tx_ids_tuple)} DIVIDEND transaction(s) for {symbol!r} "
+                    "are credited to cash_balance by rebuild replay "
+                    "unconditionally, but the runtime capability view does not "
+                    "grant FlowType.DIVIDEND for this asset."
+                ),
+            ))
+
+    return RuntimeConsultationLog(consulted=consulted, agreements=agreements, findings=tuple(findings))
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1769,6 +1900,24 @@ async def rebuild_portfolio(
             f"(items: +{s.item_inserts} ~{s.item_updates} -{s.item_deletes}  "
             f"snapshots: +{s.snapshot_inserts} ~{s.snapshot_updates})"
         )
+
+        # ── Stage R1 runtime consultation (M30.3; read-only shadow, never
+        # raises, never affects any value computed above or the
+        # RebuildResult returned below) ────────────────────────────────────
+        try:
+            runtime_log = _consult_runtime_for_rebuild(db, final_state, all_txs, skip_snapshots)
+        except Exception as exc:
+            _log.warning(
+                "runtime consultation failed for rebuild portfolio=%d: %s",
+                portfolio_id, exc,
+            )
+        else:
+            for finding in runtime_log.findings:
+                _log.warning(
+                    "runtime consultation finding on rebuild: check_id=%s category=%s "
+                    "binding=%s detail=%s",
+                    finding.check_id, finding.category, finding.binding, finding.detail,
+                )
 
         # ── Stage 7: pre-commit backup ─────────────────────────────────────────
         if backup and not dry_run and not result.aborted:

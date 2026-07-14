@@ -58,7 +58,15 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from models.database import PortfolioSnapshot, Workspace
+from services import capability_lookup_service
+from services.capability_lookup_service import UnresolvedCapability
+from services.capability_safety import permits_quantity_valuation
 from services.data_fetcher import fetch_history
+from services.runtime_consultation import (
+    RuntimeConsultationLog,
+    RuntimeFindingCategory,
+    RuntimeValidationFinding,
+)
 from services.snapshot_return_recovery import _compute_return_fields
 
 _log = logging.getLogger(__name__)
@@ -373,6 +381,78 @@ def _audit_log(result: RepairResult) -> None:
     )
 
 
+# ── Stage R1 runtime consultation (M30.3 brief; fourth portfolio-domain
+# shadow consumer) ───────────────────────────────────────────────────────────
+#
+# One legacy assumption in this module has no capability gate today (M29
+# audit, SR-1 finding): `market_value = shares × price` is recomputed for
+# every historical holding with a retrievable price — see the
+# repaired-holdings loop in _repair_one(). Read-only, never raises, never
+# gates — mirrors portfolio_snapshots._consult_runtime_for_snapshot()
+# (M30.2) exactly.
+#
+# No DIVIDEND-flow check here: this module never touches DIVIDEND
+# transactions directly — return-series fields (including
+# period_dividend_income) are recalculated separately via
+# snapshot_return_recovery._compute_return_fields() ->
+# portfolio_metrics.compute_period_metrics(), which is pure by construction
+# (ADR-004: "no ORM, no database session, no network access") and therefore
+# out of scope for this DB-backed shadow-consultation pattern — see
+# DECISION_LOG.md's M30.3 entry.
+def _consult_runtime_for_repair(
+    db: Session,
+    unique_symbols: list[str],
+    price_map: dict[str, float | None],
+) -> RuntimeConsultationLog:
+    """Never raises — resolve_capability_views() already turns an unminted
+    symbol, an undefined asset_type, or a registry boot failure into an
+    UnresolvedCapability per symbol rather than an exception; this function
+    just turns that into a MISSING_BINDING finding, same as the other
+    Stage R1 consumers.
+    """
+    priced_symbols = [s for s in unique_symbols if price_map.get(s) is not None]
+    lookup_symbols = sorted({s.strip().upper() for s in priced_symbols})
+    if not lookup_symbols:
+        return RuntimeConsultationLog(consulted=0, agreements=0, findings=())
+
+    views = capability_lookup_service.resolve_capability_views(db, lookup_symbols)
+
+    findings: list[RuntimeValidationFinding] = []
+    consulted  = 0
+    agreements = 0
+
+    for symbol in priced_symbols:
+        consulted += 1
+        legacy_result = True  # repair recomputes market_value = shares × price unconditionally
+        view = views[symbol.strip().upper()]
+        if isinstance(view, UnresolvedCapability):
+            findings.append(RuntimeValidationFinding(
+                category=RuntimeFindingCategory.MISSING_BINDING.value,
+                check_id="RUNTIME_REPAIR_QUANTITY_VALUATION", transaction_ids=(),
+                binding=symbol, question="permits_quantity_valuation()",
+                legacy_result=legacy_result, runtime_result=None, detail=view.reason,
+            ))
+            continue
+        runtime_result = permits_quantity_valuation(view)
+        if runtime_result == legacy_result:
+            agreements += 1
+        else:
+            findings.append(RuntimeValidationFinding(
+                category=RuntimeFindingCategory.RUNTIME_MISMATCH.value,
+                check_id="RUNTIME_REPAIR_QUANTITY_VALUATION", transaction_ids=(),
+                binding=symbol, question="permits_quantity_valuation()",
+                legacy_result=legacy_result, runtime_result=runtime_result,
+                detail=(
+                    f"snapshot repair recomputes market_value = shares × price "
+                    f"for {symbol!r} unconditionally, but the runtime "
+                    "capability view does not permit quantity-based valuation "
+                    "for this asset."
+                ),
+            ))
+
+    return RuntimeConsultationLog(consulted=consulted, agreements=agreements, findings=tuple(findings))
+
+
 # ── Core repair logic ─────────────────────────────────────────────────────────
 
 async def _repair_one(
@@ -585,6 +665,24 @@ async def _repair_one(
         )
 
     db.commit()
+
+    # ── Stage R1 runtime consultation (M30.3; read-only shadow, never
+    # raises, never affects any value computed above or the RepairResult
+    # returned below — runs after commit) ─────────────────────────────────
+    try:
+        runtime_log = _consult_runtime_for_repair(db, unique_symbols, price_map)
+    except Exception as exc:
+        _log.warning(
+            "runtime consultation failed for repair portfolio=%d date=%s: %s",
+            portfolio_id, snapshot_date, exc,
+        )
+    else:
+        for finding in runtime_log.findings:
+            _log.warning(
+                "runtime consultation finding on repair: check_id=%s category=%s "
+                "binding=%s detail=%s",
+                finding.check_id, finding.category, finding.binding, finding.detail,
+            )
 
     _log.info(
         "[REPAIR OK] portfolio=%d date=%s "
