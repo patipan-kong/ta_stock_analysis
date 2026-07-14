@@ -96,14 +96,23 @@ import asyncio
 import json
 import logging
 import re
+from collections import defaultdict
 from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
 from models.database import Portfolio, PortfolioItem, PortfolioSnapshot, Transaction
+from services import capability_lookup_service
+from services.capability_lookup_service import UnresolvedCapability
+from services.capability_safety import grants_dividend_flow, permits_quantity_valuation
 from services.data_fetcher import fetch_price_info
 from services.portfolio_metrics import compute_period_metrics
-from services.transaction_canonicalizer import canonicalize_transactions
+from services.runtime_consultation import (
+    RuntimeConsultationLog,
+    RuntimeFindingCategory,
+    RuntimeValidationFinding,
+)
+from services.transaction_canonicalizer import CanonicalTransaction, canonicalize_transactions
 
 _log = logging.getLogger(__name__)
 
@@ -157,6 +166,116 @@ class SnapshotCoverageError(Exception):
             f"coverage={successful}/{total} "
             f"missing={missing}"
         )
+
+
+# ── Stage R1 runtime consultation (M30.2 brief, third Asset Definition Runtime
+# consumer) ─────────────────────────────────────────────────────────────────
+#
+# Two legacy assumptions in this module have no capability gate today (M29
+# audit, SR-1 finding):
+#   1. `market_value = shares × price` is computed for every holding with a
+#      live price, unconditionally — see the holdings loop below.
+#   2. DIVIDEND transactions in the return window are folded into
+#      period_dividend_income unconditionally — see compute_period_metrics().
+# This function asks the runtime the same two questions Legacy logic already
+# answers implicitly, and records any disagreement as a shadow finding —
+# mirrors ledger_validator._consult_runtime_capabilities() (M11) and
+# asset_registry._consult_runtime_for_mint() (M12) exactly: read-only,
+# never raises, never gates, never changes any computed value.
+#
+# `binding` on each finding is the holding's symbol, not an Asset Definition
+# binding spelling — CapabilityView is deliberately anonymous (D5) and does
+# not expose the AssetType it was resolved from, so the symbol is the only
+# per-holding identifier available to this consumer.
+def _consult_runtime_for_snapshot(
+    db: Session,
+    items: list[PortfolioItem],
+    price_map: dict[str, float],
+    window_txs: list[CanonicalTransaction],
+) -> RuntimeConsultationLog:
+    """Never raises — resolve_capability_views() already turns an unminted
+    symbol, an undefined asset_type, or a registry boot failure into an
+    UnresolvedCapability per symbol rather than an exception; this function
+    just turns that into a MISSING_BINDING finding, same as the other two
+    Stage R1 consumers.
+    """
+    dividend_tx_ids_by_symbol: dict[str, list[int]] = defaultdict(list)
+    for ctx in window_txs:
+        if ctx.transaction_type == "DIVIDEND" and ctx.raw_symbol:
+            dividend_tx_ids_by_symbol[ctx.raw_symbol.strip().upper()].append(ctx.id)
+
+    lookup_symbols = sorted({item.symbol.strip().upper() for item in items} | set(dividend_tx_ids_by_symbol))
+    if not lookup_symbols:
+        return RuntimeConsultationLog(consulted=0, agreements=0, findings=())
+
+    views = capability_lookup_service.resolve_capability_views(db, lookup_symbols)
+
+    findings: list[RuntimeValidationFinding] = []
+    consulted  = 0
+    agreements = 0
+
+    # ── 1. market_value = shares × price ⇔ runtime permits quantity valuation ──
+    for item in items:
+        if price_map.get(item.symbol) is None:
+            continue  # legacy never computed a shares×price value for this holding
+        consulted += 1
+        legacy_result = True  # legacy computes market_value = shares × price unconditionally
+        view = views[item.symbol.strip().upper()]
+        if isinstance(view, UnresolvedCapability):
+            findings.append(RuntimeValidationFinding(
+                category=RuntimeFindingCategory.MISSING_BINDING.value,
+                check_id="RUNTIME_SNAPSHOT_QUANTITY_VALUATION", transaction_ids=(),
+                binding=item.symbol, question="permits_quantity_valuation()",
+                legacy_result=legacy_result, runtime_result=None, detail=view.reason,
+            ))
+            continue
+        runtime_result = permits_quantity_valuation(view)
+        if runtime_result == legacy_result:
+            agreements += 1
+        else:
+            findings.append(RuntimeValidationFinding(
+                category=RuntimeFindingCategory.RUNTIME_MISMATCH.value,
+                check_id="RUNTIME_SNAPSHOT_QUANTITY_VALUATION", transaction_ids=(),
+                binding=item.symbol, question="permits_quantity_valuation()",
+                legacy_result=legacy_result, runtime_result=runtime_result,
+                detail=(
+                    f"snapshot valuation computes market_value = shares × price for "
+                    f"{item.symbol!r} unconditionally, but the runtime capability view "
+                    "does not permit quantity-based valuation for this asset."
+                ),
+            ))
+
+    # ── 2. DIVIDEND transaction accepted ⇔ runtime grants FlowType.DIVIDEND ────
+    for symbol, tx_ids in dividend_tx_ids_by_symbol.items():
+        consulted += 1
+        tx_ids_tuple = tuple(tx_ids)
+        legacy_result = True  # legacy folds DIVIDEND into period_dividend_income unconditionally
+        view = views[symbol]
+        if isinstance(view, UnresolvedCapability):
+            findings.append(RuntimeValidationFinding(
+                category=RuntimeFindingCategory.MISSING_BINDING.value,
+                check_id="RUNTIME_SNAPSHOT_DIVIDEND_FLOW", transaction_ids=tx_ids_tuple,
+                binding=symbol, question="grants_dividend_flow()",
+                legacy_result=legacy_result, runtime_result=None, detail=view.reason,
+            ))
+            continue
+        runtime_result = grants_dividend_flow(view)
+        if runtime_result == legacy_result:
+            agreements += 1
+        else:
+            findings.append(RuntimeValidationFinding(
+                category=RuntimeFindingCategory.RUNTIME_MISMATCH.value,
+                check_id="RUNTIME_SNAPSHOT_DIVIDEND_FLOW", transaction_ids=tx_ids_tuple,
+                binding=symbol, question="grants_dividend_flow()",
+                legacy_result=legacy_result, runtime_result=runtime_result,
+                detail=(
+                    f"{len(tx_ids_tuple)} DIVIDEND transaction(s) for {symbol!r} are folded "
+                    "into period_dividend_income by legacy replay unconditionally, but the "
+                    "runtime capability view does not grant FlowType.DIVIDEND for this asset."
+                ),
+            ))
+
+    return RuntimeConsultationLog(consulted=consulted, agreements=agreements, findings=tuple(findings))
 
 
 async def generate_daily_snapshot(
@@ -356,6 +475,11 @@ async def generate_daily_snapshot(
     investment_return_pct: float | None = None
     investment_return_amount: float | None = None
 
+    # Populated inside the `if prev:` block below; stays empty otherwise.
+    # Kept in scope afterward only for the Stage R1 shadow consultation —
+    # no legacy computation reads it outside that block.
+    window_txs: list[CanonicalTransaction] = []
+
     if prev:
         prev_day_end = datetime.strptime(prev.snapshot_date, "%Y-%m-%d") + timedelta(days=1)
         today_end = datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)
@@ -485,6 +609,23 @@ async def generate_daily_snapshot(
             "cash=%.4f + equity=%.4f = nav=%.4f",
             portfolio_id, today, cash, equity_value, total_value,
         )
+
+    # ── Stage R1 runtime consultation (M30.2; read-only shadow, never raises,
+    # never affects any value computed above or the dict returned below) ──────
+    try:
+        runtime_log = _consult_runtime_for_snapshot(db, items, price_map, window_txs)
+    except Exception as exc:
+        _log.warning(
+            "runtime consultation failed for snapshot portfolio=%d date=%s: %s",
+            portfolio_id, today, exc,
+        )
+    else:
+        for finding in runtime_log.findings:
+            _log.warning(
+                "runtime consultation finding on snapshot: check_id=%s category=%s "
+                "binding=%s detail=%s",
+                finding.check_id, finding.category, finding.binding, finding.detail,
+            )
 
     # ── Upsert snapshot row ───────────────────────────────────────────────────
     existing = db.query(PortfolioSnapshot).filter_by(

@@ -50,7 +50,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from models.database import Portfolio, PortfolioItem, Transaction
-from services import registry_lookup
+from services import capability_lookup_service, registry_lookup
 from services.broker_fees import FeeProfile, FeeBreakdown, calc_fees, resolve_fee_profile
 from services.execution_eligibility import (
     ShadowExecutionAction,
@@ -63,6 +63,9 @@ from services.execution_eligibility_shadow import (
 _QUANT = Decimal("0.000001")
 _log = logging.getLogger(__name__)
 
+_QUANTITY_VALUATION_CHECK = "RUNTIME_TRANSACTION_QUANTITY_VALUATION"
+_DIVIDEND_FLOW_CHECK = "RUNTIME_TRANSACTION_DIVIDEND_FLOW"
+
 
 def _d(v: float) -> Decimal:
     return Decimal(str(v))
@@ -70,6 +73,105 @@ def _d(v: float) -> Decimal:
 
 def _f(v: Decimal) -> float:
     return float(v.quantize(_QUANT, rounding=ROUND_HALF_UP))
+
+
+# ── Stage R1 runtime consultation (M30.3 brief; fourth Asset Definition
+# Runtime consumer, after ledger_validator (M11), asset_registry (M12), and
+# portfolio_snapshots (M30.2)) ──────────────────────────────────────────────
+#
+# Two legacy assumptions in this module have no capability gate today (M29
+# audit, SR-1 finding):
+#   1. `value = shares × price` is computed unconditionally in execute_buy(),
+#      execute_sell(), and execute_initial_position().
+#   2. execute_dividend() accepts a DIVIDEND transaction for any symbol (or
+#      None) and credits cash unconditionally.
+# This function asks the runtime the same question legacy logic already
+# answers implicitly, and records any disagreement as a shadow finding —
+# mirrors ledger_validator._consult_runtime_capabilities() (M11),
+# asset_registry._consult_runtime_for_mint() (M12), and
+# portfolio_snapshots._consult_runtime_for_snapshot() (M30.2) exactly:
+# read-only, never raises, never gates, never changes any computed value.
+#
+# Single-symbol form (capability_lookup_service.resolve_capability_view),
+# since every write path here handles exactly one symbol per call — unlike
+# the batch consumers (ledger_validator, portfolio_snapshots).
+#
+# Every call site below invokes this AFTER db.commit(), immediately before
+# building the dict returned to the caller — structurally incapable of
+# affecting the transaction already recorded or the dict returned.
+def _consult_runtime_for_transaction(
+    db: Session,
+    symbol: str | None,
+    tx_id: int,
+    kind: str,  # "quantity_valuation" | "dividend_flow"
+) -> RuntimeConsultationLog:
+    """Never raises — resolve_capability_view() already turns an unminted
+    symbol, an undefined asset_type, or a registry boot failure into an
+    UnresolvedCapability rather than an exception; this function just turns
+    that into a MISSING_BINDING finding, same as the other Stage R1
+    consumers.
+    """
+    if not symbol:
+        return RuntimeConsultationLog(consulted=0, agreements=0, findings=())
+
+    if kind == "quantity_valuation":
+        check_id = _QUANTITY_VALUATION_CHECK
+        question = "permits_quantity_valuation()"
+        predicate = permits_quantity_valuation
+        legacy_detail = "computes value = shares × price unconditionally"
+    else:
+        check_id = _DIVIDEND_FLOW_CHECK
+        question = "grants_dividend_flow()"
+        predicate = grants_dividend_flow
+        legacy_detail = "accepts a DIVIDEND transaction and credits cash unconditionally"
+
+    view = capability_lookup_service.resolve_capability_view(db, symbol)
+    if isinstance(view, UnresolvedCapability):
+        finding = RuntimeValidationFinding(
+            category=RuntimeFindingCategory.MISSING_BINDING.value,
+            check_id=check_id, transaction_ids=(tx_id,),
+            binding=symbol, question=question,
+            legacy_result=True, runtime_result=None, detail=view.reason,
+        )
+        return RuntimeConsultationLog(consulted=1, agreements=0, findings=(finding,))
+
+    runtime_result = predicate(view)
+    if runtime_result is True:
+        return RuntimeConsultationLog(consulted=1, agreements=1, findings=())
+
+    finding = RuntimeValidationFinding(
+        category=RuntimeFindingCategory.RUNTIME_MISMATCH.value,
+        check_id=check_id, transaction_ids=(tx_id,),
+        binding=symbol, question=question,
+        legacy_result=True, runtime_result=runtime_result,
+        detail=(
+            f"{symbol!r} {legacy_detail}, but the runtime capability view "
+            f"disagrees ({question} -> {runtime_result})."
+        ),
+    )
+    return RuntimeConsultationLog(consulted=1, agreements=0, findings=(finding,))
+
+
+def _log_runtime_consultation(
+    db: Session, symbol: str | None, tx_id: int, kind: str, fn_name: str,
+) -> None:
+    """Wraps _consult_runtime_for_transaction in the same try/except-and-log
+    shape used by every other Stage R1 call site — never lets a consultation
+    failure propagate to the caller."""
+    try:
+        log = _consult_runtime_for_transaction(db, symbol, tx_id, kind)
+    except Exception as exc:
+        _log.warning(
+            "runtime consultation failed for %s tx=%s symbol=%s: %s",
+            fn_name, tx_id, symbol, exc,
+        )
+        return
+    for finding in log.findings:
+        _log.warning(
+            "runtime consultation finding on %s: check_id=%s category=%s "
+            "binding=%s detail=%s",
+            fn_name, finding.check_id, finding.category, finding.binding, finding.detail,
+        )
 
 
 def _resolve_write_time_asset_id(db: Session, symbol: str | None) -> int | None:
@@ -543,6 +645,8 @@ def execute_dividend(
     db.add(tx)
     db.commit()
     db.refresh(tx)
+
+    _log_runtime_consultation(db, symbol, tx.id, "dividend_flow", "execute_dividend")
 
     return {
         "transaction_id": tx.id,
