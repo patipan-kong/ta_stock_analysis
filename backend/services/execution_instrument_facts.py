@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Tuple, Union
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 from sqlalchemy.orm import Session
 
@@ -46,6 +46,7 @@ __all__ = [
     "ExecutionFactProvenance",
     "ExecutionInstrumentFacts",
     "resolve_execution_instrument",
+    "resolve_execution_instruments",
 ]
 
 
@@ -134,6 +135,63 @@ def resolve_execution_instrument(
             ResolutionVerdict.UNKNOWN,
         )
 
+    return _adapt_registry_resolution(db, rendered_query, resolved)
+
+
+def resolve_execution_instruments(
+    db: Session,
+    queries: Sequence[Union[str, AssetId, int]],
+) -> Dict[Union[str, int], ExecutionInstrumentFacts]:
+    """Batch-adapt Registry resolutions for one execution orchestration run.
+
+    Callers provide the complete symbol set once.  The function delegates to
+    the Registry's existing ``resolve_many`` read API rather than performing
+    per-symbol lookups at the optimizer boundary.  A Registry/read failure is
+    represented as UNKNOWN facts for every affected query; it never escapes
+    into the optimizer path.
+    """
+
+    unique_queries = tuple(dict.fromkeys(queries))
+    if not unique_queries:
+        return {}
+
+    try:
+        resolved_many = registry_lookup.resolve_many(db, unique_queries)
+    except Exception as exc:  # optimizer boundary must degrade, never abort
+        reason = f"Registry facts batch resolution failed: {type(exc).__name__}"
+        return {
+            query: _unresolved(
+                str(query),
+                ExecutionResolutionOutcome.UNKNOWN,
+                reason,
+                ResolutionVerdict.UNKNOWN,
+            )
+            for query in unique_queries
+        }
+
+    facts_by_query: Dict[Union[str, int], ExecutionInstrumentFacts] = {}
+    for query in unique_queries:
+        try:
+            facts_by_query[query] = _adapt_registry_resolution(
+                db,
+                str(query),
+                resolved_many[query],
+            )
+        except Exception as exc:  # isolate malformed/missing evidence per asset
+            facts_by_query[query] = _unresolved(
+                str(query),
+                ExecutionResolutionOutcome.UNKNOWN,
+                f"Registry facts adaptation failed: {type(exc).__name__}",
+                ResolutionVerdict.UNKNOWN,
+            )
+    return facts_by_query
+
+
+def _adapt_registry_resolution(
+    db: Session,
+    rendered_query: str,
+    resolved: Union[registry_lookup.AssetView, registry_lookup.Unresolved],
+) -> ExecutionInstrumentFacts:
     if isinstance(resolved, registry_lookup.Unresolved):
         outcome = (
             ExecutionResolutionOutcome.AMBIGUOUS
