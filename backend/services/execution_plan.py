@@ -17,6 +17,7 @@ build_execution_plan(portfolio_id, workspace_id, buy_symbols,
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel
@@ -29,10 +30,12 @@ from services.funding_source_analysis import (
 from services.execution_eligibility import (
     ShadowExecutionAction,
     consult_execution_eligibility_shadow,
+    evaluate_execution_eligibility,
 )
 from services.execution_eligibility_shadow import (
     resolve_execution_eligibility_shadow_facts,
 )
+from services.execution_trade_leg import project_execution_plan_trade_legs_shadow
 
 log = logging.getLogger(__name__)
 
@@ -281,6 +284,40 @@ def build_execution_plan(
                 facts_by_symbol,
                 legacy_path="EXECUTION_PLAN",
                 logger=log,
+            )
+            # M32.2 shadow-only cost projection: this consumes the same
+            # one-batch facts resolution as eligibility, then logs a
+            # diagnostic after the immutable legacy result exists.  It cannot
+            # influence plan actions, funding arithmetic, warnings, status,
+            # response shape, or persistence.
+            eligibility_by_symbol = {
+                symbol: evaluate_execution_eligibility(facts)
+                for symbol, facts in facts_by_symbol.items()
+            }
+            shadow_at = datetime.now(timezone.utc)
+            leg_projection = project_execution_plan_trade_legs_shadow(
+                result.funding_actions,
+                facts_by_symbol,
+                eligibility_by_symbol,
+                quoted_at=shadow_at,
+                effective_at=shadow_at,
+                buy_actions=result.buy_actions,
+            )
+            log.debug(
+                "execution trade-leg shadow path=EXECUTION_PLAN legs=%d unprojectable=%d",
+                len(leg_projection.legs),
+                len(leg_projection.unprojectable_symbols),
+                extra={
+                    "execution_trade_leg_shadow": {
+                        "comparisons": [
+                            comparison.to_log_dict()
+                            for comparison in leg_projection.comparisons
+                        ],
+                        "unprojectable_symbols": list(
+                            leg_projection.unprojectable_symbols
+                        ),
+                    }
+                },
             )
     except Exception as exc:
         log.warning(
