@@ -63,3 +63,4 @@ Thumbs.db
 .env*.local
 
 knowledge/reference/
+graphify-out/

@@ -1,0 +1,132 @@
+{
+  "instructions": [],
+  "milestone": "M31.6",
+  "scope_symbols": [
+    "GOOGL01.BK",
+    "GULF.BK",
+    "ASML01.BK",
+    "PLANB.BK",
+    "STECON.BK"
+  ],
+  "symbol_reviews": [
+    {
+      "confidence": "INSUFFICIENT",
+      "current_asset_type": null,
+      "current_identifiers": [],
+      "disposition": "QUARANTINE_PENDING_HUMAN_ADJUDICATION",
+      "evidence_sources": [
+        "portfolio_items:id=107;portfolio_id=4;sector=Other;asset_id=",
+        "watchlist:id=34;workspace_id=1;sector=Technology;asset_id=",
+        "transactions:id=47;type=BUY;currency=THB;sector=Other;asset_id=",
+        "transactions:id=48;type=BUY;currency=THB;sector=Other;asset_id=",
+        "transactions:id=57;type=BUY;currency=THB;sector=Other;asset_id=",
+        "transactions:id=59;type=BUY;currency=THB;sector=Other;asset_id=",
+        "transactions:id=73;type=SELL;currency=THB;sector=;asset_id="
+      ],
+      "existing_candidates": [],
+      "historical_spellings": [
+        "GOOGL01.BK"
+      ],
+      "proposed_operation": "MINT_OR_ATTACH_REQUIRES_AUTHORITATIVE_IDENTITY_EVIDENCE",
+      "requested_symbol": "GOOGL01.BK",
+      "unresolved_risks": [
+        "no exact Registry candidate",
+        "operational presence does not establish asset type",
+        "market and exchange are not authoritatively established",
+        "minting would require complete explicit identity/type/market/exchange/currency evidence"
+      ]
+    },
+    {
+      "confidence": "INSUFFICIENT",
+      "current_asset_type": null,
+      "current_identifiers": [],
+      "disposition": "QUARANTINE_PENDING_HUMAN_ADJUDICATION",
+      "evidence_sources": [
+        "portfolio_items:id=105;portfolio_id=4;sector=Utilities;asset_id=",
+        "watchlist:id=7;workspace_id=1;sector=Utilities;asset_id=",
+        "transactions:id=24;type=INITIAL_POSITION;currency=THB;sector=Utilities;asset_id=",
+        "transactions:id=69;type=BUY;currency=THB;sector=Utilities;asset_id="
+      ],
+      "existing_candidates": [],
+      "historical_spellings": [
+        "GULF.BK"
+      ],
+      "proposed_operation": "MINT_OR_ATTACH_REQUIRES_AUTHORITATIVE_IDENTITY_EVIDENCE",
+      "requested_symbol": "GULF.BK",
+      "unresolved_risks": [
+        "no exact Registry candidate",
+        "operational presence does not establish asset type",
+        "market and exchange are not authoritatively established",
+        "minting would require complete explicit identity/type/market/exchange/currency evidence"
+      ]
+    },
+    {
+      "confidence": "INSUFFICIENT",
+      "current_asset_type": null,
+      "current_identifiers": [],
+      "disposition": "QUARANTINE_PENDING_HUMAN_ADJUDICATION",
+      "evidence_sources": [
+        "watchlist:id=46;workspace_id=1;sector=Technology;asset_id=",
+        "optimizer_history:id=118;portfolio_id=2;actions=ACCUMULATE"
+      ],
+      "existing_candidates": [],
+      "historical_spellings": [
+        "ASML01.BK"
+      ],
+      "proposed_operation": "MINT_OR_ATTACH_REQUIRES_AUTHORITATIVE_IDENTITY_EVIDENCE",
+      "requested_symbol": "ASML01.BK",
+      "unresolved_risks": [
+        "no exact Registry candidate",
+        "operational presence does not establish asset type",
+        "market and exchange are not authoritatively established",
+        "minting would require complete explicit identity/type/market/exchange/currency evidence"
+      ]
+    },
+    {
+      "confidence": "INSUFFICIENT",
+      "current_asset_type": null,
+      "current_identifiers": [],
+      "disposition": "QUARANTINE_PENDING_HUMAN_ADJUDICATION",
+      "evidence_sources": [
+        "watchlist:id=78;workspace_id=1;sector=Consumer;asset_id=",
+        "optimizer_history:id=118;portfolio_id=2;actions=ACCUMULATE"
+      ],
+      "existing_candidates": [],
+      "historical_spellings": [
+        "PLANB.BK"
+      ],
+      "proposed_operation": "MINT_OR_ATTACH_REQUIRES_AUTHORITATIVE_IDENTITY_EVIDENCE",
+      "requested_symbol": "PLANB.BK",
+      "unresolved_risks": [
+        "no exact Registry candidate",
+        "operational presence does not establish asset type",
+        "market and exchange are not authoritatively established",
+        "minting would require complete explicit identity/type/market/exchange/currency evidence"
+      ]
+    },
+    {
+      "confidence": "INSUFFICIENT",
+      "current_asset_type": null,
+      "current_identifiers": [],
+      "disposition": "QUARANTINE_PENDING_HUMAN_ADJUDICATION",
+      "evidence_sources": [
+        "watchlist:id=80;workspace_id=1;sector=Industrial;asset_id=",
+        "optimizer_history:id=118;portfolio_id=2;actions=ACCUMULATE"
+      ],
+      "existing_candidates": [],
+      "historical_spellings": [
+        "STECON.BK"
+      ],
+      "proposed_operation": "MINT_OR_ATTACH_REQUIRES_AUTHORITATIVE_IDENTITY_EVIDENCE",
+      "requested_symbol": "STECON.BK",
+      "unresolved_risks": [
+        "no exact Registry candidate",
+        "operational presence does not establish asset type",
+        "market and exchange are not authoritatively established",
+        "minting would require complete explicit identity/type/market/exchange/currency evidence"
+      ]
+    }
+  ],
+  "version": 1,
+  "wave": "REGISTRY_REMEDIATION_WAVE_1"
+}

@@ -26,6 +26,13 @@ from services.funding_source_analysis import (
     FundingSourceResult,
     build_funding_sources,
 )
+from services.execution_eligibility import (
+    ShadowExecutionAction,
+    consult_execution_eligibility_shadow,
+)
+from services.execution_eligibility_shadow import (
+    resolve_execution_eligibility_shadow_facts,
+)
 
 log = logging.getLogger(__name__)
 
@@ -236,7 +243,7 @@ def build_execution_plan(
     else:
         status = "READY"
 
-    return ExecutionPlanResult(
+    result = ExecutionPlanResult(
         funding_actions=funding_actions,
         deferred_funding_actions=deferred_funding_actions,
         buy_actions=buy_actions,
@@ -252,3 +259,33 @@ def build_execution_plan(
         warnings=warnings,
         funding_breakdown=funding_breakdown,
     )
+
+    # M31.3 shadow-only consultation: the complete legacy plan is immutable at
+    # this point.  Eligibility can be observed but cannot remove, resize, or
+    # relabel any instruction in the returned plan.
+    try:
+        shadow_actions = [
+            ShadowExecutionAction(action.symbol, action.signal)
+            for action in result.buy_actions
+        ] + [
+            ShadowExecutionAction(action.symbol, action.action)
+            for action in result.funding_actions
+        ]
+        if shadow_actions:
+            facts_by_symbol = resolve_execution_eligibility_shadow_facts(
+                db,
+                [action.requested_symbol for action in shadow_actions],
+            )
+            consult_execution_eligibility_shadow(
+                shadow_actions,
+                facts_by_symbol,
+                legacy_path="EXECUTION_PLAN",
+                logger=log,
+            )
+    except Exception as exc:
+        log.warning(
+            "execution eligibility shadow failed at EXECUTION_PLAN boundary: %s",
+            exc,
+        )
+
+    return result

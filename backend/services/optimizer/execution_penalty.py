@@ -1,7 +1,8 @@
-"""execution_penalty.py — Phase 3B.10 DR Execution Awareness.
+"""Execution-risk judgment layer (Phase 3B.10, migrated by M31.2).
 
-Classifies each portfolio/watchlist symbol by asset type and derives execution
-quality metadata from available data (is_dr flag, volume, price estimates).
+Consumes Registry-backed ExecutionInstrumentFacts and derives execution-quality
+metadata from those facts plus available volume and price estimates. This
+module does not resolve Registry identity and contains no symbol taxonomy.
 
 Returns per-symbol ExecutionMetadata that is used to:
   1. Apply soft combined_score penalties for illiquid/DR assets
@@ -11,20 +12,33 @@ Returns per-symbol ExecutionMetadata that is used to:
 
 Design contract:
   - NO live yfinance calls — data sourced from existing scores_map dicts
-  - Graceful degradation — missing data -> neutral execution assumptions (no penalty)
+  - Graceful degradation — unresolved facts use an explicit, deletable legacy
+    compatibility projection; compatibility output is never authoritative
   - Soft-only — never hard-bans assets; only reduces target weights and flags risk
   - Backward compatible — execution_context=None leaves all existing behavior unchanged
 """
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import Mapping
+
+from services.execution_instrument_facts import (
+    ExecutionInstrumentFacts,
+    ExecutionInstrumentForm,
+    ExecutionResolutionOutcome,
+    ExecutionRole,
+)
+from services.optimizer.execution_penalty_compat import (
+    LEGACY_COMPATIBILITY_FALLBACK,
+    classify_legacy_compatibility,
+)
 
 # ── Asset type constants ───────────────────────────────────────────────────────
 ASSET_EQUITY = "EQUITY"
 ASSET_DR     = "DR"
 ASSET_ETF    = "ETF"
 ASSET_INDEX  = "INDEX"
+ASSET_OTHER  = "OTHER"
 
 # ── Execution risk levels ──────────────────────────────────────────────────────
 RISK_LOW      = "LOW"
@@ -32,11 +46,7 @@ RISK_MEDIUM   = "MEDIUM"
 RISK_HIGH     = "HIGH"
 RISK_CRITICAL = "CRITICAL"
 
-# ── DR pattern (mirrors data_fetcher._DR_RE) ──────────────────────────────────
-_DR_RE = re.compile(r"^([A-Z]+)\d{2}\.BK$")
-
-# ── Known ETF tickers ─────────────────────────────────────────────────────────
-_ETF_TICKERS = frozenset(["QQQ", "SPY", "VTI", "IVV", "EEM", "GLD", "TLT", "ARKK", "XLF", "XLK"])
+REGISTRY_FACTS_CLASSIFICATION = "REGISTRY_EXECUTION_INSTRUMENT_FACTS"
 
 # ── DR-specific allocation constraints ────────────────────────────────────────
 # DRs have structurally lower liquidity than their underlying equities.
@@ -54,8 +64,9 @@ _PENALTY_CRITICAL_RISK   = 14.0  # penalty for CRITICAL execution risk
 _LIQUIDITY_BASELINES: dict[str, float] = {
     ASSET_DR:     55.0,   # structurally less liquid than underlying
     ASSET_ETF:    75.0,   # typically highly liquid
-    ASSET_INDEX:  90.0,   # index instruments — very liquid
+    ASSET_INDEX:  90.0,   # legacy compatibility profile only
     ASSET_EQUITY: 68.0,   # regular SET/US equity baseline
+    ASSET_OTHER:  68.0,   # neutral descriptive profile; never equity identity
 }
 
 _SPREAD_BASELINES: dict[str, float] = {
@@ -63,6 +74,7 @@ _SPREAD_BASELINES: dict[str, float] = {
     ASSET_ETF:    72.0,
     ASSET_INDEX:  88.0,
     ASSET_EQUITY: 65.0,
+    ASSET_OTHER:  65.0,
 }
 
 # Estimated round-trip slippage by risk level
@@ -80,7 +92,7 @@ _DR_SLIPPAGE_PREMIUM = 0.20
 @dataclass
 class ExecutionMetadata:
     symbol:                  str
-    asset_type:              str            # EQUITY | DR | ETF | INDEX
+    asset_type:              str            # risk profile; Registry OTHER stays OTHER
     liquidity_score:         float          # 0–100 (higher = more liquid)
     spread_score:            float          # 0–100 (higher = tighter spread)
     execution_quality_score: float          # 0–100 composite
@@ -89,6 +101,105 @@ class ExecutionMetadata:
     position_cap_pct:        float | None   # reduced position cap; None = use standard
     slippage_cost_est_pct:   float          # estimated round-trip slippage %
     combined_score_penalty:  float          # soft score reduction to apply
+    resolution_status:       str            # RESOLVED | UNKNOWN | AMBIGUOUS | NOT_TRADABLE
+    instrument_form:         str            # authoritative Registry facts form
+    execution_role:          str            # TRADABLE | REFERENCE | UNKNOWN
+    classification_source:   str            # Registry facts or named compatibility path
+    classification_warning:  str | None     # diagnostic; separate from risk warnings
+    legacy_asset_type:       str            # shadow-only pre-M31.2 projection
+    classification_agrees:   bool | None    # Registry/legacy shadow comparison
+
+
+@dataclass(frozen=True)
+class _ClassificationDecision:
+    asset_type: str
+    resolution_status: str
+    instrument_form: str
+    execution_role: str
+    classification_source: str
+    classification_warning: str | None
+    legacy_asset_type: str
+    classification_agrees: bool | None
+
+
+_FORM_TO_RISK_PROFILE = {
+    ExecutionInstrumentForm.EQUITY: ASSET_EQUITY,
+    ExecutionInstrumentForm.ETF: ASSET_ETF,
+    ExecutionInstrumentForm.DEPOSITARY_RECEIPT: ASSET_DR,
+    ExecutionInstrumentForm.OTHER: ASSET_OTHER,
+}
+
+
+def _classification_for_risk_judgment(
+    symbol: str,
+    is_dr: bool,
+    facts: ExecutionInstrumentFacts | None,
+) -> _ClassificationDecision:
+    """Select a scoring profile without resolving identity or mutating facts."""
+
+    legacy = classify_legacy_compatibility(symbol, is_dr)
+    if facts is None:
+        return _ClassificationDecision(
+            asset_type=legacy.asset_type,
+            resolution_status=ExecutionResolutionOutcome.UNKNOWN.value,
+            instrument_form=ExecutionInstrumentForm.UNKNOWN.value,
+            execution_role=ExecutionRole.UNKNOWN.value,
+            classification_source=LEGACY_COMPATIBILITY_FALLBACK,
+            classification_warning=(
+                "UNKNOWN: no ExecutionInstrumentFacts supplied; execution-risk "
+                "assumptions use the deletable legacy compatibility fallback"
+            ),
+            legacy_asset_type=legacy.asset_type,
+            classification_agrees=None,
+        )
+
+    if facts.resolution_status in (
+        ExecutionResolutionOutcome.UNKNOWN,
+        ExecutionResolutionOutcome.AMBIGUOUS,
+    ):
+        reason = f" ({facts.reason})" if facts.reason else ""
+        return _ClassificationDecision(
+            asset_type=legacy.asset_type,
+            resolution_status=facts.resolution_status.value,
+            instrument_form=facts.instrument_form.value,
+            execution_role=facts.execution_role.value,
+            classification_source=LEGACY_COMPATIBILITY_FALLBACK,
+            classification_warning=(
+                f"{facts.resolution_status.value}: Registry execution facts are "
+                f"unresolved{reason}; execution-risk assumptions use the deletable "
+                "legacy compatibility fallback"
+            ),
+            legacy_asset_type=legacy.asset_type,
+            classification_agrees=None,
+        )
+
+    asset_type = _FORM_TO_RISK_PROFILE.get(facts.instrument_form, ASSET_OTHER)
+    agrees = asset_type == legacy.asset_type
+    warning: str | None = None
+    if facts.resolution_status == ExecutionResolutionOutcome.NOT_TRADABLE:
+        reason = f" ({facts.reason})" if facts.reason else ""
+        warning = (
+            f"NOT_TRADABLE: Registry facts identify a non-executable "
+            f"{facts.execution_role.value} asset{reason}; M31.2 scoring is "
+            "descriptive only and adds no blocking enforcement"
+        )
+    elif not agrees:
+        warning = (
+            "SHADOW_MISMATCH: Registry instrument form "
+            f"{facts.instrument_form.value} overrides legacy projection "
+            f"{legacy.asset_type}"
+        )
+
+    return _ClassificationDecision(
+        asset_type=asset_type,
+        resolution_status=facts.resolution_status.value,
+        instrument_form=facts.instrument_form.value,
+        execution_role=facts.execution_role.value,
+        classification_source=REGISTRY_FACTS_CLASSIFICATION,
+        classification_warning=warning,
+        legacy_asset_type=legacy.asset_type,
+        classification_agrees=agrees,
+    )
 
 
 def classify_execution(
@@ -97,21 +208,16 @@ def classify_execution(
     volume: int | None = None,
     avg_volume: int | None = None,
     current_price: float | None = None,
+    *,
+    facts: ExecutionInstrumentFacts | None = None,
 ) -> ExecutionMetadata:
     """Classify execution quality for a single symbol using available metadata.
 
-    Derives liquidity/spread scores from asset type + volume heuristics.
-    All inputs are optional — missing data produces neutral (no-penalty) scores.
+    Derives liquidity/spread scores from facts-selected assumptions plus volume.
+    Missing Registry facts remain explicit and use the named compatibility path.
     """
-    # ── Asset type ─────────────────────────────────────────────────────────────
-    if is_dr or bool(_DR_RE.match(symbol)):
-        asset_type = ASSET_DR
-    elif symbol.upper() in _ETF_TICKERS:
-        asset_type = ASSET_ETF
-    elif symbol.startswith("^"):
-        asset_type = ASSET_INDEX
-    else:
-        asset_type = ASSET_EQUITY
+    classification = _classification_for_risk_judgment(symbol, is_dr, facts)
+    asset_type = classification.asset_type
 
     liquidity_score = float(_LIQUIDITY_BASELINES[asset_type])
     spread_score    = float(_SPREAD_BASELINES[asset_type])
@@ -202,10 +308,20 @@ def classify_execution(
         position_cap_pct=position_cap,
         slippage_cost_est_pct=slippage,
         combined_score_penalty=penalty,
+        resolution_status=classification.resolution_status,
+        instrument_form=classification.instrument_form,
+        execution_role=classification.execution_role,
+        classification_source=classification.classification_source,
+        classification_warning=classification.classification_warning,
+        legacy_asset_type=classification.legacy_asset_type,
+        classification_agrees=classification.classification_agrees,
     )
 
 
-def compute_portfolio_execution_context(scores_map: dict[str, dict]) -> dict:
+def compute_portfolio_execution_context(
+    scores_map: dict[str, dict],
+    facts_by_symbol: Mapping[str, ExecutionInstrumentFacts] | None = None,
+) -> dict:
     """Compute execution metadata for the full portfolio + watchlist scores_map.
 
     Returns a context dict consumed by:
@@ -217,6 +333,7 @@ def compute_portfolio_execution_context(scores_map: dict[str, dict]) -> dict:
     dr_syms:    list[str] = []
     high_risk:  list[str] = []
 
+    supplied_facts = facts_by_symbol or {}
     for sym, data in scores_map.items():
         is_dr = bool(data.get("is_dr", False))
         meta  = classify_execution(
@@ -225,6 +342,7 @@ def compute_portfolio_execution_context(scores_map: dict[str, dict]) -> dict:
             volume=data.get("volume"),
             avg_volume=data.get("avg_volume"),
             current_price=data.get("current_price"),
+            facts=supplied_facts.get(sym),
         )
         per_symbol[sym] = {
             "asset_type":              meta.asset_type,
@@ -236,8 +354,15 @@ def compute_portfolio_execution_context(scores_map: dict[str, dict]) -> dict:
             "position_cap_pct":        meta.position_cap_pct,
             "slippage_cost_est_pct":   meta.slippage_cost_est_pct,
             "combined_score_penalty":  meta.combined_score_penalty,
+            "resolution_status":       meta.resolution_status,
+            "instrument_form":         meta.instrument_form,
+            "execution_role":          meta.execution_role,
+            "classification_source":   meta.classification_source,
+            "classification_warning":  meta.classification_warning,
+            "legacy_asset_type":       meta.legacy_asset_type,
+            "classification_agrees":   meta.classification_agrees,
         }
-        if is_dr:
+        if meta.asset_type == ASSET_DR:
             dr_syms.append(sym)
         if meta.execution_risk in (RISK_HIGH, RISK_CRITICAL):
             high_risk.append(sym)

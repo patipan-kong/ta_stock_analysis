@@ -52,6 +52,13 @@ from sqlalchemy.orm import Session
 from models.database import Portfolio, PortfolioItem, Transaction
 from services import registry_lookup
 from services.broker_fees import FeeProfile, FeeBreakdown, calc_fees, resolve_fee_profile
+from services.execution_eligibility import (
+    ShadowExecutionAction,
+    consult_execution_eligibility_shadow,
+)
+from services.execution_eligibility_shadow import (
+    resolve_execution_eligibility_shadow_facts,
+)
 
 _QUANT = Decimal("0.000001")
 _log = logging.getLogger(__name__)
@@ -99,6 +106,30 @@ def _resolve_write_time_asset_id(db: Session, symbol: str | None) -> int | None:
         symbol, getattr(resolved, "reason", "unknown"),
     )
     return None
+
+
+def _observe_transaction_execution_eligibility(
+    db: Session,
+    symbol: str,
+    legacy_action: str,
+) -> None:
+    """Observe eligibility only after the legacy transaction has committed."""
+
+    try:
+        facts_by_symbol = resolve_execution_eligibility_shadow_facts(db, [symbol])
+        consult_execution_eligibility_shadow(
+            [ShadowExecutionAction(symbol, legacy_action)],
+            facts_by_symbol,
+            legacy_path="PORTFOLIO_TRANSACTION_COMMITTED",
+            logger=_log,
+        )
+    except Exception as exc:
+        _log.warning(
+            "execution eligibility shadow failed after committed %s symbol=%r: %s",
+            legacy_action,
+            symbol,
+            exc,
+        )
 
 
 # ─── BUY ──────────────────────────────────────────────────────────────────────
@@ -199,7 +230,7 @@ def execute_buy(
     db.refresh(tx)
     db.refresh(item)
 
-    return {
+    result = {
         "transaction_id": tx.id,
         "type": "BUY",
         "symbol": symbol,
@@ -220,6 +251,8 @@ def execute_buy(
             "sector": item.sector,
         },
     }
+    _observe_transaction_execution_eligibility(db, symbol, "BUY")
+    return result
 
 
 # ─── SELL ─────────────────────────────────────────────────────────────────────
@@ -318,7 +351,7 @@ def execute_sell(
     db.commit()
     db.refresh(tx)
 
-    return {
+    result = {
         "transaction_id": tx.id,
         "type": "SELL",
         "symbol": symbol,
@@ -340,6 +373,8 @@ def execute_sell(
             "avg_cost": remaining_avg,
         },
     }
+    _observe_transaction_execution_eligibility(db, symbol, "SELL")
+    return result
 
 
 # ─── DEPOSIT ──────────────────────────────────────────────────────────────────
@@ -597,7 +632,7 @@ def execute_initial_position(
     db.refresh(tx)
     db.refresh(item)
 
-    return {
+    result = {
         "transaction_id": tx.id,
         "type": "INITIAL_POSITION",
         "symbol": symbol,
@@ -612,6 +647,8 @@ def execute_initial_position(
             "sector": item.sector,
         },
     }
+    _observe_transaction_execution_eligibility(db, symbol, "INITIAL_POSITION")
+    return result
 
 
 # ─── QUANTITY_CORRECTION ──────────────────────────────────────────────────────
