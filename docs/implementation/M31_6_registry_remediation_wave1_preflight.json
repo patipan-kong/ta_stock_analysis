@@ -1,0 +1,62 @@
+{
+  "audit_date": "2026-07-14",
+  "coverage": {
+    "current_holdings": {
+      "after": {"eligible": 19, "total": 21, "coverage_pct": 90.5, "unknown": 2},
+      "before": {"eligible": 19, "total": 21, "coverage_pct": 90.5, "unknown": 2}
+    },
+    "historical_executable_transactions_distinct": {
+      "after": {"eligible": 21, "total": 25, "coverage_pct": 84.0, "unknown": 4},
+      "before": {"eligible": 21, "total": 25, "coverage_pct": 84.0, "unknown": 4}
+    },
+    "latest_actionable_allocations_distinct": {
+      "after": {"eligible": 9, "total": 12, "coverage_pct": 75.0, "unknown": 3},
+      "before": {"eligible": 9, "total": 12, "coverage_pct": 75.0, "unknown": 3}
+    },
+    "optimizer_reachable_portfolio_2": {
+      "after": {"eligible": 18, "total": 87, "coverage_pct": 20.7, "unknown": 69},
+      "before": {"eligible": 18, "total": 87, "coverage_pct": 20.7, "unknown": 69}
+    },
+    "optimizer_reachable_portfolio_3": {
+      "after": {"eligible": 19, "total": 88, "coverage_pct": 21.6, "unknown": 69},
+      "before": {"eligible": 19, "total": 88, "coverage_pct": 21.6, "unknown": 69}
+    },
+    "optimizer_reachable_portfolio_4": {
+      "after": {"eligible": 18, "total": 87, "coverage_pct": 20.7, "unknown": 69},
+      "before": {"eligible": 18, "total": 87, "coverage_pct": 20.7, "unknown": 69}
+    },
+    "workspace_watchlist": {
+      "after": {"eligible": 18, "total": 87, "coverage_pct": 20.7, "unknown": 69},
+      "before": {"eligible": 18, "total": 87, "coverage_pct": 20.7, "unknown": 69}
+    }
+  },
+  "native_asset_id_readiness": {
+    "portfolio_items": {
+      "after": {"materialized": 0, "proposals": 19, "total": 21, "unresolved": 2},
+      "before": {"materialized": 0, "proposals": 19, "total": 21, "unresolved": 2},
+      "delta_proposals": 0
+    },
+    "transactions": {
+      "after": {"materialized": 0, "proposals": 41, "total": 52, "unresolved": 11},
+      "before": {"materialized": 0, "proposals": 41, "total": 52, "unresolved": 11},
+      "delta_proposals": 0
+    },
+    "watchlist": {
+      "after": {"materialized": 0, "proposals": 18, "total": 87, "unresolved": 69},
+      "before": {"materialized": 0, "proposals": 18, "total": 87, "unresolved": 69},
+      "delta_proposals": 0
+    }
+  },
+  "registry_rows": {
+    "after": {"assets": 21, "classifications": 0, "findings": 0, "identifiers": 21, "relationships": 0},
+    "before": {"assets": 21, "classifications": 0, "findings": 0, "identifiers": 21, "relationships": 0},
+    "changed": {"assets": 0, "classifications": 0, "findings": 0, "identifiers": 0, "relationships": 0}
+  },
+  "remediation": {
+    "approved_instructions": 0,
+    "commit_steps": 0,
+    "dry_run_steps": 0,
+    "result": "NO_EVIDENCED_WRITES; FIVE_SYMBOLS_QUARANTINED"
+  },
+  "schema_version": 1
+}

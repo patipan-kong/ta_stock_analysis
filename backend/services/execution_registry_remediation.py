@@ -13,6 +13,7 @@ from typing import Mapping, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
+from models.asset import Asset
 from services import registry_lookup, registry_service
 from services.asset_domain import (
     AssetClaim,
@@ -61,6 +62,8 @@ class RegistryRemediationInstruction:
     operation: RegistryRemediationOperation
     evidence_source: str
     evidence_note: str
+    requested_symbol: Optional[str] = None
+    candidate_asset_ids: Tuple[int, ...] = ()
     asset_id: Optional[int] = None
     underlying_asset_id: Optional[int] = None
     canonical_symbol: Optional[str] = None
@@ -132,6 +135,9 @@ def parse_registry_remediation_manifest(
         raw_identifiers = raw.get("identifiers", [])
         if not isinstance(raw_identifiers, list):
             raise ValueError(f"{instruction_id}: identifiers must be a list")
+        raw_candidate_asset_ids = raw.get("candidate_asset_ids", [])
+        if not isinstance(raw_candidate_asset_ids, list):
+            raise ValueError(f"{instruction_id}: candidate_asset_ids must be a list")
         for identifier in raw_identifiers:
             if not isinstance(identifier, Mapping):
                 raise ValueError(f"{instruction_id}: each identifier must be an object")
@@ -151,6 +157,14 @@ def parse_registry_remediation_manifest(
                 operation=operation,
                 evidence_source=_required_text(raw, "evidence_source"),
                 evidence_note=_required_text(raw, "evidence_note"),
+                requested_symbol=(
+                    str(raw["requested_symbol"]).strip()
+                    if raw.get("requested_symbol")
+                    else None
+                ),
+                candidate_asset_ids=tuple(
+                    int(value) for value in raw_candidate_asset_ids
+                ),
                 asset_id=int(raw["asset_id"]) if raw.get("asset_id") is not None else None,
                 underlying_asset_id=(
                     int(raw["underlying_asset_id"])
@@ -242,6 +256,26 @@ def _validate_instruction(db: Session, instruction: RegistryRemediationInstructi
             raise ValueError(
                 f"{instruction.instruction_id}: ATTACH_IDENTIFIER requires exactly one identifier"
             )
+        if instruction.candidate_asset_ids != (instruction.asset_id,):
+            raise ValueError(
+                f"{instruction.instruction_id}: ATTACH_IDENTIFIER requires exactly one "
+                "existing candidate matching asset_id"
+            )
+        if not instruction.requested_symbol:
+            raise ValueError(
+                f"{instruction.instruction_id}: ATTACH_IDENTIFIER requires requested_symbol"
+            )
+        from services.execution_registry_wave1 import exact_registry_candidates
+
+        exact_candidate_ids = tuple(
+            candidate.asset_id
+            for candidate in exact_registry_candidates(db, instruction.requested_symbol)
+        )
+        if exact_candidate_ids != instruction.candidate_asset_ids:
+            raise ValueError(
+                f"{instruction.instruction_id}: candidate_asset_ids do not match the exact "
+                f"Registry candidate set {exact_candidate_ids}"
+            )
     elif instruction.operation == RegistryRemediationOperation.LINK_DR_RELATIONSHIP:
         if instruction.underlying_asset_id is None:
             raise ValueError(
@@ -331,6 +365,120 @@ def _apply_instruction(
     return int(asset_id)
 
 
+def _already_applied(
+    db: Session,
+    instruction: RegistryRemediationInstruction,
+) -> Optional[int]:
+    """Return the existing asset id only when the full instruction is current.
+
+    This check makes a reviewed manifest safely repeatable.  A canonical-symbol
+    collision with different metadata is deliberately an error, not an
+    "already applied" shortcut.
+    """
+
+    if instruction.operation in _MINT_OPERATIONS:
+        asset = (
+            db.query(Asset)
+            .filter(Asset.canonical_symbol == instruction.canonical_symbol)
+            .one_or_none()
+        )
+        if asset is None:
+            return None
+        expected = {
+            "asset_type": instruction.asset_type.value if instruction.asset_type else None,
+            "market": instruction.market,
+            "exchange": instruction.exchange,
+            "currency": instruction.currency,
+            "tradable": instruction.tradable,
+            "fractional_support": instruction.fractional_support,
+            "lot_size": instruction.lot_size,
+            "settlement_cycle": instruction.settlement_cycle,
+        }
+        mismatches = [
+            name for name, value in expected.items() if getattr(asset, name) != value
+        ]
+        if mismatches:
+            raise ValueError(
+                f"{instruction.instruction_id}: canonical_symbol="
+                f"{instruction.canonical_symbol!r} already exists as asset_id={asset.id} "
+                f"with conflicting {', '.join(mismatches)}"
+            )
+        current_identifiers = {
+            (row.identifier_type, row.value)
+            for row in registry_service.get_identifiers(
+                db, AssetId(asset.id), current_only=True
+            )
+        }
+        required_identifiers = {
+            (identifier.identifier_type.value, identifier.value)
+            for identifier in instruction.identifiers
+        }
+        if not required_identifiers.issubset(current_identifiers):
+            raise ValueError(
+                f"{instruction.instruction_id}: canonical asset_id={asset.id} exists but "
+                "does not carry every requested current identifier"
+            )
+        if instruction.operation == RegistryRemediationOperation.MINT_DR:
+            relationships = registry_service.get_relationships(db, AssetId(asset.id))
+            if not any(
+                row.from_asset_id == asset.id
+                and row.to_asset_id == instruction.underlying_asset_id
+                and row.relationship_type == RelationshipType.DEPOSITARY_RECEIPT_OF.value
+                for row in relationships
+            ):
+                raise ValueError(
+                    f"{instruction.instruction_id}: canonical DR asset exists without the "
+                    "requested underlying relationship"
+                )
+        if instruction.operation == RegistryRemediationOperation.MINT_INDEX_REFERENCE:
+            classifications = registry_service.get_classifications(
+                db,
+                AssetId(asset.id),
+                dimension=ClassificationDimension.ASSET_CLASS,
+                current_only=True,
+            )
+            if not any(
+                row.value == "INDEX" and row.source == instruction.evidence_source
+                for row in classifications
+            ):
+                raise ValueError(
+                    f"{instruction.instruction_id}: canonical reference asset exists without "
+                    "current ASSET_CLASS=INDEX"
+                )
+        return int(asset.id)
+
+    asset_id = AssetId(instruction.asset_id or 0)
+    if instruction.operation == RegistryRemediationOperation.ATTACH_IDENTIFIER:
+        identifier = instruction.identifiers[0]
+        current = registry_service.get_identifiers(db, asset_id, current_only=True)
+        if any(
+            row.identifier_type == identifier.identifier_type.value
+            and row.value == identifier.value
+            for row in current
+        ):
+            return int(asset_id)
+    elif instruction.operation == RegistryRemediationOperation.LINK_DR_RELATIONSHIP:
+        if any(
+            row.from_asset_id == int(asset_id)
+            and row.to_asset_id == instruction.underlying_asset_id
+            and row.relationship_type == RelationshipType.DEPOSITARY_RECEIPT_OF.value
+            for row in registry_service.get_relationships(db, asset_id)
+        ):
+            return int(asset_id)
+    elif instruction.operation == RegistryRemediationOperation.REGISTER_INDEX_REFERENCE:
+        if any(
+            row.value == "INDEX"
+            for row in registry_service.get_classifications(
+                db,
+                asset_id,
+                dimension=ClassificationDimension.ASSET_CLASS,
+                current_only=True,
+            )
+        ):
+            return int(asset_id)
+    return None
+
+
 def apply_registry_remediation(
     db: Session,
     instructions: Sequence[RegistryRemediationInstruction],
@@ -357,13 +505,19 @@ def apply_registry_remediation(
     savepoint = None if commit else db.begin_nested()
     try:
         for instruction in approved:
-            asset_id = _apply_instruction(db, instruction)
-            db.flush()
+            existing_asset_id = _already_applied(db, instruction)
+            if existing_asset_id is None:
+                asset_id = _apply_instruction(db, instruction)
+                db.flush()
+                status = "APPLIED" if commit else "WOULD_APPLY"
+            else:
+                asset_id = existing_asset_id
+                status = "ALREADY_APPLIED"
             steps.append(
                 RegistryRemediationStep(
                     instruction_id=instruction.instruction_id,
                     operation=instruction.operation.value,
-                    status="APPLIED" if commit else "WOULD_APPLY",
+                    status=status,
                     detail=(
                         f"approved evidence source={instruction.evidence_source}; "
                         f"note={instruction.evidence_note}"
