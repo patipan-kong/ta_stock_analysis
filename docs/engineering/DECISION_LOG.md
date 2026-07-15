@@ -1215,3 +1215,30 @@ diagnostics without identity labels or public output. A Market Calendar
 Foundation remains required before canonical acceptance, and 0/21 governed
 Registry lot coverage remains an independent block. Focused M32.3C/E1/E2/S2
 tests passed (56); no commit or push was performed.
+
+---
+
+## M32.3E3F2 — Market Price Evidence Set and Provider Capability Shadow Foundation
+
+**Date:** 2026-07-15
+**Decision:** Add immutable, separately timed last-price, top-of-book,
+declared-delay, evidence-set, and provider-capability contracts to the
+default-off private live-evidence shadow. Do not select an execution price or
+change any acceptance threshold.
+
+**Reasoning:** Yahoo Chart `regularMarketPrice`/`regularMarketTime` is only
+provider-labelled regular-last evidence. The current path has no timestamped
+bid/ask or book evidence, payload delay is absent, and Yahoo SET data is known
+to be delayed. Collapsing last-price, book, receipt, cache, and delay clocks
+would manufacture execution certainty. A provider capability declaration is
+evidence about one path, not provider routing or a policy suitability verdict.
+
+**Impact:** The shadow reports component availability/age and capability status
+with low-cardinality labels while retaining no selected BID/ASK price. The
+read-only capability CLI operates on static declarations/sanitized samples and
+refuses commit/network-probe modes. Existing M32.3E1 pricing, normalization,
+legs, plans, optimizer, transaction, Registry, API/frontend, and persistence
+behavior remain unchanged. Side-aware selection still requires a separately
+approved provider and policy milestone; Registry lots, calendar,
+currency/cash-floor, funding, and admission blockers remain. No commit or push
+was performed.

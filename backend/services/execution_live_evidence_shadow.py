@@ -55,6 +55,20 @@ from services.market_data.execution_quote import (
     ExecutionQuoteEvidence,
     adapt_yahoo_finance_execution_quote,
 )
+from services.market_data.provider_price_capability import (
+    audit_provider_market_price_capability,
+    current_yahoo_chart_set_capability,
+)
+from services.market_price_evidence import (
+    EvidenceAgePolicy,
+    TopOfBookPairQuality,
+    adapt_execution_quote_envelope_to_last_price_evidence,
+    assess_cache_age,
+    assess_last_price_age,
+    assess_provider_receipt_age,
+    build_market_price_evidence_set,
+    declared_delay_status,
+)
 from services.normalized_trade_input import (
     HoldingQuantitySnapshot,
     QuantityIntentSource,
@@ -98,6 +112,11 @@ DEFAULT_LIVE_EVIDENCE_POLICY_BUNDLE = ExecutionPolicyBundle.create(
     quantity=ExecutionQuantityPolicy(policy_version="m32.3e1-shadow-quantity-v1"),
     residual=ExecutionResidualPolicy(policy_version="m32.3e1-shadow-residual-v1"),
     quote_lifecycle=ExecutionQuoteLifecycle(policy_version="m32.3e1-shadow-quote-v1"),
+)
+DEFAULT_MARKET_PRICE_EVIDENCE_AGE_POLICY = EvidenceAgePolicy(
+    policy_version="m32.3e3f2-diagnostic-v1",
+    current_for=timedelta(minutes=5),
+    stale_for=timedelta(minutes=15),
 )
 
 
@@ -162,6 +181,21 @@ class ShadowSymbolDiagnostic:
     trading_period_availability: str = "MISSING"
     calendar_assessment_status: str = "NOT_AVAILABLE"
     session_evidence_completeness: str = "MISSING"
+    # M32.3E3F2 evidence-only fields.  They are never read by the E1 policy
+    # path and contain no selected execution price.
+    market_price_evidence_set_ref: str | None = None
+    last_price_semantic_kind: str = "UNKNOWN"
+    last_price_age_category: str = "UNKNOWN"
+    top_of_book_availability: str = "MISSING"
+    bid_availability: str = "MISSING"
+    ask_availability: str = "MISSING"
+    quote_timestamp_availability: str = "MISSING"
+    quote_age_category: str = "UNKNOWN"
+    top_of_book_pair_quality: str = "EMPTY"
+    provider_receipt_age_category: str = "UNKNOWN"
+    cache_age_category: str = "UNKNOWN"
+    declared_delay_status: str = "MISSING"
+    provider_capability_status: str = "UNMEASURED"
 
 
 @dataclass(frozen=True)
@@ -187,6 +221,18 @@ class ShadowCanonicalPlanDiagnostic:
                 ("trading_period", item.trading_period_availability),
                 ("calendar_assessment", item.calendar_assessment_status),
                 ("session_evidence", item.session_evidence_completeness),
+                ("last_price_kind", item.last_price_semantic_kind),
+                ("last_price_age", item.last_price_age_category),
+                ("top_of_book", item.top_of_book_availability),
+                ("bid", item.bid_availability),
+                ("ask", item.ask_availability),
+                ("quote_timestamp", item.quote_timestamp_availability),
+                ("quote_age", item.quote_age_category),
+                ("book_quality", item.top_of_book_pair_quality),
+                ("provider_receipt_age", item.provider_receipt_age_category),
+                ("cache_age", item.cache_age_category),
+                ("declared_delay", item.declared_delay_status),
+                ("provider_capability", item.provider_capability_status),
             ):
                 label = f"{key}:{value}"
                 labels[label] = labels.get(label, 0) + 1
@@ -480,7 +526,15 @@ def project_live_execution_plan_shadow(
                 warnings=(f"M32.3E2 shadow evaluation failure: {type(exc).__name__}",),
                 provenance=("M32.3E2 exception-contained per-symbol shadow",),
             )
-        diagnostics.append(replace(diagnostic, **_session_diagnostic_values(observation)))
+        diagnostics.append(replace(
+            diagnostic,
+            **_session_diagnostic_values(observation),
+            **_market_price_diagnostic_values(
+                envelope=envelope,
+                facts=facts,
+                assessed_at=assessed_at,
+            ),
+        ))
     counts: dict[str, int] = {}
     for item in diagnostics:
         counts[item.outcome.value] = counts.get(item.outcome.value, 0) + 1
@@ -667,6 +721,76 @@ def _session_diagnostic_values(observation: ExecutionPriceObservation) -> dict[s
             if evidence.observation_session_claim != MarketSession.UNKNOWN
             else "PARTIAL"
         ),
+    }
+
+
+def _market_price_diagnostic_values(
+    *,
+    envelope: ExecutionQuoteEnvelope | None,
+    facts: ExecutionInstrumentFacts | None,
+    assessed_at: datetime,
+) -> dict[str, object]:
+    """F2 evidence telemetry only; no quote/book becomes an E1 observation."""
+
+    if envelope is None:
+        return {
+            "market_price_evidence_set_ref": None,
+            "last_price_semantic_kind": "UNKNOWN",
+            "last_price_age_category": "UNKNOWN",
+            "top_of_book_availability": "MISSING",
+            "bid_availability": "MISSING",
+            "ask_availability": "MISSING",
+            "quote_timestamp_availability": "MISSING",
+            "quote_age_category": "UNKNOWN",
+            "top_of_book_pair_quality": TopOfBookPairQuality.EMPTY.value,
+            "provider_receipt_age_category": "UNKNOWN",
+            "cache_age_category": "UNKNOWN",
+            "declared_delay_status": "MISSING",
+            "provider_capability_status": "UNMEASURED",
+        }
+    last = adapt_execution_quote_envelope_to_last_price_evidence(envelope, facts=facts)
+    evidence_set = build_market_price_evidence_set(
+        facts=facts,
+        provider_id=envelope.provider_id,
+        provider_version=envelope.provider_version,
+        currency=envelope.currency,
+        last_price_evidence=last,
+        top_of_book_evidence=None,
+        declared_delay_evidence=None,
+        session_evidence=envelope.session_evidence,
+        provider_received_at=envelope.received_at,
+        cached_at=envelope.cached_at,
+        provenance=("M32.3E3F2 private shadow evidence set",),
+    )
+    last_age = assess_last_price_age(last, assessed_at=assessed_at, policy=DEFAULT_MARKET_PRICE_EVIDENCE_AGE_POLICY)
+    receipt_age = assess_provider_receipt_age(last, assessed_at=assessed_at, policy=DEFAULT_MARKET_PRICE_EVIDENCE_AGE_POLICY)
+    cache_age = assess_cache_age(last, assessed_at=assessed_at, policy=DEFAULT_MARKET_PRICE_EVIDENCE_AGE_POLICY)
+    capability_status = "UNMEASURED"
+    if envelope.provider_id == "yahoo_chart":
+        capability_status = audit_provider_market_price_capability(
+            current_yahoo_chart_set_capability(),
+            samples=({
+                "regular_last": last.price is not None,
+                "bid": False, "ask": False, "sizes": False, "quote_timestamp": False,
+                "payload_delay": envelope.delay is not None, "currency": bool(envelope.currency),
+                "session": envelope.session_evidence is not None,
+            },),
+            provenance=("M32.3E3F2 private shadow envelope availability",),
+        ).readiness.value
+    return {
+        "market_price_evidence_set_ref": evidence_set.evidence_set_ref,
+        "last_price_semantic_kind": last.semantic_kind.value,
+        "last_price_age_category": last_age.status.value,
+        "top_of_book_availability": "MISSING",
+        "bid_availability": "MISSING",
+        "ask_availability": "MISSING",
+        "quote_timestamp_availability": "MISSING",
+        "quote_age_category": "PRICE_TIMESTAMP_MISSING",
+        "top_of_book_pair_quality": TopOfBookPairQuality.EMPTY.value,
+        "provider_receipt_age_category": receipt_age.status.value,
+        "cache_age_category": cache_age.status.value,
+        "declared_delay_status": declared_delay_status(last.declared_delay_evidence),
+        "provider_capability_status": capability_status,
     }
 
 
