@@ -1150,3 +1150,37 @@ Registry facts batch is reused, fee quoting occurs only after a constrained
 quantity exists, and diagnostics are log-only. M32.3E3 still requires coverage,
 currency, funding, canonical-plan, and transaction-admission decisions. No
 commit or push was performed.
+
+---
+
+## M32.3E3R2 — Lot Capability Evidence and Read-only Preflight
+
+**Date:** 2026-07-15
+**Decision:** Add a frozen, deterministic `LotCapabilityEvidence` contract and
+strict review-only manifest/preflight surface, while keeping all capability
+projection writes unavailable. `Asset.lot_size` is the explicit listing-level
+standard-board quantity increment in Registry units for an effective period;
+it is not a broker, settlement, odd-lot, policy, ticker, or exchange default.
+`fractional_support` likewise requires explicit listing evidence rather than a
+bootstrap default or broker convention.
+
+**Reasoning:** The M32.3E3 observation found 0/21 positive lots and only
+unproven bootstrap `fractional_support=False` values. Holdings, transactions,
+provider metadata, AssetType, exchange strings, UI precision, and Asset
+Definition refinement permission cannot establish a listing capability.
+R2 therefore separates raw projection coverage from governed evidence,
+requires exact identity snapshots, timezone-aware effective/source/review
+metadata, a caller-injected authority trust list, and explicit quarantine for
+conflict, identity, future/expired, or approval gaps. There is deliberately no
+highest-confidence selection or `None => 1` fallback.
+
+**Impact:** Added `services.execution_lot_capability`, a read-only CLI, focused
+tests, and implementation documentation. The collector batches Registry rows,
+labels holdings/transaction quantities as `NON_AUTHORITATIVE_CANDIDATE_EVIDENCE`,
+consults Asset Definitions only for refinement permission, and reports
+`READY_FOR_REVIEW` without enabling an update. The CLI refuses `--commit`;
+there is no migration, evidence persistence, cache invalidation, Registry
+mutation, API/frontend, plan, transaction, fee, ledger, or M31 behavior change.
+M32.3E3R3 requires human-reviewed external authority, trust governance, an
+append-only evidence projection design, and a separate approved write
+milestone. No commit or push was performed.
