@@ -202,6 +202,10 @@ class TradeInputNormalizationRequest:
     # contracts without adding information.
     price_observation: ExecutionPriceObservation | None = None
     price_freshness_assessment: PriceFreshnessAssessment | None = None
+    # Populated only by M32.3E1's pure policy path.  Compatibility/raw callers
+    # leave these absent and retain their existing behavior.
+    execution_policy_bundle_ref: str | None = None
+    execution_policy_result_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -236,6 +240,8 @@ class NormalizedTradeInput:
     assumptions: tuple[str, ...]
     warnings: tuple[str, ...]
     provenance: tuple[str, ...]
+    execution_policy_bundle_ref: str | None
+    execution_policy_result_ref: str | None
     status: NormalizationStatus
 
     @property
@@ -373,6 +379,8 @@ def normalize_trade_input(request: TradeInputNormalizationRequest) -> Normalizat
         assumptions=request.assumptions,
         warnings=request.warnings,
         provenance=request.provenance,
+        execution_policy_bundle_ref=request.execution_policy_bundle_ref,
+        execution_policy_result_ref=request.execution_policy_result_ref,
         status=status,
     )
     return NormalizationResult(normalized, tuple(failures))
@@ -920,6 +928,8 @@ def _normalization_ref(request: TradeInputNormalizationRequest) -> str:
         str(facts.asset_id or ""),
         facts.canonical_symbol or "",
         quote.quote_ref if quote is not None else "",
+        request.execution_policy_bundle_ref or "",
+        request.execution_policy_result_ref or "",
     )
     return "nti_" + hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:24]
 

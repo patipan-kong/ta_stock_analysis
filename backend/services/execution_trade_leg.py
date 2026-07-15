@@ -22,6 +22,11 @@ from services.execution_instrument_facts import (
     ExecutionResolutionOutcome,
     ExecutionRole,
 )
+from services.execution_price_observation import (
+    ExecutionPriceObservation,
+    PriceFreshnessAssessment,
+)
+from services.normalized_trade_input import NormalizedTradeInput, NormalizationStatus
 
 __all__ = [
     "ExecutionFundingRole",
@@ -33,6 +38,7 @@ __all__ = [
     "ShadowTradeLegComparison",
     "ExecutionTradeLegShadowProjection",
     "build_execution_trade_leg",
+    "build_execution_trade_leg_from_policy_input",
     "project_execution_plan_trade_legs_shadow",
 ]
 
@@ -120,6 +126,10 @@ class ExecutionTradeLeg:
     warnings: tuple[str, ...]
     provenance: tuple[str, ...]
     complete: bool
+    # M32.3E1 policy legs retain canonical price evidence by identity.  Legacy
+    # M32.2 legs leave both fields absent.
+    price_observation: ExecutionPriceObservation | None = None
+    price_freshness_assessment: PriceFreshnessAssessment | None = None
 
 
 @dataclass(frozen=True)
@@ -225,6 +235,88 @@ class ExecutionTradeLegBuilder:
             complete=complete,
         )
 
+    def build_from_policy_input(
+        self,
+        normalized_input: NormalizedTradeInput,
+        *,
+        funding_role: ExecutionFundingRole,
+    ) -> ExecutionTradeLeg:
+        """Project a COMPLETE M32.3E1 input without recalculating evidence.
+
+        The legacy-request builder above remains the M32.2 comparison path.
+        This entry point deliberately accepts only a normalized input marked by
+        the policy bundle; callers cannot use a compatibility/raw normalized
+        request to present a canonical policy leg.
+        """
+
+        if normalized_input.status != NormalizationStatus.COMPLETE:
+            raise ValueError("policy trade leg requires a COMPLETE NormalizedTradeInput")
+        if not (
+            normalized_input.execution_policy_bundle_ref
+            and normalized_input.execution_policy_result_ref
+        ):
+            raise ValueError("policy trade leg requires a policy-produced NormalizedTradeInput")
+        if (
+            normalized_input.requested_quantity is None
+            or normalized_input.executable_quantity is None
+            or normalized_input.fee_quote is None
+        ):
+            raise ValueError("complete policy input must retain quantities and FeeQuote")
+        quote = normalized_input.fee_quote
+        observation = normalized_input.price_observation
+        if quote.status != FeeQuoteStatus.QUOTED:
+            raise ValueError("complete policy input requires a quoted FeeQuote")
+        if (
+            quote.side != normalized_input.side
+            or quote.quantity != normalized_input.executable_quantity
+            or quote.unit_price != observation.observed_price
+            or quote.currency != observation.currency
+        ):
+            raise ValueError("FeeQuote must exactly bind the complete policy input")
+        facts = normalized_input.execution_instrument_facts
+        eligibility = normalized_input.execution_eligibility
+        lot_summary = LotAdjustmentSummary(
+            lot_size=facts.lot_size,
+            requested_quantity=normalized_input.requested_quantity,
+            executable_quantity=normalized_input.executable_quantity,
+            adjusted=normalized_input.lot_adjustment.adjusted,
+        )
+        fractional_summary = FractionalAdjustmentSummary(
+            fractional_support=facts.fractional_support,
+            requested_quantity=normalized_input.requested_quantity,
+            executable_quantity=normalized_input.executable_quantity,
+            adjusted=normalized_input.fractional_adjustment.adjusted,
+        )
+        return ExecutionTradeLeg(
+            contract_version=_TRADE_LEG_CONTRACT_VERSION,
+            leg_id=_policy_leg_id(normalized_input, quote),
+            recommendation_reference=normalized_input.recommendation_reference,
+            requested_symbol=normalized_input.requested_symbol,
+            asset_id=(int(facts.asset_id) if facts.asset_id is not None else None),
+            canonical_symbol=facts.canonical_symbol,
+            side=normalized_input.side,
+            requested_quantity=normalized_input.requested_quantity,
+            executable_quantity=normalized_input.executable_quantity,
+            unit_price=observation.observed_price,
+            price_timestamp=observation.observed_at,
+            gross_amount=quote.gross_amount,
+            fee_quote=quote,
+            estimated_total_cost=quote.total_cost,
+            estimated_net_cash_effect=quote.net_cash_effect,
+            funding_role=funding_role,
+            execution_instrument_facts=facts,
+            execution_eligibility=eligibility,
+            instrument_form=facts.instrument_form,
+            execution_role=facts.execution_role,
+            lot_adjustment=lot_summary,
+            fractional_adjustment=fractional_summary,
+            warnings=tuple(dict.fromkeys(normalized_input.warnings + _warnings_from(facts, eligibility, quote))),
+            provenance=normalized_input.provenance + quote.provenance + _facts_provenance(facts),
+            complete=True,
+            price_observation=observation,
+            price_freshness_assessment=normalized_input.price_freshness_assessment,
+        )
+
 
 _BUILDER = ExecutionTradeLegBuilder()
 
@@ -238,6 +330,16 @@ def build_execution_trade_leg(
     """Use the one trade-leg builder; callers must not assemble legs directly."""
 
     return _BUILDER.build(request, facts, eligibility, fee_quote)
+
+
+def build_execution_trade_leg_from_policy_input(
+    normalized_input: NormalizedTradeInput,
+    *,
+    funding_role: ExecutionFundingRole,
+) -> ExecutionTradeLeg:
+    """Use the dedicated M32.3E1 policy-produced normalized-input boundary."""
+
+    return _BUILDER.build_from_policy_input(normalized_input, funding_role=funding_role)
 
 
 def project_execution_plan_trade_legs_shadow(
@@ -330,6 +432,20 @@ def _leg_id(
             request.side.value,
             format(request.requested_quantity, "f"),
             format(request.unit_price, "f"),
+            fee_quote.quote_ref,
+        )
+    ).encode("utf-8")
+    return "leg_" + hashlib.sha256(payload).hexdigest()[:24]
+
+
+def _policy_leg_id(normalized_input: NormalizedTradeInput, fee_quote: FeeQuote) -> str:
+    payload = "|".join(
+        (
+            _TRADE_LEG_CONTRACT_VERSION,
+            "policy",
+            normalized_input.normalization_ref,
+            normalized_input.execution_policy_bundle_ref or "",
+            normalized_input.execution_policy_result_ref or "",
             fee_quote.quote_ref,
         )
     ).encode("utf-8")

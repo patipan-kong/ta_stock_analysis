@@ -1075,3 +1075,56 @@ Open Engineering Issues
 **Reasoning:** Observation, freshness, and execution-price selection are different decisions with different owners. Separating exchange observation time from receipt/cache time keeps current data limitations visible; separating freshness from the observation makes assessment reproducible at a caller-supplied time; separating average cost/user terms from market kinds prevents accounting or UI convenience values from becoming market evidence.
 
 **Impact:** Added `backend/services/execution_price_observation.py`, `backend/tests/test_execution_price_observation_m32_3c.py`, and `docs/implementation/M32_3C_price_observation_foundation.md`; updated `backend/services/normalized_trade_input.py` and only the private post-result shadow block in `backend/services/execution_plan.py`. Focused M32.3C: 21 passed; combined M32.1/M32.2/M32.3B/M32.3C: 77 passed; combined M32/market-data/price-matrix/position-sizing: 114 passed and 32 skipped; M31 facts/eligibility/Registry: 83 passed; optimizer/execution: 53 passed plus all five optimizer-history tests passed when their pre-existing missing Asset mapper was imported; transaction/write/replay: 214 passed. Pre-existing/environmental failures remain four stale `_consensus_engine(l2, l3)` tests, five import-order mapper failures, nine async replay-cutover tests without an async plugin, one baseline capability-shadow log expectation, and the import-time live-network `test_fetch_history.py` probe failing when its fetch returned `None`. Python compilation and `git diff --check` pass. No API, frontend, provider/cache, persistence, migration, optimizer, transaction, ledger/replay, funding arithmetic, M31 mode, canonical plan, or authoritative execution-price behavior changed. No commit or push was performed.
+
+---
+
+## M32.3E1 - Execution Policy Contracts and Pure Constrained Sizing Shadow
+
+**Date:** 2026-07-15
+**Problem:** M32.3B/C establish quantity intent and price/freshness evidence,
+but they deliberately do not choose an execution price, convert allocation
+value into constrained units, apply a lot policy, retain residuals, or bind a
+quote to final units. Leaving those decisions implicit would let cache TTL,
+average cost, missing Registry capabilities, or a compatibility quote become
+execution authority.
+
+**Decision:**
+- Added six frozen/versioned contracts (`ExecutionPricingPolicy`,
+  `ExecutionFreshnessPolicy`, `ExecutionSizingPolicy`,
+  `ExecutionQuantityPolicy`, `ExecutionResidualPolicy`, and
+  `ExecutionQuoteLifecycle`) and deterministic `ExecutionPolicyBundle` / THB
+  transitional `PlanningCurrencyContext` references. All values enter pure
+  functions explicitly; no helper reads a clock, environment, Registry,
+  database, provider, network, cache, or frontend state.
+- Approved E1 fixture semantics are one identity-matching positive THB
+  `MARKET_LAST`, caller-assessed `CURRENT` freshness, `REGULAR` session,
+  explicit five-minute test threshold, non-fractional capability explicitly
+  false, positive integer lot, floor-only derived quantities, lot-aligned full
+  sell, no oversell/scaling/residual redistribution, and quote after final
+  quantity. Unsupported kinds/sessions, unknown capability/lot, conflicts,
+  and missing or mismatched quote evidence remain typed incomplete/deferred/
+  excluded/error results.
+- Added a private policy-produced normalized-input path. It creates the
+  existing `NormalizedTradeInput` only after constrained quantity and exact
+  FeeQuote lifecycle validation, using additive policy-reference fields.
+  `ExecutionTradeLegBuilder` now has a separate policy-input entry point which
+  accepts only a complete policy-produced input and retains facts,
+  eligibility, observation, assessment, and quote by identity. The M32.2
+  legacy request builder remains unchanged.
+- The path is fixture-backed only. Current legacy plan BUY actions are
+  amount-only and funding prices are `AVG_COST_REFERENCE`; current provider
+  DTO/capability coverage also cannot prove M32.3E1 readiness. No post-result
+  diagnostic is wired merely to label those incomplete inputs as executable.
+
+**Impact:** Added `backend/services/execution_policy.py`,
+`backend/tests/test_execution_policy_m32_3e1.py`, and
+`docs/implementation/M32_3E1_execution_policy_shadow.md`; additively extended
+normalized-input provenance and the trade-leg builder. Focused M32.3E1 plus
+M32.2/M32.3B/M32.3C contracts: 56 passed in `backend/venv-test`. The normal
+project venv lacks pytest; SQLAlchemy deprecation and pytest-cache permission
+warnings were non-failing. No execution plan, funding arithmetic, optimizer,
+transaction, ledger/replay, API/frontend, Registry, provider, M31, schema, or
+persistence behavior changed. M32.3E2 still needs canonical market evidence,
+Registry lot/fractional capability coverage, holding/adjudication evidence,
+fee coverage, and an approved operational policy before live shadow or
+canonical planning. No commit or push was performed.
