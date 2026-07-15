@@ -36,6 +36,9 @@ from services.execution_eligibility_shadow import (
     resolve_execution_eligibility_shadow_facts,
 )
 from services.execution_trade_leg import project_execution_plan_trade_legs_shadow
+from services.execution_price_observation import (
+    project_execution_plan_price_observations_shadow,
+)
 from services.normalized_trade_input import (
     project_execution_plan_normalized_inputs_shadow,
 )
@@ -322,6 +325,28 @@ def build_execution_plan(
                     }
                 },
             )
+            # M32.3C records the legacy plan's actual price evidence without
+            # selecting an execution price. BUYs have no unit price; funding
+            # actions expose only an average-cost balancing reference, which
+            # remains AVG_COST_REFERENCE and freshness UNKNOWN.
+            price_projection = project_execution_plan_price_observations_shadow(
+                result.buy_actions,
+                result.funding_actions,
+                facts_by_symbol,
+                assessed_at=shadow_at,
+            )
+            log.debug(
+                "execution price-observation shadow path=EXECUTION_PLAN observations=%d",
+                len(price_projection.comparisons),
+                extra={
+                    "execution_price_observation_shadow": {
+                        "comparisons": [
+                            comparison.to_log_dict()
+                            for comparison in price_projection.comparisons
+                        ],
+                    }
+                },
+            )
             # M32.3B is a separate post-result, amount/quantity-intent
             # diagnostic.  It reuses the same facts batch and deliberately
             # preserves amount-only BUY actions as incomplete rather than
@@ -332,6 +357,7 @@ def build_execution_plan(
                 result.funding_actions,
                 facts_by_symbol,
                 eligibility_by_symbol,
+                price_projection.evidence_by_symbol,
             )
             log.debug(
                 "normalized trade-input shadow path=EXECUTION_PLAN complete=%d incomplete=%d unavailable=%d",

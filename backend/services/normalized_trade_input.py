@@ -28,6 +28,16 @@ from services.execution_instrument_facts import (
     ExecutionInstrumentFacts,
     ExecutionResolutionOutcome,
 )
+from services.execution_price_observation import (
+    ExecutionPriceObservation,
+    MarketSession,
+    PriceFreshnessAssessment,
+    PriceFreshnessStatus,
+    PriceKind,
+    PriceSource,
+    adapt_user_execution_term,
+    build_price_observation,
+)
 
 __all__ = [
     "QuantityIntentSource",
@@ -35,6 +45,9 @@ __all__ = [
     "PriceKind",
     "PriceSource",
     "MarketSession",
+    "ExecutionPriceObservation",
+    "PriceFreshnessAssessment",
+    "PriceFreshnessStatus",
     "AllocationSource",
     "NormalizationStatus",
     "NormalizationFailureReason",
@@ -76,28 +89,6 @@ class QuantityConfidence(str, Enum):
     ESTIMATED = "ESTIMATED"
 
 
-class PriceKind(str, Enum):
-    """The semantic kind of price evidence, not a market-data policy."""
-
-    USER_EXECUTION_TERM = "USER_EXECUTION_TERM"
-    MARKET_REFERENCE = "MARKET_REFERENCE"
-    UNKNOWN = "UNKNOWN"
-
-
-class PriceSource(str, Enum):
-    USER_ENTERED = "USER_ENTERED"
-    CALLER_SUPPLIED = "CALLER_SUPPLIED"
-    UNKNOWN = "UNKNOWN"
-
-
-class MarketSession(str, Enum):
-    REGULAR = "REGULAR"
-    PRE_MARKET = "PRE_MARKET"
-    AFTER_HOURS = "AFTER_HOURS"
-    CLOSED = "CLOSED"
-    UNKNOWN = "UNKNOWN"
-
-
 class AllocationSource(str, Enum):
     OPTIMIZER_TARGET_ALLOCATION = "OPTIMIZER_TARGET_ALLOCATION"
     DECISION_WORKSPACE_POSITION_SIZING = "DECISION_WORKSPACE_POSITION_SIZING"
@@ -132,6 +123,7 @@ class NormalizationFailureReason(str, Enum):
     INVALID_QUANTITY = "INVALID_QUANTITY"
     INVALID_REQUESTED_VALUE = "INVALID_REQUESTED_VALUE"
     INVALID_PRICE = "INVALID_PRICE"
+    PRICE_NOT_EXECUTION_EVIDENCE = "PRICE_NOT_EXECUTION_EVIDENCE"
     UNSUPPORTED_SOURCE = "UNSUPPORTED_SOURCE"
 
 
@@ -205,6 +197,11 @@ class TradeInputNormalizationRequest:
     assumptions: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     provenance: tuple[str, ...] = ()
+    # M32.3C authoritative price evidence.  The raw M32.3B fields above remain
+    # accepted only as a compatibility input and are projected into these
+    # contracts without adding information.
+    price_observation: ExecutionPriceObservation | None = None
+    price_freshness_assessment: PriceFreshnessAssessment | None = None
 
 
 @dataclass(frozen=True)
@@ -227,16 +224,8 @@ class NormalizedTradeInput:
     quantity_confidence: QuantityConfidence
     lot_adjustment: QuantityAdjustmentSummary
     fractional_adjustment: QuantityAdjustmentSummary
-    unit_price: Decimal | None
-    price_kind: PriceKind
-    price_source: PriceSource
-    observed_at: datetime | None
-    received_at: datetime | None
-    market_session: MarketSession
-    freshness_assessed_at: datetime | None
-    freshness_policy_reference: str | None
-    stale: bool | None
-    currency: str | None
+    price_observation: ExecutionPriceObservation
+    price_freshness_assessment: PriceFreshnessAssessment | None
     execution_instrument_facts: ExecutionInstrumentFacts
     execution_eligibility: ExecutionEligibility
     fee_quote: FeeQuote | None
@@ -261,6 +250,56 @@ class NormalizedTradeInput:
     @property
     def canonical_symbol(self) -> str | None:
         return self.execution_instrument_facts.canonical_symbol
+
+    # Read-only compatibility projections for M32.3B callers.  Price evidence
+    # is owned by the retained observation/assessment objects above.
+    @property
+    def unit_price(self) -> Decimal | None:
+        return self.price_observation.observed_price
+
+    @property
+    def price_kind(self) -> PriceKind:
+        return self.price_observation.price_type
+
+    @property
+    def price_source(self) -> PriceSource:
+        return self.price_observation.source
+
+    @property
+    def observed_at(self) -> datetime | None:
+        return self.price_observation.observed_at
+
+    @property
+    def received_at(self) -> datetime | None:
+        return self.price_observation.received_at
+
+    @property
+    def market_session(self) -> MarketSession:
+        return self.price_observation.market_session
+
+    @property
+    def freshness_assessed_at(self) -> datetime | None:
+        assessment = self.price_freshness_assessment
+        return assessment.assessed_at if assessment is not None else None
+
+    @property
+    def freshness_policy_reference(self) -> str | None:
+        assessment = self.price_freshness_assessment
+        return assessment.policy_version if assessment is not None else None
+
+    @property
+    def stale(self) -> bool | None:
+        assessment = self.price_freshness_assessment
+        if assessment is None:
+            return None
+        return assessment.status in {
+            PriceFreshnessStatus.STALE,
+            PriceFreshnessStatus.EXPIRED,
+        }
+
+    @property
+    def currency(self) -> str | None:
+        return self.price_observation.currency
 
 
 @dataclass(frozen=True)
@@ -300,12 +339,13 @@ def normalize_trade_input(request: TradeInputNormalizationRequest) -> Normalizat
     price, and an unavailable FeeQuote is never treated as free.
     """
 
+    observation, freshness = _price_evidence(request)
     failures: list[NormalizationFailure] = []
     _validate_source_and_side(request, failures)
     _validate_quantities(request, failures)
     _validate_facts_and_eligibility(request, failures)
-    _validate_price(request, failures)
-    _validate_fee_quote(request, failures)
+    _validate_price(request, observation, freshness, failures)
+    _validate_fee_quote(request, observation, failures)
     failures = _deduplicate_failures(failures)
     status = NormalizationStatus.COMPLETE if not failures else NormalizationStatus.INCOMPLETE
     normalized = NormalizedTradeInput(
@@ -321,16 +361,8 @@ def normalize_trade_input(request: TradeInputNormalizationRequest) -> Normalizat
         quantity_confidence=request.quantity_confidence,
         lot_adjustment=request.lot_adjustment,
         fractional_adjustment=request.fractional_adjustment,
-        unit_price=request.unit_price,
-        price_kind=request.price_kind,
-        price_source=request.price_source,
-        observed_at=request.observed_at,
-        received_at=request.received_at,
-        market_session=request.market_session,
-        freshness_assessed_at=request.freshness_assessed_at,
-        freshness_policy_reference=request.freshness_policy_reference,
-        stale=request.stale,
-        currency=request.currency,
+        price_observation=observation,
+        price_freshness_assessment=freshness,
         execution_instrument_facts=request.execution_instrument_facts,
         execution_eligibility=request.execution_eligibility,
         fee_quote=request.fee_quote,
@@ -361,6 +393,14 @@ def adapt_explicit_manual_quantity_intent(
 ) -> NormalizationResult:
     """Preserve a user term without presenting it as a market observation/fill."""
 
+    observation = adapt_user_execution_term(
+        requested_symbol=requested_symbol,
+        entered_price=entered_price,
+        currency=currency,
+        asset_id=facts.asset_id,
+        canonical_symbol=facts.canonical_symbol,
+        provenance=provenance,
+    )
     return normalize_trade_input(
         _request(
             recommendation_reference=recommendation_reference,
@@ -375,6 +415,7 @@ def adapt_explicit_manual_quantity_intent(
             price_kind=(PriceKind.USER_EXECUTION_TERM if entered_price is not None else PriceKind.UNKNOWN),
             price_source=(PriceSource.USER_ENTERED if entered_price is not None else PriceSource.UNKNOWN),
             currency=currency,
+            price_observation=observation,
             facts=facts,
             eligibility=eligibility,
             fee_quote=fee_quote,
@@ -391,6 +432,8 @@ def adapt_full_holding_sell_intent(
     facts: ExecutionInstrumentFacts,
     eligibility: ExecutionEligibility,
     fee_quote: FeeQuote | None = None,
+    price_observation: ExecutionPriceObservation | None = None,
+    price_freshness_assessment: PriceFreshnessAssessment | None = None,
     provenance: tuple[str, ...] = (),
 ) -> NormalizationResult:
     """Preserve a supplied held-quantity snapshot; never query PortfolioItem."""
@@ -409,6 +452,8 @@ def adapt_full_holding_sell_intent(
             facts=facts,
             eligibility=eligibility,
             fee_quote=fee_quote,
+            price_observation=price_observation,
+            price_freshness_assessment=price_freshness_assessment,
             holding_snapshot=holding_snapshot,
             provenance=("M32.3B full-holding SELL intent",) + holding_snapshot.provenance + provenance,
         )
@@ -423,6 +468,8 @@ def adapt_optimizer_amount_intent(
     facts: ExecutionInstrumentFacts,
     eligibility: ExecutionEligibility,
     valuation_currency: str | None = None,
+    price_observation: ExecutionPriceObservation | None = None,
+    price_freshness_assessment: PriceFreshnessAssessment | None = None,
     provenance: tuple[str, ...] = (),
 ) -> NormalizationResult:
     """Keep an optimizer allocation amount as an incomplete non-quantity intent."""
@@ -435,6 +482,8 @@ def adapt_optimizer_amount_intent(
         eligibility=eligibility,
         allocation_source=AllocationSource.OPTIMIZER_TARGET_ALLOCATION,
         valuation_currency=valuation_currency,
+        price_observation=price_observation,
+        price_freshness_assessment=price_freshness_assessment,
         provenance=("M32.3B optimizer amount-only recommendation",) + provenance,
     )
 
@@ -447,6 +496,8 @@ def adapt_decision_workspace_amount_intent(
     facts: ExecutionInstrumentFacts,
     eligibility: ExecutionEligibility,
     valuation_currency: str | None = None,
+    price_observation: ExecutionPriceObservation | None = None,
+    price_freshness_assessment: PriceFreshnessAssessment | None = None,
     provenance: tuple[str, ...] = (),
 ) -> NormalizationResult:
     """Keep Decision Workspace sizing as incomplete amount-only evidence."""
@@ -459,6 +510,8 @@ def adapt_decision_workspace_amount_intent(
         eligibility=eligibility,
         allocation_source=AllocationSource.DECISION_WORKSPACE_POSITION_SIZING,
         valuation_currency=valuation_currency,
+        price_observation=price_observation,
+        price_freshness_assessment=price_freshness_assessment,
         provenance=("M32.3B Decision Workspace amount-only sizing",) + provenance,
     )
 
@@ -472,6 +525,8 @@ def adapt_holding_fraction_intent(
     facts: ExecutionInstrumentFacts,
     eligibility: ExecutionEligibility,
     fee_quote: FeeQuote | None = None,
+    price_observation: ExecutionPriceObservation | None = None,
+    price_freshness_assessment: PriceFreshnessAssessment | None = None,
     provenance: tuple[str, ...] = (),
 ) -> NormalizationResult:
     """Derive a SELL quantity only from explicit holding evidence and fraction."""
@@ -490,6 +545,8 @@ def adapt_holding_fraction_intent(
             facts=facts,
             eligibility=eligibility,
             fee_quote=fee_quote,
+            price_observation=price_observation,
+            price_freshness_assessment=price_freshness_assessment,
             holding_snapshot=holding_snapshot,
             provenance=(
                 "M32.3B explicit holding-fraction intent",
@@ -504,6 +561,10 @@ def project_execution_plan_normalized_inputs_shadow(
     funding_actions: Sequence[Any],
     facts_by_symbol: Mapping[str, ExecutionInstrumentFacts],
     eligibility_by_symbol: Mapping[str, ExecutionEligibility],
+    price_evidence_by_symbol: Mapping[
+        str,
+        tuple[ExecutionPriceObservation, PriceFreshnessAssessment],
+    ] | None = None,
 ) -> NormalizedTradeInputShadowProjection:
     """Project the unchanged legacy plan into private M32.3B intent evidence.
 
@@ -515,12 +576,14 @@ def project_execution_plan_normalized_inputs_shadow(
 
     results: list[NormalizationResult] = []
     unavailable: list[str] = []
+    price_evidence_by_symbol = price_evidence_by_symbol or {}
     for action in buy_actions:
         symbol = str(action.symbol)
         facts, eligibility = _shadow_contracts(symbol, facts_by_symbol, eligibility_by_symbol)
         if facts is None or eligibility is None:
             unavailable.append(symbol)
             continue
+        observation, freshness = price_evidence_by_symbol.get(symbol, (None, None))
         results.append(
             adapt_decision_workspace_amount_intent(
                 recommendation_reference=f"execution-plan:{action.signal}:{symbol}",
@@ -528,6 +591,8 @@ def project_execution_plan_normalized_inputs_shadow(
                 requested_value=Decimal(str(action.estimated_amount)),
                 facts=facts,
                 eligibility=eligibility,
+                price_observation=observation,
+                price_freshness_assessment=freshness,
                 provenance=("legacy ExecutionPlanResult BuyAction estimated_amount",),
             )
         )
@@ -537,6 +602,7 @@ def project_execution_plan_normalized_inputs_shadow(
         if facts is None or eligibility is None:
             unavailable.append(symbol)
             continue
+        observation, freshness = price_evidence_by_symbol.get(symbol, (None, None))
         snapshot = HoldingQuantitySnapshot(
             quantity=Decimal(str(action.current_shares)),
             observed_at=None,
@@ -551,6 +617,8 @@ def project_execution_plan_normalized_inputs_shadow(
                 holding_fraction=Decimal(str(action.release_pct)),
                 facts=facts,
                 eligibility=eligibility,
+                price_observation=observation,
+                price_freshness_assessment=freshness,
                 provenance=("legacy ExecutionPlanResult FundingAction.release_pct",),
             )
         )
@@ -566,6 +634,8 @@ def _amount_only_intent(
     eligibility: ExecutionEligibility,
     allocation_source: AllocationSource,
     valuation_currency: str | None,
+    price_observation: ExecutionPriceObservation | None,
+    price_freshness_assessment: PriceFreshnessAssessment | None,
     provenance: tuple[str, ...],
 ) -> NormalizationResult:
     return normalize_trade_input(
@@ -582,6 +652,8 @@ def _amount_only_intent(
             eligibility=eligibility,
             allocation_source=allocation_source,
             valuation_currency=valuation_currency,
+            price_observation=price_observation,
+            price_freshness_assessment=price_freshness_assessment,
             provenance=provenance,
         )
     )
@@ -619,6 +691,8 @@ def _request(
     assumptions: tuple[str, ...] = (),
     warnings: tuple[str, ...] = (),
     provenance: tuple[str, ...] = (),
+    price_observation: ExecutionPriceObservation | None = None,
+    price_freshness_assessment: PriceFreshnessAssessment | None = None,
 ) -> TradeInputNormalizationRequest:
     return TradeInputNormalizationRequest(
         recommendation_reference=recommendation_reference,
@@ -657,6 +731,8 @@ def _request(
         assumptions=assumptions,
         warnings=warnings,
         provenance=provenance,
+        price_observation=price_observation,
+        price_freshness_assessment=price_freshness_assessment,
     )
 
 
@@ -744,28 +820,55 @@ def _validate_facts_and_eligibility(
 
 def _validate_price(
     request: TradeInputNormalizationRequest,
+    observation: ExecutionPriceObservation,
+    freshness: PriceFreshnessAssessment | None,
     failures: list[NormalizationFailure],
 ) -> None:
-    if request.unit_price is None:
+    if observation.requested_symbol != request.requested_symbol:
+        failures.append(_failure(
+            NormalizationFailureReason.FACTS_IDENTITY_MISMATCH,
+            "ExecutionPriceObservation requested symbol differs from normalized input",
+        ))
+    facts = request.execution_instrument_facts
+    if (
+        observation.asset_id is not None
+        and facts.asset_id is not None
+        and observation.asset_id != facts.asset_id
+    ) or (
+        observation.canonical_symbol is not None
+        and facts.canonical_symbol is not None
+        and observation.canonical_symbol != facts.canonical_symbol
+    ):
+        failures.append(_failure(
+            NormalizationFailureReason.FACTS_IDENTITY_MISMATCH,
+            "ExecutionPriceObservation identity differs from Registry facts",
+        ))
+    if observation.observed_price is None:
         failures.append(_failure(NormalizationFailureReason.MISSING_PRICE, "unit price is absent"))
-    elif not _positive(request.unit_price):
+    elif not _positive(observation.observed_price):
         failures.append(_failure(NormalizationFailureReason.INVALID_PRICE, "unit price must be a positive Decimal"))
-    if request.price_kind == PriceKind.UNKNOWN or request.price_source == PriceSource.UNKNOWN:
+    if observation.price_type == PriceKind.UNKNOWN or observation.source == PriceSource.UNKNOWN:
         failures.append(_failure(NormalizationFailureReason.PRICE_PROVENANCE_MISSING, "price kind or source is unknown"))
-    if request.observed_at is None or request.received_at is None:
+    if not observation.is_market_observation:
+        failures.append(_failure(
+            NormalizationFailureReason.PRICE_NOT_EXECUTION_EVIDENCE,
+            f"{observation.price_type.value} is reference evidence only",
+        ))
+    if observation.observed_at is None or observation.received_at is None:
         failures.append(_failure(NormalizationFailureReason.PRICE_TIMESTAMP_MISSING, "observed_at and received_at are both required"))
-    if request.market_session == MarketSession.UNKNOWN:
+    if observation.market_session == MarketSession.UNKNOWN:
         failures.append(_failure(NormalizationFailureReason.PRICE_SESSION_UNKNOWN, "market session is unknown"))
-    if request.freshness_assessed_at is None or not request.freshness_policy_reference:
+    if freshness is None or freshness.observation_ref != observation.observation_ref:
         failures.append(_failure(NormalizationFailureReason.FRESHNESS_UNASSESSED, "freshness policy or assessment time is absent"))
-    if request.stale is True:
+    elif freshness.status != PriceFreshnessStatus.CURRENT:
         failures.append(_failure(NormalizationFailureReason.PRICE_STALE, "price evidence is marked stale"))
-    if not request.currency:
+    if not observation.currency:
         failures.append(_failure(NormalizationFailureReason.CURRENCY_UNKNOWN, "price currency is absent"))
 
 
 def _validate_fee_quote(
     request: TradeInputNormalizationRequest,
+    observation: ExecutionPriceObservation,
     failures: list[NormalizationFailure],
 ) -> None:
     quote = request.fee_quote
@@ -776,9 +879,9 @@ def _validate_fee_quote(
         failures.append(_failure(NormalizationFailureReason.SIDE_QUOTE_MISMATCH, "FeeQuote side differs from normalized input"))
     if request.executable_quantity is None or quote.quantity != request.executable_quantity:
         failures.append(_failure(NormalizationFailureReason.QUANTITY_QUOTE_MISMATCH, "FeeQuote quantity differs from executable quantity"))
-    if request.unit_price is None or quote.unit_price != request.unit_price:
+    if observation.observed_price is None or quote.unit_price != observation.observed_price:
         failures.append(_failure(NormalizationFailureReason.PRICE_QUOTE_MISMATCH, "FeeQuote price differs from normalized input"))
-    if not request.currency or quote.currency != request.currency:
+    if not observation.currency or quote.currency != observation.currency:
         failures.append(_failure(NormalizationFailureReason.CURRENCY_QUOTE_MISMATCH, "FeeQuote currency differs from normalized input"))
 
 
@@ -804,8 +907,8 @@ def _normalization_ref(request: TradeInputNormalizationRequest) -> str:
         _decimal_text(request.requested_value),
         request.quantity_source.value,
         request.quantity_confidence.value,
-        _decimal_text(request.unit_price),
-        request.price_kind.value,
+        request.price_observation.observation_ref if request.price_observation else _decimal_text(request.unit_price),
+        request.price_freshness_assessment.assessment_ref if request.price_freshness_assessment else request.price_kind.value,
         request.price_source.value,
         _datetime_text(request.observed_at),
         _datetime_text(request.received_at),
@@ -819,6 +922,63 @@ def _normalization_ref(request: TradeInputNormalizationRequest) -> str:
         quote.quote_ref if quote is not None else "",
     )
     return "nti_" + hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:24]
+
+
+def _price_evidence(
+    request: TradeInputNormalizationRequest,
+) -> tuple[ExecutionPriceObservation, PriceFreshnessAssessment | None]:
+    """Prefer M32.3C contracts; adapt M32.3B raw fields without enrichment."""
+
+    if request.price_observation is not None:
+        return request.price_observation, request.price_freshness_assessment
+    facts = request.execution_instrument_facts
+    observation = build_price_observation(
+        requested_symbol=request.requested_symbol,
+        asset_id=facts.asset_id,
+        canonical_symbol=facts.canonical_symbol,
+        observed_price=request.unit_price,
+        price_type=request.price_kind,
+        source=request.price_source,
+        currency=request.currency,
+        provider="m32.3b_compatibility_input",
+        observed_at=request.observed_at,
+        received_at=request.received_at,
+        market_session=request.market_session,
+        warnings=("raw M32.3B price fields adapted to M32.3C observation",),
+        provenance=request.provenance,
+    )
+    if request.freshness_assessed_at is None or not request.freshness_policy_reference:
+        return observation, None
+    status = (
+        PriceFreshnessStatus.STALE
+        if request.stale is True
+        else PriceFreshnessStatus.CURRENT
+        if request.stale is False
+        else PriceFreshnessStatus.UNKNOWN
+    )
+    age = (
+        request.freshness_assessed_at - observation.observed_at
+        if observation.observed_at is not None
+        else None
+    )
+    assessment_parts = (
+        observation.observation_ref,
+        request.freshness_policy_reference,
+        request.freshness_assessed_at.isoformat(),
+        status.value,
+    )
+    assessment = PriceFreshnessAssessment(
+        contract_version="1",
+        assessment_ref="pxf_" + hashlib.sha256("|".join(assessment_parts).encode("utf-8")).hexdigest()[:24],
+        observation_ref=observation.observation_ref,
+        policy_version=request.freshness_policy_reference,
+        assessed_at=request.freshness_assessed_at,
+        status=status,
+        age=age,
+        reason="caller-supplied M32.3B freshness state",
+        warnings=("compatibility freshness state was not recomputed",),
+    )
+    return observation, assessment
 
 
 def _shadow_contracts(
