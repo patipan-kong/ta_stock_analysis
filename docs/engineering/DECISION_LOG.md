@@ -1184,3 +1184,34 @@ mutation, API/frontend, plan, transaction, fee, ledger, or M31 behavior change.
 M32.3E3R3 requires human-reviewed external authority, trust governance, an
 append-only evidence projection design, and a separate approved write
 milestone. No commit or push was performed.
+
+---
+
+## M32.3E3S2 — Market Session Evidence and Yahoo Chart Shadow Adapter
+
+**Date:** 2026-07-15
+**Decision:** Add a frozen, versioned Market Data-owned
+`MarketSessionEvidence` contract to the default-off M32 live-evidence shadow.
+It retains a provider-labelled price-observation session claim separately from
+the provider response/venue state, schedule/timezone metadata, and any future
+canonical calendar assessment. No execution policy, provider request/legacy
+response, plan result, Registry, transaction, API, frontend, persistence, or
+canonical planning behavior changes.
+
+**Reasoning:** Yahoo Chart commonly omits `marketState`, but an explicit
+`regularMarketPrice` plus `regularMarketTime` pair truthfully supports a
+provider observation-session claim of `REGULAR`. The pair does not establish
+the response-time venue phase, delay, or canonical exchange calendar. Mapping
+missing response state to regular, using local time/symbol/exchange inference,
+or treating `currentTradingPeriod` as an instrument-aware calendar would
+manufacture certainty. A regular observation can coexist with a `CLOSED`
+response state without conflict.
+
+**Impact:** `ExecutionQuoteEnvelope` and `ExecutionPriceObservation` retain
+the exact session-evidence object by identity; their legacy scalar
+`market_session` projects only the observation claim. The private plan shadow
+adds low-cardinality claim/state/basis/availability/calendar-not-available
+diagnostics without identity labels or public output. A Market Calendar
+Foundation remains required before canonical acceptance, and 0/21 governed
+Registry lot coverage remains an independent block. Focused M32.3C/E1/E2/S2
+tests passed (56); no commit or push was performed.

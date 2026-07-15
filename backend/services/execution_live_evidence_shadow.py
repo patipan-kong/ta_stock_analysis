@@ -9,7 +9,7 @@ and the selected provider after its legacy result is final.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import Enum
@@ -152,6 +152,16 @@ class ShadowSymbolDiagnostic:
     residual_value: Decimal | None
     warnings: tuple[str, ...]
     provenance: tuple[str, ...]
+    session_evidence_ref: str | None = None
+    observation_session_claim: str = "UNKNOWN"
+    observation_session_basis: str = "NONE"
+    provider_response_state: str = "UNKNOWN"
+    provider_response_state_raw: str | None = None
+    provider_delay_availability: str = "MISSING"
+    exchange_timezone_availability: str = "MISSING"
+    trading_period_availability: str = "MISSING"
+    calendar_assessment_status: str = "NOT_AVAILABLE"
+    session_evidence_completeness: str = "MISSING"
 
 
 @dataclass(frozen=True)
@@ -166,7 +176,21 @@ class ShadowCanonicalPlanDiagnostic:
     def low_cardinality_labels(self) -> dict[str, int]:
         """Aggregate-only operational labels: never include symbol or asset ID."""
 
-        return dict(self.counts)
+        labels = {f"outcome:{name}": count for name, count in self.counts}
+        for item in self.symbols:
+            for key, value in (
+                ("observation_session_claim", item.observation_session_claim),
+                ("observation_session_basis", item.observation_session_basis),
+                ("provider_response_state", item.provider_response_state),
+                ("provider_delay", item.provider_delay_availability),
+                ("exchange_timezone", item.exchange_timezone_availability),
+                ("trading_period", item.trading_period_availability),
+                ("calendar_assessment", item.calendar_assessment_status),
+                ("session_evidence", item.session_evidence_completeness),
+            ):
+                label = f"{key}:{value}"
+                labels[label] = labels.get(label, 0) + 1
+        return labels
 
 
 def adapt_execution_plan_buy_intent(action: Any, *, plan_reference: str) -> ExecutionPlanShadowIntent:
@@ -291,6 +315,7 @@ def adapt_execution_quote_envelope_to_observation(
         market_session=envelope.market_session,
         exchange_timezone=envelope.exchange_timezone,
         delay=envelope.delay,
+        session_evidence=envelope.session_evidence,
         warnings=envelope.warnings,
         provenance=envelope.provenance + (f"ExecutionQuoteEnvelope={envelope.envelope_ref}",),
     )
@@ -455,7 +480,7 @@ def project_live_execution_plan_shadow(
                 warnings=(f"M32.3E2 shadow evaluation failure: {type(exc).__name__}",),
                 provenance=("M32.3E2 exception-contained per-symbol shadow",),
             )
-        diagnostics.append(diagnostic)
+        diagnostics.append(replace(diagnostic, **_session_diagnostic_values(observation)))
     counts: dict[str, int] = {}
     for item in diagnostics:
         counts[item.outcome.value] = counts.get(item.outcome.value, 0) + 1
@@ -608,6 +633,41 @@ def _outcome_from_policy(outcome: ExecutionPolicyOutcome) -> ShadowDiagnosticOut
         ExecutionPolicyOutcome.EXCLUDED: ShadowDiagnosticOutcome.EXCLUDED,
         ExecutionPolicyOutcome.ERROR: ShadowDiagnosticOutcome.ERROR,
     }.get(outcome, ShadowDiagnosticOutcome.INCOMPLETE)
+
+
+def _session_diagnostic_values(observation: ExecutionPriceObservation) -> dict[str, object]:
+    """Keep session claim/state/calendar evidence distinct in private telemetry."""
+
+    evidence = observation.session_evidence
+    if evidence is None:
+        return {
+            "session_evidence_ref": None,
+            "observation_session_claim": observation.market_session.value,
+            "observation_session_basis": "NONE",
+            "provider_response_state": "UNKNOWN",
+            "provider_response_state_raw": None,
+            "provider_delay_availability": "PRESENT" if observation.delay is not None else "MISSING",
+            "exchange_timezone_availability": "PRESENT" if observation.exchange_timezone else "MISSING",
+            "trading_period_availability": "MISSING",
+            "calendar_assessment_status": "NOT_AVAILABLE",
+            "session_evidence_completeness": "MISSING",
+        }
+    return {
+        "session_evidence_ref": evidence.session_evidence_ref,
+        "observation_session_claim": evidence.observation_session_claim.value,
+        "observation_session_basis": evidence.observation_session_basis.value,
+        "provider_response_state": evidence.provider_reported_state_normalized.value,
+        "provider_response_state_raw": evidence.provider_reported_state_raw,
+        "provider_delay_availability": "PRESENT" if evidence.provider_delay is not None else "MISSING",
+        "exchange_timezone_availability": "PRESENT" if evidence.exchange_timezone else "MISSING",
+        "trading_period_availability": "PRESENT" if evidence.current_trading_period is not None else "MISSING",
+        "calendar_assessment_status": "NOT_AVAILABLE",
+        "session_evidence_completeness": (
+            "COMPLETE"
+            if evidence.observation_session_claim != MarketSession.UNKNOWN
+            else "PARTIAL"
+        ),
+    }
 
 
 def _decimal(value: Any) -> Decimal | None:

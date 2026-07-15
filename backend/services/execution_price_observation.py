@@ -12,7 +12,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from enum import Enum
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
+
+if TYPE_CHECKING:
+    from services.market_data.session_evidence import MarketSessionEvidence
 
 
 _OBSERVATION_CONTRACT_VERSION = "1"
@@ -115,6 +118,9 @@ class ExecutionPriceObservation:
     quality: PriceObservationQuality
     warnings: tuple[str, ...]
     provenance: tuple[str, ...]
+    # M32.3E3S2 retains Market Data-owned session evidence by identity.  The
+    # scalar compatibility field above projects only its observation claim.
+    session_evidence: "MarketSessionEvidence | None" = None
 
     @property
     def is_market_observation(self) -> bool:
@@ -226,9 +232,15 @@ def build_price_observation(
     quality: PriceObservationQuality | None = None,
     warnings: Sequence[str] = (),
     provenance: Sequence[str] = (),
+    session_evidence: "MarketSessionEvidence | None" = None,
 ) -> ExecutionPriceObservation:
     """Build deterministic evidence from supplied fields without enrichment."""
 
+    effective_session = (
+        session_evidence.observation_session_claim
+        if session_evidence is not None
+        else market_session
+    )
     timestamp_quality = timestamp_quality or _timestamp_quality(observed_at, received_at)
     quality = quality or _observation_quality(
         observed_price,
@@ -236,7 +248,7 @@ def build_price_observation(
         currency,
         observed_at,
         received_at,
-        market_session,
+        effective_session,
     )
     normalized_warnings = _unique(warnings)
     normalized_provenance = _unique(provenance)
@@ -254,11 +266,12 @@ def build_price_observation(
         _datetime_text(observed_at),
         _datetime_text(received_at),
         _datetime_text(cached_at),
-        market_session.value,
+        effective_session.value,
         exchange_timezone or "",
         _timedelta_text(delay),
         timestamp_quality.value,
         quality.value,
+        session_evidence.session_evidence_ref if session_evidence is not None else "",
         *normalized_warnings,
         *normalized_provenance,
     )
@@ -277,13 +290,14 @@ def build_price_observation(
         observed_at=observed_at,
         received_at=received_at,
         cached_at=cached_at,
-        market_session=market_session,
+        market_session=effective_session,
         exchange_timezone=_clean_text(exchange_timezone),
         delay=delay,
         timestamp_quality=timestamp_quality,
         quality=quality,
         warnings=normalized_warnings,
         provenance=normalized_provenance,
+        session_evidence=session_evidence,
     )
 
 

@@ -15,6 +15,11 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Sequence
 
 from services.execution_price_observation import MarketSession, PriceKind
+from services.market_data.session_evidence import (
+    MarketSessionEvidence,
+    adapt_yahoo_chart_market_session_evidence,
+    normalize_provider_reported_state,
+)
 
 __all__ = [
     "ExecutionQuoteEnvelope",
@@ -55,6 +60,10 @@ class ExecutionQuoteEnvelope:
     delay: timedelta | None
     warnings: tuple[str, ...]
     provenance: tuple[str, ...]
+    # Compatibility projection only.  It is sourced exclusively from the
+    # retained session evidence's observation-session claim, never from a
+    # provider response/venue state.
+    session_evidence: MarketSessionEvidence | None = None
 
 
 @dataclass(frozen=True)
@@ -84,11 +93,17 @@ def build_execution_quote_envelope(
     delay: timedelta | None = None,
     warnings: Sequence[str] = (),
     provenance: Sequence[str] = (),
+    session_evidence: MarketSessionEvidence | None = None,
 ) -> ExecutionQuoteEnvelope:
     """Build deterministic evidence only from explicit caller-supplied values."""
 
     normalized_warnings = _unique(warnings)
     normalized_provenance = _unique(provenance)
+    effective_session = (
+        session_evidence.observation_session_claim
+        if session_evidence is not None
+        else market_session
+    )
     parts = (
         _CONTRACT_VERSION,
         requested_symbol,
@@ -101,7 +116,7 @@ def build_execution_quote_envelope(
         _datetime_text(observed_at),
         _datetime_text(received_at),
         _datetime_text(cached_at),
-        market_session.value,
+        effective_session.value,
         exchange_timezone or "",
         _timedelta_text(delay),
         *normalized_warnings,
@@ -120,11 +135,12 @@ def build_execution_quote_envelope(
         observed_at=observed_at,
         received_at=received_at,
         cached_at=cached_at,
-        market_session=market_session,
+        market_session=effective_session,
         exchange_timezone=_clean_text(exchange_timezone),
         delay=delay,
         warnings=normalized_warnings,
         provenance=normalized_provenance,
+        session_evidence=session_evidence,
     )
 
 
@@ -140,16 +156,19 @@ def adapt_yahoo_chart_execution_quote(
 
     meta = (result or {}).get("meta") or {}
     observed_at = _parse_datetime(meta.get("regularMarketTime"))
-    session = _market_session(meta.get("marketState"))
+    has_regular_pair = _decimal(meta.get("regularMarketPrice")) is not None and observed_at is not None
     delay_seconds = _decimal(meta.get("exchangeDataDelayedBy"))
     warnings: list[str] = []
     if observed_at is None:
         warnings.append("Yahoo Chart payload has no regularMarketTime")
-    if session == MarketSession.UNKNOWN:
-        warnings.append("Yahoo Chart payload has no recognized market session")
+    if not has_regular_pair:
+        warnings.append("Yahoo Chart payload has no complete regular market price/time pair")
     if not _clean_text(meta.get("currency")):
         warnings.append("Yahoo Chart payload has no provider currency")
-    return build_execution_quote_envelope(
+    # Build the deterministic envelope identity before attaching its derived
+    # evidence.  This avoids a reference cycle while giving the evidence an
+    # exact envelope reference.
+    envelope = build_execution_quote_envelope(
         requested_symbol=requested_symbol,
         provider_symbol=provider_symbol or meta.get("symbol"),
         provider_id="yahoo_chart",
@@ -159,11 +178,24 @@ def adapt_yahoo_chart_execution_quote(
         currency=_clean_text(meta.get("currency")),
         observed_at=observed_at,
         received_at=received_at,
-        market_session=session,
+        market_session=(MarketSession.REGULAR if has_regular_pair else MarketSession.UNKNOWN),
         exchange_timezone=_clean_text(meta.get("exchangeTimezoneName")),
         delay=(timedelta(seconds=float(delay_seconds)) if delay_seconds is not None else None),
         warnings=warnings,
         provenance=("Yahoo Chart chart.result[0].meta",),
+    )
+    session_evidence = adapt_yahoo_chart_market_session_evidence(
+        result,
+        envelope_ref=envelope.envelope_ref,
+        requested_symbol=requested_symbol,
+        provider_symbol=provider_symbol or meta.get("symbol"),
+        provider_version=provider_version,
+        received_at=received_at,
+    )
+    return replace(
+        envelope,
+        market_session=session_evidence.observation_session_claim,
+        session_evidence=session_evidence,
     )
 
 
@@ -222,6 +254,7 @@ def adapt_cached_execution_quote(
         delay=envelope.delay,
         warnings=envelope.warnings,
         provenance=envelope.provenance + ("MarketDataCache.fetched_at is cache provenance",) + tuple(provenance),
+        session_evidence=envelope.session_evidence,
     )
 
 
@@ -242,20 +275,9 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 
 def _market_session(value: Any) -> MarketSession:
-    key = _clean_text(value)
-    if key is None:
-        return MarketSession.UNKNOWN
-    return {
-        "REGULAR": MarketSession.REGULAR,
-        "REGULAR_MARKET": MarketSession.REGULAR,
-        "PRE": MarketSession.PRE_MARKET,
-        "PREPRE": MarketSession.PRE_MARKET,
-        "PRE_MARKET": MarketSession.PRE_MARKET,
-        "POST": MarketSession.AFTER_HOURS,
-        "POSTPOST": MarketSession.AFTER_HOURS,
-        "AFTER_HOURS": MarketSession.AFTER_HOURS,
-        "CLOSED": MarketSession.CLOSED,
-    }.get(key.upper(), MarketSession.UNKNOWN)
+    """Compatibility wrapper for legacy callers of this private helper."""
+
+    return normalize_provider_reported_state(value)
 
 
 def _decimal(value: Any) -> Decimal | None:

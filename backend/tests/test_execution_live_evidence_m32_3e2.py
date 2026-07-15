@@ -196,7 +196,11 @@ def test_complete_buy_builds_policy_normalized_input_quote_and_leg_after_lot_con
     assert item.fee_quote_status == "QUOTED"
     assert item.residual_quantity == Decimal("5.0")
     assert provider.calls == [("KBANK.BK",)]
-    assert diagnostic.low_cardinality_labels() == {"COMPLETE": 1}
+    labels = diagnostic.low_cardinality_labels()
+    assert labels["outcome:COMPLETE"] == 1
+    assert labels["observation_session_claim:REGULAR"] == 1
+    assert labels["provider_response_state:REGULAR"] == 1
+    assert labels["calendar_assessment:NOT_AVAILABLE"] == 1
 
 
 def test_missing_capability_and_registry_failure_remain_incomplete():
