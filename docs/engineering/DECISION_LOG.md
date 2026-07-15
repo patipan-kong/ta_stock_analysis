@@ -1128,3 +1128,25 @@ persistence behavior changed. M32.3E2 still needs canonical market evidence,
 Registry lot/fractional capability coverage, holding/adjudication evidence,
 fee coverage, and an approved operational policy before live shadow or
 canonical planning. No commit or push was performed.
+
+---
+
+## M32.3E2 Live Evidence Shadow
+
+**Date:** 2026-07-15
+**Decision:** Add a default-off, post-result execution-plan diagnostic that can
+preserve live provider evidence and evaluate the existing M32.3E1 contracts.
+It is not a canonical plan and cannot change legacy plan output, funding,
+optimizer behavior, transactions, fees, ledger state, APIs, or persistence.
+**Reasoning:** M32.3E1 has pure pricing/sizing/fee lifecycle contracts, but
+legacy quote DTOs discard provider observation time, session, and currency.
+An additive Market Data envelope exposes that evidence without changing the
+legacy quote interface. Missing evidence remains typed incomplete; it is not
+filled from average cost, previous close, receipt/cache time, Registry currency,
+or a symbol heuristic.
+**Impact:** `M32_LIVE_EVIDENCE_SHADOW=ON` enables bounded, exception-contained
+provider evidence collection only after `ExecutionPlanResult` is final. The
+Registry facts batch is reused, fee quoting occurs only after a constrained
+quantity exists, and diagnostics are log-only. M32.3E3 still requires coverage,
+currency, funding, canonical-plan, and transaction-admission decisions. No
+commit or push was performed.

@@ -42,6 +42,8 @@ from services.execution_price_observation import (
 from services.normalized_trade_input import (
     project_execution_plan_normalized_inputs_shadow,
 )
+from services.execution_live_evidence_config import live_evidence_shadow_enabled
+from services.execution_live_evidence_shadow import project_live_execution_plan_shadow
 
 log = logging.getLogger(__name__)
 
@@ -373,6 +375,36 @@ def build_execution_plan(
                     }
                 },
             )
+            # M32.3E2 is separately opt-in because it can perform bounded live
+            # Market Data I/O.  It remains entirely post-result and private:
+            # no outcome can affect the legacy plan, response, or persistence.
+            if live_evidence_shadow_enabled():
+                from services.market_data.provider import get_provider
+
+                live_diagnostic = project_live_execution_plan_shadow(
+                    plan_reference=f"execution-plan:{portfolio_id}:{workspace_id}",
+                    buy_actions=result.buy_actions,
+                    funding_actions=result.funding_actions,
+                    holdings_by_symbol={item.symbol: item for item in portfolio_items},
+                    facts_by_symbol=facts_by_symbol,
+                    eligibility_by_symbol=eligibility_by_symbol,
+                    provider=get_provider(),
+                    assessed_at=shadow_at,
+                )
+                # Deliberately aggregate-only: symbols and Registry IDs never
+                # enter metric labels or the plan's public response.
+                log.debug(
+                    "live execution-evidence shadow path=EXECUTION_PLAN counts=%s",
+                    live_diagnostic.low_cardinality_labels(),
+                    extra={
+                        "execution_live_evidence_shadow": {
+                            "plan_reference": live_diagnostic.plan_reference,
+                            "assessed_at": live_diagnostic.assessed_at.isoformat(),
+                            "policy_bundle_ref": live_diagnostic.policy_bundle_ref,
+                            "counts": live_diagnostic.low_cardinality_labels(),
+                        }
+                    },
+                )
     except Exception as exc:
         log.warning(
             "execution eligibility shadow failed at EXECUTION_PLAN boundary: %s",
