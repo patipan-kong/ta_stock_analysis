@@ -1242,3 +1242,35 @@ behavior remain unchanged. Side-aware selection still requires a separately
 approved provider and policy milestone; Registry lots, calendar,
 currency/cash-floor, funding, and admission blockers remain. No commit or push
 was performed.
+
+---
+
+## M32 — Cost-aware Execution Planning Epic Closeout
+
+**Date:** 2026-07-15
+
+**Decision:** Close M32 as foundation complete: its immutable fee, input,
+price/session/market-evidence, policy, trade-leg, read-only capability, and
+default-off shadow infrastructure is complete. Authoritative canonical
+execution planning is explicitly deferred and remains **NO-GO**.
+
+**Reasoning:** The remaining gates are not absent M32 contracts. They require
+external/governed Registry lot and fractional evidence, a reviewed side-aware
+timestamped quote provider, a Market Calendar, Portfolio currency/cash-floor
+and net-funding ownership, transaction admission/requote, product lifecycle,
+and an observation/rollback window. The current Registry has no governed
+positive lot coverage and the Yahoo Chart/SET path is last-price-only; typed
+incomplete/deferred results are intentional safety outcomes, not defects to
+mask with defaults or weaker policy.
+
+**Impact:** No further M32 implementation should proceed merely to increase
+milestone count. `M32_LIVE_EVIDENCE_SHADOW` remains default-off and may
+continue only as bounded, post-result, private evidence tooling. The legacy
+`ExecutionPlanResult` and transaction compatibility fee path remain
+authoritative. M32 may reopen only when an explicit adoption-gate trigger is
+approved: governed capability evidence, reviewed side-aware provider evidence,
+calendar, portfolio/net-funding inputs, transaction admission/requote,
+canonical API/history decision, and observation/rollback proof as applicable.
+M33 may begin as an execution-intent snapshot/lifecycle foundation without
+claiming that a M32 shadow plan is executable. No production behavior, data,
+commit, or push changed.
