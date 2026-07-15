@@ -36,6 +36,9 @@ from services.execution_eligibility_shadow import (
     resolve_execution_eligibility_shadow_facts,
 )
 from services.execution_trade_leg import project_execution_plan_trade_legs_shadow
+from services.normalized_trade_input import (
+    project_execution_plan_normalized_inputs_shadow,
+)
 
 log = logging.getLogger(__name__)
 
@@ -315,6 +318,31 @@ def build_execution_plan(
                         ],
                         "unprojectable_symbols": list(
                             leg_projection.unprojectable_symbols
+                        ),
+                    }
+                },
+            )
+            # M32.3B is a separate post-result, amount/quantity-intent
+            # diagnostic.  It reuses the same facts batch and deliberately
+            # preserves amount-only BUY actions as incomplete rather than
+            # inventing units, a price, a timestamp, or a quote.  It does not
+            # modify the M32.2 projection or any legacy plan output.
+            normalized_projection = project_execution_plan_normalized_inputs_shadow(
+                result.buy_actions,
+                result.funding_actions,
+                facts_by_symbol,
+                eligibility_by_symbol,
+            )
+            log.debug(
+                "normalized trade-input shadow path=EXECUTION_PLAN complete=%d incomplete=%d unavailable=%d",
+                normalized_projection.complete_count,
+                len(normalized_projection.results) - normalized_projection.complete_count,
+                len(normalized_projection.unavailable_symbols),
+                extra={
+                    "normalized_trade_input_shadow": {
+                        "failure_counts": normalized_projection.failure_counts(),
+                        "unavailable_symbols": list(
+                            normalized_projection.unavailable_symbols
                         ),
                     }
                 },
