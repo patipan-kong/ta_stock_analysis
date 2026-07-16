@@ -1274,3 +1274,37 @@ canonical API/history decision, and observation/rollback proof as applicable.
 M33 may begin as an execution-intent snapshot/lifecycle foundation without
 claiming that a M32 shadow plan is executable. No production behavior, data,
 commit, or push changed.
+
+---
+
+## M33.1 - Execution Intent Snapshot and Lifecycle Foundation
+
+**Date:** 2026-07-16
+
+**Decision:** Define execution intent as a stable, portfolio-scoped identity
+with immutable terms revisions and append-only lifecycle transitions. Keep
+recommendation evidence, human decision, execution intent, plan/shadow
+diagnostics, simulated outcomes, actual transactions, and replayed portfolio
+state as separate records. Actual partial/completed status must be derived from
+admitted transaction evidence, never asserted from approval, a shadow, or a
+transaction metadata link. M33.1 is design-only; no model, migration, endpoint,
+writer, backfill, or production behavior is added.
+
+**Reasoning:** The current `UserExecutionDecision` mixes human verdicts,
+system-authored expiry, manual divergence, and the outcome-like
+`PARTIAL_EXECUTION` label. It does not uniquely freeze the exact terms the
+human intended, enforce one lifecycle, or prove execution. Current shadows
+also have heterogeneous sources and mutable/regenerable projections. Mapping
+those records automatically into a persisted intent model would manufacture
+authority for ambiguous legacy data. A pure contract milestone must establish
+identity, revision, provenance, transition, terminal-state, expiry,
+supersession, and idempotency semantics before persistence or dual-write.
+
+**Impact:** `M32_EPIC_CLOSEOUT.md` remains authoritative and M32 stays closed;
+canonical execution planning remains NO-GO. Existing decision statuses,
+recommendation expiry, approval-triggered shadow behavior, transaction
+metadata linkage, portfolio mutation, replay, APIs, and UI remain unchanged.
+The next bounded milestone is an ORM-free immutable intent contract and pure
+transition validator with tests. Persistence, legacy adapters, transaction
+attribution, fulfillment projection, and product adoption require later,
+separately approved milestones.
