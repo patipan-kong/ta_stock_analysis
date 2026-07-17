@@ -1375,3 +1375,39 @@ legacy conversion, or production import is added. M32 remains closed and
 canonical execution planning remains NO-GO. The next bounded milestone is a
 pure, ORM-free authority verifier and reconfirmation contract with fixtures,
 not a legacy adapter or persistence rollout.
+
+---
+
+## M33.6 - Authority Evidence Availability and Issuer Governance Study
+
+**Date:** 2026-07-17
+
+**Decision:** Existing historical recommendation and decision evidence cannot
+reach `CERTIFIED_EXACT` or `CERTIFIED_PROPOSAL_ONLY`. Historical records may at
+most seed an explicitly policy-enabled, warning-rich `UNVERIFIABLE` proposal
+that receives fresh human reconfirmation; rejected and expired decisions
+remain out of scope, and conflicting cases remain non-proposal. For prospective
+decisions, prefer direct fresh M33.2 approval of a predetermined frozen
+snapshot id and content hash. Do not introduce certificate infrastructure
+unless a later named relying party or compliance requirement justifies a
+separate trust domain. Persistence readiness is
+`PROSPECTIVE_CAPTURE_DESIGN_REQUIRED`.
+
+**Reasoning:** Repository and configured-development-database inspection found
+77 legacy decisions, including 21 `APPROVED`, but zero decision-owned
+allocation payloads; no persisted actor; no actor-scoped authorization;
+no frozen displayed/accepted payload digest; naive timestamps; no request or
+correlation identity; and no audit, archive, certificate, trust, or revocation
+store. The frontend submits only a decision label/notes, authentication reduces
+the JWT to boolean validity, and backups/sync/shadows/transactions cannot fill
+the missing authority. Signing those mutable facts later would authenticate a
+new statement, not prove the historical human act. M33.2 already supplies the
+needed direct approval invariant for new decisions, so certificates add value
+only for an independently justified relying system.
+
+**Impact:** M33 does not proceed to authority or reconfirmation persistence.
+The next bounded milestone is a design-only prospective human-identity,
+authorization, frozen-display, direct-approval, correlation, and atomicity
+contract. No code, model, migration, endpoint, frontend, writer, signing/key
+operation, adapter, legacy conversion, production behavior, or Graphify output
+changes. M32 remains closed and canonical execution planning remains NO-GO.
