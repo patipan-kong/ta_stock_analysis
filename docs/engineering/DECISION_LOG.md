@@ -1447,3 +1447,40 @@ repository, API, frontend, writer, identity store, runtime wiring, certificate,
 legacy adapter, snapshot, transition, Graphify output, or production behavior
 changes in M33.7. M32 remains closed and canonical execution planning remains
 NO-GO.
+
+---
+
+## M33.8 - Stable Human Identity and Scoped Authorization Foundation
+
+**Date:** 2026-07-17
+
+**Decision:** Keep account, credential, authentication/session lifecycle,
+actor status, workspace membership, role/grant management, portfolio
+permission, delegation, and impersonation in an owning Application Identity
+and Access domain. M33 consumes only immutable namespaced references and
+caller-supplied point-in-time facts. A human-review authority binding is valid
+only when an individually authenticated `HUMAN`, current active actor/session/
+credential status, exact workspace/portfolio scope, and current `ALLOW` for
+`EXECUTION_INTENT_REVIEW` all pass one pure fail-closed validator. Hash the
+exact validated actor, authentication, current-status, authority, scope,
+permission, time, and policy facts under a separate M33.8 grammar for later
+command/audit binding.
+
+**Reasoning:** M33.7 identified identity as a prerequisite but did not specify
+the consuming contract or prove that it could remain outside M33 persistence.
+Separating authentication event, current status, and authorization fact
+prevents a once-valid token from overriding later disablement or revocation.
+Exact namespaces and scope prevent default-workspace/current-owner inference;
+explicit individual credential and direct-subject fields make the current
+shared credential ineligible. A separate canonical binding hash lets a future
+approval receipt prove which external facts were validated without changing
+M33.2 snapshot content hashing or M33.7 review-payload hashing.
+
+**Impact:** `backend/services/execution_intent_identity.py` implements frozen,
+ORM-free facts, canonical hashes, and pure `validate_human_authority()`;
+`backend/tests/test_execution_intent_identity_m33_8.py` supplies the fail-
+closed fixture matrix. Identity persistence and a real provider/owner remain
+prerequisites; no user/session/grant model, migration, login/token change, API,
+frontend, M33 persistence, runtime authorization, certificate, adapter,
+snapshot, transition, Graphify output, or production behavior is added. M32
+remains closed and canonical execution planning remains NO-GO.
