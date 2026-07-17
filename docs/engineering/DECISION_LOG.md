@@ -1484,3 +1484,45 @@ prerequisites; no user/session/grant model, migration, login/token change, API,
 frontend, M33 persistence, runtime authorization, certificate, adapter,
 snapshot, transition, Graphify output, or production behavior is added. M32
 remains closed and canonical execution planning remains NO-GO.
+
+---
+
+## M33.9 - Identity Authority Provider Selection and Integration Feasibility
+
+**Date:** 2026-07-17
+
+**Decision:** Select a hybrid identity/authorization ownership direction for
+prospective M33 human approval. A managed identity provider owns individual
+human accounts, authentication, sessions, disablement, and recovery. An
+application-owned Identity and Authorization domain owns provider-to-actor
+binding, workspace membership, direct portfolio grants, explicitly versioned
+workspace inheritance, resource status, authorization policy, and immutable
+point-in-time authority facts. M33 consumes only the resulting M33.8 facts and
+hashes. Clerk is the first non-production proof-of-concept target; Supabase
+Auth is the managed alternate; Keycloak is conditional on a confirmed self-
+hosting/control requirement. No production provider is adopted. Readiness is
+`PROVIDER_PROOF_OF_CONCEPT_REQUIRED`.
+
+**Reasoning:** The current shared credential cannot identify or revoke one
+human and is ineligible for M33.8. Building application-local credentials,
+recovery, MFA/step-up, sessions, disablement, abuse controls, key rotation,
+and incident response would be substantially larger than the bounded approval
+domain. A managed provider fits the split Next.js/FastAPI deployment, while
+application-owned grants preserve exact workspace/portfolio semantics, avoid
+high-cardinality token claims, and support approval-time revocation. Official
+provider documentation shows credible subject/session/JWKS/current-status
+primitives, but no configured provider has yet proven exact recent-
+authentication time, synchronous disablement/session revocation, or the
+deterministic credential/status version required by M33.8. An application-
+created recent-authentication receipt and synchronous provider/application
+checks must be proven before implementation design.
+
+**Impact:** The next bounded milestone is an isolated, synthetic,
+non-production managed-provider proof of concept, not identity or M33
+persistence. Provider outage, authorization-store outage, stale status, or
+unknown revocation blocks approval; separately governed read-only access may
+continue. No code, model, migration, login/token change, session/grant store,
+API, frontend, runtime wiring, provider tenant, production secret, approval
+endpoint, M33 persistence, certificate, legacy adaptation, snapshot,
+transition, Graphify output, or production behavior is added. M32 remains
+closed and canonical execution planning remains NO-GO.
