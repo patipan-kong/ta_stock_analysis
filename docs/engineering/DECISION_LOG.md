@@ -1411,3 +1411,39 @@ authorization, frozen-display, direct-approval, correlation, and atomicity
 contract. No code, model, migration, endpoint, frontend, writer, signing/key
 operation, adapter, legacy conversion, production behavior, or Graphify output
 changes. M32 remains closed and canonical execution planning remains NO-GO.
+
+---
+
+## M33.7 - Prospective Human Authority and Direct Approval Capture Design
+
+**Date:** 2026-07-17
+
+**Decision:** Prospective M33 approval must bind one stable, currently
+authorized human to one exact frozen M33.2 snapshot id and content hash, one
+canonical review-payload digest/display receipt, one exact workspace/portfolio
+scope, and one expected lifecycle sequence. The current shared-credential
+authentication path cannot supply authoritative actor or grant facts, so
+readiness is `IDENTITY_PREREQUISITE_REQUIRED`. The smallest future MVP is
+`MANUAL_INDEPENDENT` target-weight review with direct approve/reject, explicit
+expiry, and a durable internal audit receipt. Optimizer conversion, historical
+proposals, target-value terms, supersession, certificates, and execution
+behavior are deferred.
+
+**Reasoning:** Current JWT middleware reduces authentication to boolean token
+validity, discards the subject, and operates over one default workspace with no
+stable user, authentication-event, role/grant, portfolio permission, or
+disabled-user fact. The optimizer UI displays mutable recommendation-derived
+data and the decision endpoint records no exact M33.2 snapshot/hash, display
+digest, actor, idempotency key, or expected lifecycle sequence. Adding
+persistence first would make a shared credential appear to be a human
+authority and would leave approval vulnerable to stale displays and duplicate
+or racing decisions. A separate review digest and command receipt can add
+display/identity/audit bindings without changing M33.2 content hashing or
+transition semantics.
+
+**Impact:** The next bounded milestone is a stable-human-identity and scoped-
+authorization foundation, design/pure-contract only. No code, ORM, migration,
+repository, API, frontend, writer, identity store, runtime wiring, certificate,
+legacy adapter, snapshot, transition, Graphify output, or production behavior
+changes in M33.7. M32 remains closed and canonical execution planning remains
+NO-GO.
