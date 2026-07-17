@@ -1564,3 +1564,37 @@ SDK, tenant, secret, account, login/token change, ORM, migration, API,
 frontend, runtime adapter, authorization store, M33 persistence, snapshot,
 transition, certificate, legacy adaptation, Graphify output, or production
 behavior. M32 remains closed and canonical execution planning remains NO-GO.
+
+---
+
+## M33.11 - Supabase Auth Security-State and Assurance Proof of Concept
+
+**Date:** 2026-07-17
+
+**Decision:** Stop M33 runtime adoption. Readiness is `STOP_M33_RUNTIME` because
+the final bounded provider-feasibility milestone had no approved
+non-production Supabase configuration and no available Supabase CLI, Docker,
+or Podman environment in which to produce the mandatory empirical evidence.
+Official Supabase claims, session, user, MFA, and signing-key documentation is
+candidate design evidence only; it does not prove direct-human authentication
+occurrence, recovery exclusion, current user/session status, revocation races,
+a complete credential-security revision, or fail-closed outage/key behavior.
+
+**Reasoning:** M33.10 permitted implementation design only after a synthetic
+provider environment passed every mandatory current-status and assurance
+fixture. M33.11 found no approved provider configuration or local isolated
+stack, executed zero provider fixtures, and did not fabricate results from
+documentation or self-invented adapter data. The unchanged M33.8 suite remains
+green (106 passed), proving the pure consuming boundary but not that Supabase
+can populate it. Under the explicit final decision rule, any mandatory
+unproved property requires the stop result rather than another provider study
+or weaker validation.
+
+**Impact:** M33.1-M33.8 remain pure, non-adopted foundations and current
+product behavior remains outside M33 human-approval authority. Do not add
+prospective M33 identity/authorization, review, intent, lifecycle, approval,
+or certificate persistence/runtime; do not investigate a third provider
+without a new externally imposed requirement; do not attribute legacy
+activity; and do not weaken M33.8. M33.11 adds only its implementation report
+and this decision entry. M32 remains closed and canonical execution planning
+remains NO-GO.
