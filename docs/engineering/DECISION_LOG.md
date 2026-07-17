@@ -1308,3 +1308,40 @@ The next bounded milestone is an ORM-free immutable intent contract and pure
 transition validator with tests. Persistence, legacy adapters, transaction
 attribution, fulfillment projection, and product adoption require later,
 separately approved milestones.
+
+---
+
+## M33.2 - Pure Execution Intent Contract and Transition Validator
+
+**Date:** 2026-07-16
+
+**Decision:** `ExecutionIntentSnapshot.content_hash` covers only what a human
+reviewed: `terms_schema_version`, `intent_kind`, `terms` (allocations
+canonically sorted by `(symbol, side)`), `workspace_id`, `portfolio_id`,
+`effective_at`, `expires_at`, and `source_provenance` (canonically sorted).
+It deliberately excludes `snapshot_id`, `intent_id`, `revision`,
+`supersedes_snapshot_id`, `created_by_actor`, and `recorded_at` as
+lineage/bookkeeping metadata rather than reviewed content. Ledger-derived
+fulfillment (`assess_fulfillment`) is coverage-based (symbol/side presence),
+not quantity-based, because M33 terms carry a target weight/value, not an
+admission-ready quantity.
+
+**Reasoning:** M33.1 section 8.4 specified that `content_hash` is "a
+deterministic hash of canonical immutable content" without enumerating the
+exact field set. Excluding identity/lineage/actor/recorded-at fields lets a
+resumed-and-re-approved snapshot with unchanged terms keep the same content
+hash across revisions, while approval binding still uses the exact
+`snapshot_id` in addition to the hash (M33.1 §8.13), so this does not weaken
+approval-hash binding. Quantity-aware fulfillment reconciliation was
+explicitly deferred rather than guessed, since M33 terms do not carry an
+executable quantity.
+
+**Impact:** `backend/services/execution_intent_contracts.py` and
+`backend/services/execution_intent_transitions.py` implement pure,
+ORM-free contracts and a pure lifecycle transition validator only; see
+`docs/implementation/M33_2_pure_execution_intent_contracts.md`. No model,
+migration, endpoint, writer, or runtime adoption is introduced; M32 remains
+closed and canonical execution planning remains NO-GO. A future adapter
+milestone (M33.3) should study which legacy `RecommendationSnapshot`/
+`UserExecutionDecision` rows can honestly produce a complete intent snapshot
+before any persistence milestone is proposed.
