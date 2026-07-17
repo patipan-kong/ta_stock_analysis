@@ -1,0 +1,12 @@
+[
+  {
+    "regular_last": true,
+    "bid": false,
+    "ask": false,
+    "sizes": false,
+    "quote_timestamp": false,
+    "payload_delay": false,
+    "currency": true,
+    "session": true
+  }
+]

@@ -1,0 +1,26 @@
+{
+  "yahoo_regular_last": {
+    "semantic_kind": "PROVIDER_REGULAR_LAST",
+    "price": "10.00",
+    "currency": "THB",
+    "observed_at": "2026-07-15T05:00:00+00:00"
+  },
+  "complete_two_sided_book": {
+    "bid": "10.00",
+    "bid_size": "100",
+    "ask": "10.10",
+    "ask_size": "200",
+    "quote_observed_at": "2026-07-15T05:00:00+00:00",
+    "currency": "THB"
+  },
+  "missing_quote_timestamp": {
+    "bid": "10.00",
+    "ask": "10.10",
+    "currency": "THB"
+  },
+  "approved_delay": {
+    "delay_seconds": 900,
+    "approval_state": "APPROVED",
+    "confidence": "VERIFIED"
+  }
+}

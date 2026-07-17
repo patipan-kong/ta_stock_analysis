@@ -1003,3 +1003,598 @@ Open Engineering Issues
 **Reasoning:** Refusing to mint is the only evidence-compliant result when the platform knows a spelling is operationally used but cannot prove the listing identity and structural type. Treating repeated use, sector labels, `.BK`, or numeric suffixes as authority would recreate the local execution taxonomy M31 is removing. A deterministic quarantine artifact makes the missing adjudication explicit and reviewable without turning uncertainty into data.
 
 **Impact:** Added `services/execution_registry_wave1.py`, `scripts/execution_registry_wave1.py`, focused M31.6 tests, the reviewed manifest/preflight artifacts, and `docs/implementation/M31_6_registry_remediation_wave1.md`; updated only the preparation-time remediation runner for candidate cardinality and idempotency. No production execution boundary imports the Wave 1 tooling. Verification: focused M31.6 12 passed; combined M31.1–M31.6 70 passed; Registry/bootstrap 207 passed; portfolio transaction/accounting 103 passed; broad optimizer/execution/timing 254 passed with nine pre-existing stale-test failures (four missing `_consensus_engine`'s leading argument and five missing `OverrideAttribution.override_type`). No schema, migration, API, frontend, optimizer, plan, transaction, fee, funding, compatibility, or cutover-mode behavior changed. No commit or push was performed. Blocking cutover remains NO-GO.
+
+---
+
+## M32.1 - Versioned FeeQuote Foundation and Ledger Parity
+
+**Date:** 2026-07-14
+**Problem:** Fee arithmetic, automatic schedule selection, and posting were coupled. The raw-symbol selector returned module constants even after `register_profile()` replaced the corresponding registry entry. Future cost-aware planning needs an immutable refusal-capable quote without changing current ledger math or treating unresolved Registry facts as free/SET trades.
+
+**Decision:**
+- Added frozen, versioned `FeeSchedule` and `FeeQuote` contracts, typed unavailable reasons, percentage/rounding rules, deterministic references, exact Decimal-string serialization, signed cash effects, and provenance. Unavailable quotes contain no monetary or schedule placeholders.
+- Made `calculate_fee_components()` the sole implementation of commission, trading fee, clearing fee, VAT, and four-decimal `ROUND_HALF_UP`. `calculate_fee_quote()` applies BUY/SELL sign; `calc_fees()` is a compatibility projection. Pure calculation reads no ORM, database, network, resolver, environment, or clock.
+- Added facts-backed selection. Resolved tradable SET/THB listings select SET or DR version 1 from authoritative form; unknown, ambiguous, reference/non-tradable, Registry-failure, and unsupported-listing outcomes return typed unavailable quotes. No raw-symbol rule exists in the authoritative module.
+- Isolated the old DR regex/fallback-to-SET behavior in `broker_fees_compat.py`. Current BUY/SELL writes use this named path until Registry coverage permits adoption; it cannot synthesize facts and is unavailable to the planning selector.
+- Unified profile and schedule registries. Registering either projection updates the other, and automatic compatibility resolution fetches the selected ID from the registry rather than a module constant.
+- Refactored BUY/SELL to consume a posting-time quote while preserving exact existing fees, taxes, net `total_amount`, cash, cost basis, realized P&L, response keys/types, and fee breakdown. Quotes are neither persisted nor exposed. Replay still consumes persisted net totals. Admin historical recalculation now reaches the shared formula through its existing adapter, but its unversioned mutation risk is explicitly unresolved.
+- Added only missing imports for already-present Stage R1 transaction consultation references. Before editing, `test_fee_accounting.py` failed collection with `NameError: RuntimeConsultationLog`; no consultation behavior changed.
+
+**Reasoning:** Separating authoritative selection, compatibility selection, and arithmetic makes the temporary fallback visible/deletable, keeps equations single-sourced, preserves ledger parity during incomplete M31 coverage, and prevents unsupported venues or unresolved identities from receiving confident quotes in future planning.
+
+**Impact:** Added `backend/services/broker_fees_compat.py`, `backend/tests/test_fee_quote_m32_1.py`, and `docs/implementation/M32_1_fee_quote_foundation.md`; refactored `backend/services/broker_fees.py` and BUY/SELL fee consumption in `backend/services/portfolio_transactions.py`. Verification: focused fee/quote 58 passed; transaction/write/replay 198 passed; M31 facts/consumers 88 passed; optimizer/execution 91 passed with the same four stale `_consensus_engine(l2, l3)` failures; transaction capability shadow 9 passed with one pre-existing expectation for a BUY runtime-consultation call absent from baseline production. Python compilation and `git diff --check` pass. No schema, migration, optimizer, funding, execution-plan, evaluation, frontend, M31 mode, eligibility enforcement, or public response change was introduced. No commit or push was performed.
+
+---
+
+## M32.2 - Constrained Trade Legs and Shadow Cost-Aware Planning
+
+**Date:** 2026-07-14
+**Problem:** Existing execution-plan projections use gross money but have no immutable quantity/price/fee contract. M32.1 provides a facts-backed `FeeQuote`, but neither legacy plan can consume it authoritatively without changing funding arithmetic, cash totals, or API behavior.
+
+**Decision:**
+- Added the frozen, versioned `ExecutionTradeLeg` contract and its sole `ExecutionTradeLegBuilder` in `services.execution_trade_leg`. A leg retains the caller-supplied `ExecutionInstrumentFacts`, `ExecutionEligibility`, and `FeeQuote` objects, then exposes derived identity, side, exact requested/executable `Decimal` quantities, quote-backed gross/cost/net effects, funding role, no-op lot/fractional summaries, warnings, provenance, and completeness.
+- The builder is pure: it does not resolve Registry identity, access ORM, classify a symbol, select/recalculate a fee, read a clock, or perform financial adjustment. Successful quote side/quantity/price must match the legacy input; unavailable quotes yield an explicit incomplete leg with no monetary values rather than a free/default estimate. M32.2 warnings are sourced only from existing facts, eligibility, and quote contracts.
+- Added a post-result execution-plan diagnostic. It reuses the existing M31.3 single batched facts resolution and evaluates pure eligibility. Priceable active legacy `SELL`/`REDUCE` funding actions are projected with facts-backed quotes and logged with unchanged legacy gross, quote gross, estimated cost, and signed net cash. It runs after `ExecutionPlanResult` is complete and returns nothing into the Pydantic response.
+- Current BUY actions remain explicitly unprojectable in shadow because they expose a gross allocation but no quantity or price. M32.2 logs that limitation instead of manufacturing an executable quantity. Shadow failures remain exception-contained and cannot alter actions, funding, cash arithmetic, warnings, status, persistence, or API output.
+
+**Impact:** Added `backend/services/execution_trade_leg.py`, `backend/tests/test_execution_trade_leg_m32_2.py`, and `docs/implementation/M32_2_trade_leg_foundation.md`; additively updated only `backend/services/execution_plan.py`'s post-result shadow block. No ledger posting, optimizer recommendation, broker fee, execution-plan response field, frontend, persistence model, migration, evaluation, M31 enforcement, or compatibility behavior changed. M32.3 still requires normalized BUY/SELL price/quantity evidence, price freshness, lot/fractional and FX/base-currency policies, net funding arithmetic, quote lifecycle, and canonical plan boundary design before cutover. No commit or push was performed.
+
+---
+
+## M32.3B - Normalized Trade Input and Quantity-Intent Foundation
+
+**Date:** 2026-07-14
+**Problem:** M32.2 has a safe shadow leg only when a legacy caller already provides both units and a price. Current optimizer and Decision Workspace BUY paths instead provide gross allocation amounts, while funding paths have legacy shares/fractions with no canonical market-price evidence. Converting either into executable units now would silently choose a price, currency, freshness/session rule, or lot policy that M32.3A explicitly left unresolved.
+
+**Decision:**
+- Added frozen, versioned `NormalizedTradeInput` and its deterministic reference, retained M31 facts/eligibility and optional M32.1 FeeQuote object identities, quantity/value intent, price-evidence placeholders, planning metadata, no-op adjustment summaries, holding snapshots, provenance, and explicit `COMPLETE`/`INCOMPLETE` status.
+- Added `NormalizationResult` and typed failure reasons. Missing/inconsistent evidence remains visible: quantity/value, price/provenance/timestamps/session/freshness/staleness/currency, facts/eligibility, quote availability and exact side/quantity/price/currency agreement, and unsupported source/side or unexplained adjustment conditions. No incomplete result manufactures zero quantity/price, a currency, a clock value, an EQUITY identity, an average-cost price, or a free quote.
+- Defined explicit source and confidence vocabulary. Manual quantity is retained as a user execution term rather than a market observation or broker fill. Full-holding SELL and holding-fraction adapters consume only caller-supplied snapshots; the latter derives units only from supplied quantity × explicitly named fraction. Optimizer and Decision Workspace adapters preserve amount-only intent and remain incomplete without canonical price evidence; no value-to-unit conversion occurs.
+- Kept normalization pure: no ORM/database, Registry, market-data/network, fee-selection/calculation, clock/environment, or frontend-arithmetic dependency. A complete input requires preloaded resolved/eligible facts, positive supplied quantities/price, full price/freshness/currency evidence, and a matching successful FeeQuote.
+- Added a separate post-result execution-plan diagnostic that reuses M31.3's existing one-batch facts and eligibility results. It logs amount-only BUY incompleteness and funding quantity intent only; it does not alter M32.2 diagnostics, plan actions, gross funding arithmetic, status, warnings, persistence, or public output.
+
+**Reasoning:** A first-class incomplete contract makes the existing information gap inspectable without turning belief amounts, accounting cost basis, or legacy reconstructed shares into execution authority. Retaining source contracts by identity preserves the owner boundary: Registry owns identity, eligibility owns eligibility, FeeQuote owns fee arithmetic, Portfolio Runtime owns holding snapshots, and future M32.3C price evidence remains externally supplied.
+
+**Impact:** Added `backend/services/normalized_trade_input.py`, `backend/tests/test_normalized_trade_input_m32_3b.py`, and `docs/implementation/M32_3B_normalized_trade_input_foundation.md`; additively updated only `backend/services/execution_plan.py`'s post-result private shadow block and this log. Focused M32.3B/M32.1/M32.2 tests: 56 passed. M31 facts/eligibility/Registry group: 83 passed. Optimizer/execution group: 36 passed plus five optimizer-history tests pass when their missing Registry Asset mapper is imported; the unassisted file's five failures are pre-existing test-isolation metadata failures. Transaction/write/replay group: 125 passed; Registry replay parity: 28 passed with a workspace-local base temp. Nine async replay-cutover tests cannot run because the test environment lacks an async pytest plugin; one existing capability-shadow expectation also fails, and two parity tests initially could not create the selected Windows temp directory. Python compilation and `git diff --check` pass. No schema, API, frontend, optimizer, transaction, ledger/replay, funding, compatibility, or M31 cutover behavior changed. No commit or push was performed.
+
+---
+
+## M32.3C - Canonical Price Observation and Freshness Foundation
+
+**Date:** 2026-07-15
+**Problem:** M32.3B can preserve quantity/value intent but still represents price through loose scalar fields. Current quote providers generate `last_updated` after a fetch, current orchestration discards provider/bar timestamps, cache time is separate DB evidence, and Decision Workspace funding arithmetic originates in average cost. Treating any of these as one execution-price timestamp would fabricate certainty and prematurely select an execution price.
+
+**Decision:**
+- Added frozen, versioned `ExecutionPriceObservation` with deterministic reference, caller-supplied asset/canonical identity, exact Decimal price, semantic kind/source/provider, separate observation/receipt/cache timestamps, currency, session, timezone, delay, timestamp/overall quality, warnings, and provenance. The contract records evidence only and has no price-selection authority.
+- Added pure adapters for current Yahoo Chart and yfinance quote DTOs, an already-selected Yahoo history bar, user terms, and average cost. Current provider `last_updated` is explicitly receipt/fetch time, never observation time. A provider bar timestamp is preserved when supplied. Missing observation time, session, currency, timezone, delay, or cache time remains absent. No provider, network, retry, cache, or DTO behavior changed.
+- Defined market kinds (`MARKET_LAST`, `MARKET_CLOSE`, `MARKET_OPEN`, `MARKET_HIGH`, `MARKET_LOW`) separately from `USER_EXECUTION_TERM`, `AVG_COST_REFERENCE`, `ESTIMATED`, and `UNKNOWN`. The old `MARKET_REFERENCE` name remains only as a `MARKET_LAST` enum alias for raw M32.3B compatibility and adds no wire value; M32.3C adapters do not emit the alias name. Average cost and user terms are reference-only and cannot satisfy normalized execution-price evidence.
+- Added immutable `PriceFreshnessPolicy` and `PriceFreshnessAssessment`. The assessor receives `assessed_at`; it never reads a clock. It produces deterministic `UNKNOWN`, `CURRENT`, `STALE`, `EXPIRED`, `SESSION_CLOSED`, `PRICE_TIMESTAMP_MISSING`, `SESSION_UNKNOWN`, or `CURRENCY_UNKNOWN` outcomes from supplied evidence. The included five-/fifteen-minute policy is shadow diagnostic configuration, not approved execution pricing policy.
+- Replaced `NormalizedTradeInput`'s duplicate raw price authority with retained observation/assessment objects. Read-only scalar properties preserve M32.3B caller compatibility. The temporary request-side raw-field adapter copies only supplied values and labels compatibility provenance. New objects take precedence and are retained by identity; FeeQuote currency/price matching now reads them.
+- Added a post-result execution-plan price diagnostic. BUY remains unknown because the legacy action has no unit price. The funding balancing price is labeled `AVG_COST_REFERENCE` because the legacy amount originates in average-cost arithmetic. These same objects feed the normalized-input shadow, remain incomplete, are logged only, and are fully exception-contained.
+
+**Reasoning:** Observation, freshness, and execution-price selection are different decisions with different owners. Separating exchange observation time from receipt/cache time keeps current data limitations visible; separating freshness from the observation makes assessment reproducible at a caller-supplied time; separating average cost/user terms from market kinds prevents accounting or UI convenience values from becoming market evidence.
+
+**Impact:** Added `backend/services/execution_price_observation.py`, `backend/tests/test_execution_price_observation_m32_3c.py`, and `docs/implementation/M32_3C_price_observation_foundation.md`; updated `backend/services/normalized_trade_input.py` and only the private post-result shadow block in `backend/services/execution_plan.py`. Focused M32.3C: 21 passed; combined M32.1/M32.2/M32.3B/M32.3C: 77 passed; combined M32/market-data/price-matrix/position-sizing: 114 passed and 32 skipped; M31 facts/eligibility/Registry: 83 passed; optimizer/execution: 53 passed plus all five optimizer-history tests passed when their pre-existing missing Asset mapper was imported; transaction/write/replay: 214 passed. Pre-existing/environmental failures remain four stale `_consensus_engine(l2, l3)` tests, five import-order mapper failures, nine async replay-cutover tests without an async plugin, one baseline capability-shadow log expectation, and the import-time live-network `test_fetch_history.py` probe failing when its fetch returned `None`. Python compilation and `git diff --check` pass. No API, frontend, provider/cache, persistence, migration, optimizer, transaction, ledger/replay, funding arithmetic, M31 mode, canonical plan, or authoritative execution-price behavior changed. No commit or push was performed.
+
+---
+
+## M32.3E1 - Execution Policy Contracts and Pure Constrained Sizing Shadow
+
+**Date:** 2026-07-15
+**Problem:** M32.3B/C establish quantity intent and price/freshness evidence,
+but they deliberately do not choose an execution price, convert allocation
+value into constrained units, apply a lot policy, retain residuals, or bind a
+quote to final units. Leaving those decisions implicit would let cache TTL,
+average cost, missing Registry capabilities, or a compatibility quote become
+execution authority.
+
+**Decision:**
+- Added six frozen/versioned contracts (`ExecutionPricingPolicy`,
+  `ExecutionFreshnessPolicy`, `ExecutionSizingPolicy`,
+  `ExecutionQuantityPolicy`, `ExecutionResidualPolicy`, and
+  `ExecutionQuoteLifecycle`) and deterministic `ExecutionPolicyBundle` / THB
+  transitional `PlanningCurrencyContext` references. All values enter pure
+  functions explicitly; no helper reads a clock, environment, Registry,
+  database, provider, network, cache, or frontend state.
+- Approved E1 fixture semantics are one identity-matching positive THB
+  `MARKET_LAST`, caller-assessed `CURRENT` freshness, `REGULAR` session,
+  explicit five-minute test threshold, non-fractional capability explicitly
+  false, positive integer lot, floor-only derived quantities, lot-aligned full
+  sell, no oversell/scaling/residual redistribution, and quote after final
+  quantity. Unsupported kinds/sessions, unknown capability/lot, conflicts,
+  and missing or mismatched quote evidence remain typed incomplete/deferred/
+  excluded/error results.
+- Added a private policy-produced normalized-input path. It creates the
+  existing `NormalizedTradeInput` only after constrained quantity and exact
+  FeeQuote lifecycle validation, using additive policy-reference fields.
+  `ExecutionTradeLegBuilder` now has a separate policy-input entry point which
+  accepts only a complete policy-produced input and retains facts,
+  eligibility, observation, assessment, and quote by identity. The M32.2
+  legacy request builder remains unchanged.
+- The path is fixture-backed only. Current legacy plan BUY actions are
+  amount-only and funding prices are `AVG_COST_REFERENCE`; current provider
+  DTO/capability coverage also cannot prove M32.3E1 readiness. No post-result
+  diagnostic is wired merely to label those incomplete inputs as executable.
+
+**Impact:** Added `backend/services/execution_policy.py`,
+`backend/tests/test_execution_policy_m32_3e1.py`, and
+`docs/implementation/M32_3E1_execution_policy_shadow.md`; additively extended
+normalized-input provenance and the trade-leg builder. Focused M32.3E1 plus
+M32.2/M32.3B/M32.3C contracts: 56 passed in `backend/venv-test`. The normal
+project venv lacks pytest; SQLAlchemy deprecation and pytest-cache permission
+warnings were non-failing. No execution plan, funding arithmetic, optimizer,
+transaction, ledger/replay, API/frontend, Registry, provider, M31, schema, or
+persistence behavior changed. M32.3E2 still needs canonical market evidence,
+Registry lot/fractional capability coverage, holding/adjudication evidence,
+fee coverage, and an approved operational policy before live shadow or
+canonical planning. No commit or push was performed.
+
+---
+
+## M32.3E2 Live Evidence Shadow
+
+**Date:** 2026-07-15
+**Decision:** Add a default-off, post-result execution-plan diagnostic that can
+preserve live provider evidence and evaluate the existing M32.3E1 contracts.
+It is not a canonical plan and cannot change legacy plan output, funding,
+optimizer behavior, transactions, fees, ledger state, APIs, or persistence.
+**Reasoning:** M32.3E1 has pure pricing/sizing/fee lifecycle contracts, but
+legacy quote DTOs discard provider observation time, session, and currency.
+An additive Market Data envelope exposes that evidence without changing the
+legacy quote interface. Missing evidence remains typed incomplete; it is not
+filled from average cost, previous close, receipt/cache time, Registry currency,
+or a symbol heuristic.
+**Impact:** `M32_LIVE_EVIDENCE_SHADOW=ON` enables bounded, exception-contained
+provider evidence collection only after `ExecutionPlanResult` is final. The
+Registry facts batch is reused, fee quoting occurs only after a constrained
+quantity exists, and diagnostics are log-only. M32.3E3 still requires coverage,
+currency, funding, canonical-plan, and transaction-admission decisions. No
+commit or push was performed.
+
+---
+
+## M32.3E3R2 — Lot Capability Evidence and Read-only Preflight
+
+**Date:** 2026-07-15
+**Decision:** Add a frozen, deterministic `LotCapabilityEvidence` contract and
+strict review-only manifest/preflight surface, while keeping all capability
+projection writes unavailable. `Asset.lot_size` is the explicit listing-level
+standard-board quantity increment in Registry units for an effective period;
+it is not a broker, settlement, odd-lot, policy, ticker, or exchange default.
+`fractional_support` likewise requires explicit listing evidence rather than a
+bootstrap default or broker convention.
+
+**Reasoning:** The M32.3E3 observation found 0/21 positive lots and only
+unproven bootstrap `fractional_support=False` values. Holdings, transactions,
+provider metadata, AssetType, exchange strings, UI precision, and Asset
+Definition refinement permission cannot establish a listing capability.
+R2 therefore separates raw projection coverage from governed evidence,
+requires exact identity snapshots, timezone-aware effective/source/review
+metadata, a caller-injected authority trust list, and explicit quarantine for
+conflict, identity, future/expired, or approval gaps. There is deliberately no
+highest-confidence selection or `None => 1` fallback.
+
+**Impact:** Added `services.execution_lot_capability`, a read-only CLI, focused
+tests, and implementation documentation. The collector batches Registry rows,
+labels holdings/transaction quantities as `NON_AUTHORITATIVE_CANDIDATE_EVIDENCE`,
+consults Asset Definitions only for refinement permission, and reports
+`READY_FOR_REVIEW` without enabling an update. The CLI refuses `--commit`;
+there is no migration, evidence persistence, cache invalidation, Registry
+mutation, API/frontend, plan, transaction, fee, ledger, or M31 behavior change.
+M32.3E3R3 requires human-reviewed external authority, trust governance, an
+append-only evidence projection design, and a separate approved write
+milestone. No commit or push was performed.
+
+---
+
+## M32.3E3S2 — Market Session Evidence and Yahoo Chart Shadow Adapter
+
+**Date:** 2026-07-15
+**Decision:** Add a frozen, versioned Market Data-owned
+`MarketSessionEvidence` contract to the default-off M32 live-evidence shadow.
+It retains a provider-labelled price-observation session claim separately from
+the provider response/venue state, schedule/timezone metadata, and any future
+canonical calendar assessment. No execution policy, provider request/legacy
+response, plan result, Registry, transaction, API, frontend, persistence, or
+canonical planning behavior changes.
+
+**Reasoning:** Yahoo Chart commonly omits `marketState`, but an explicit
+`regularMarketPrice` plus `regularMarketTime` pair truthfully supports a
+provider observation-session claim of `REGULAR`. The pair does not establish
+the response-time venue phase, delay, or canonical exchange calendar. Mapping
+missing response state to regular, using local time/symbol/exchange inference,
+or treating `currentTradingPeriod` as an instrument-aware calendar would
+manufacture certainty. A regular observation can coexist with a `CLOSED`
+response state without conflict.
+
+**Impact:** `ExecutionQuoteEnvelope` and `ExecutionPriceObservation` retain
+the exact session-evidence object by identity; their legacy scalar
+`market_session` projects only the observation claim. The private plan shadow
+adds low-cardinality claim/state/basis/availability/calendar-not-available
+diagnostics without identity labels or public output. A Market Calendar
+Foundation remains required before canonical acceptance, and 0/21 governed
+Registry lot coverage remains an independent block. Focused M32.3C/E1/E2/S2
+tests passed (56); no commit or push was performed.
+
+---
+
+## M32.3E3F2 — Market Price Evidence Set and Provider Capability Shadow Foundation
+
+**Date:** 2026-07-15
+**Decision:** Add immutable, separately timed last-price, top-of-book,
+declared-delay, evidence-set, and provider-capability contracts to the
+default-off private live-evidence shadow. Do not select an execution price or
+change any acceptance threshold.
+
+**Reasoning:** Yahoo Chart `regularMarketPrice`/`regularMarketTime` is only
+provider-labelled regular-last evidence. The current path has no timestamped
+bid/ask or book evidence, payload delay is absent, and Yahoo SET data is known
+to be delayed. Collapsing last-price, book, receipt, cache, and delay clocks
+would manufacture execution certainty. A provider capability declaration is
+evidence about one path, not provider routing or a policy suitability verdict.
+
+**Impact:** The shadow reports component availability/age and capability status
+with low-cardinality labels while retaining no selected BID/ASK price. The
+read-only capability CLI operates on static declarations/sanitized samples and
+refuses commit/network-probe modes. Existing M32.3E1 pricing, normalization,
+legs, plans, optimizer, transaction, Registry, API/frontend, and persistence
+behavior remain unchanged. Side-aware selection still requires a separately
+approved provider and policy milestone; Registry lots, calendar,
+currency/cash-floor, funding, and admission blockers remain. No commit or push
+was performed.
+
+---
+
+## M32 — Cost-aware Execution Planning Epic Closeout
+
+**Date:** 2026-07-15
+
+**Decision:** Close M32 as foundation complete: its immutable fee, input,
+price/session/market-evidence, policy, trade-leg, read-only capability, and
+default-off shadow infrastructure is complete. Authoritative canonical
+execution planning is explicitly deferred and remains **NO-GO**.
+
+**Reasoning:** The remaining gates are not absent M32 contracts. They require
+external/governed Registry lot and fractional evidence, a reviewed side-aware
+timestamped quote provider, a Market Calendar, Portfolio currency/cash-floor
+and net-funding ownership, transaction admission/requote, product lifecycle,
+and an observation/rollback window. The current Registry has no governed
+positive lot coverage and the Yahoo Chart/SET path is last-price-only; typed
+incomplete/deferred results are intentional safety outcomes, not defects to
+mask with defaults or weaker policy.
+
+**Impact:** No further M32 implementation should proceed merely to increase
+milestone count. `M32_LIVE_EVIDENCE_SHADOW` remains default-off and may
+continue only as bounded, post-result, private evidence tooling. The legacy
+`ExecutionPlanResult` and transaction compatibility fee path remain
+authoritative. M32 may reopen only when an explicit adoption-gate trigger is
+approved: governed capability evidence, reviewed side-aware provider evidence,
+calendar, portfolio/net-funding inputs, transaction admission/requote,
+canonical API/history decision, and observation/rollback proof as applicable.
+M33 may begin as an execution-intent snapshot/lifecycle foundation without
+claiming that a M32 shadow plan is executable. No production behavior, data,
+commit, or push changed.
+
+---
+
+## M33.1 - Execution Intent Snapshot and Lifecycle Foundation
+
+**Date:** 2026-07-16
+
+**Decision:** Define execution intent as a stable, portfolio-scoped identity
+with immutable terms revisions and append-only lifecycle transitions. Keep
+recommendation evidence, human decision, execution intent, plan/shadow
+diagnostics, simulated outcomes, actual transactions, and replayed portfolio
+state as separate records. Actual partial/completed status must be derived from
+admitted transaction evidence, never asserted from approval, a shadow, or a
+transaction metadata link. M33.1 is design-only; no model, migration, endpoint,
+writer, backfill, or production behavior is added.
+
+**Reasoning:** The current `UserExecutionDecision` mixes human verdicts,
+system-authored expiry, manual divergence, and the outcome-like
+`PARTIAL_EXECUTION` label. It does not uniquely freeze the exact terms the
+human intended, enforce one lifecycle, or prove execution. Current shadows
+also have heterogeneous sources and mutable/regenerable projections. Mapping
+those records automatically into a persisted intent model would manufacture
+authority for ambiguous legacy data. A pure contract milestone must establish
+identity, revision, provenance, transition, terminal-state, expiry,
+supersession, and idempotency semantics before persistence or dual-write.
+
+**Impact:** `M32_EPIC_CLOSEOUT.md` remains authoritative and M32 stays closed;
+canonical execution planning remains NO-GO. Existing decision statuses,
+recommendation expiry, approval-triggered shadow behavior, transaction
+metadata linkage, portfolio mutation, replay, APIs, and UI remain unchanged.
+The next bounded milestone is an ORM-free immutable intent contract and pure
+transition validator with tests. Persistence, legacy adapters, transaction
+attribution, fulfillment projection, and product adoption require later,
+separately approved milestones.
+
+---
+
+## M33.2 - Pure Execution Intent Contract and Transition Validator
+
+**Date:** 2026-07-16
+
+**Decision:** `ExecutionIntentSnapshot.content_hash` covers only what a human
+reviewed: `terms_schema_version`, `intent_kind`, `terms` (allocations
+canonically sorted by `(symbol, side)`), `workspace_id`, `portfolio_id`,
+`effective_at`, `expires_at`, and `source_provenance` (canonically sorted).
+It deliberately excludes `snapshot_id`, `intent_id`, `revision`,
+`supersedes_snapshot_id`, `created_by_actor`, and `recorded_at` as
+lineage/bookkeeping metadata rather than reviewed content. Ledger-derived
+fulfillment (`assess_fulfillment`) is coverage-based (symbol/side presence),
+not quantity-based, because M33 terms carry a target weight/value, not an
+admission-ready quantity.
+
+**Reasoning:** M33.1 section 8.4 specified that `content_hash` is "a
+deterministic hash of canonical immutable content" without enumerating the
+exact field set. Excluding identity/lineage/actor/recorded-at fields lets a
+resumed-and-re-approved snapshot with unchanged terms keep the same content
+hash across revisions, while approval binding still uses the exact
+`snapshot_id` in addition to the hash (M33.1 §8.13), so this does not weaken
+approval-hash binding. Quantity-aware fulfillment reconciliation was
+explicitly deferred rather than guessed, since M33 terms do not carry an
+executable quantity.
+
+**Impact:** `backend/services/execution_intent_contracts.py` and
+`backend/services/execution_intent_transitions.py` implement pure,
+ORM-free contracts and a pure lifecycle transition validator only; see
+`docs/implementation/M33_2_pure_execution_intent_contracts.md`. No model,
+migration, endpoint, writer, or runtime adoption is introduced; M32 remains
+closed and canonical execution planning remains NO-GO. A future adapter
+milestone (M33.3) should study which legacy `RecommendationSnapshot`/
+`UserExecutionDecision` rows can honestly produce a complete intent snapshot
+before any persistence milestone is proposed.
+
+---
+
+## M33.4 - Historical Authority Certification and Reconfirmation Contract
+
+**Date:** 2026-07-17
+
+**Decision:** Historical approval may be recreated only from a trusted,
+unrevoked, versioned authority certificate that proves the exact reviewed and
+approved payloads, historical human identity and authority, immutable scope,
+unambiguous lineage, UTC event time, and a binding to the predetermined M33.2
+snapshot id and content hash. Lesser but non-conflicting evidence may seed only
+a visibly non-authoritative pre-snapshot proposal requiring fresh human review;
+conflicting and unusable cases remain quarantined, while rejected and expired
+decisions remain out of scope.
+
+**Reasoning:** M33.3 proved that persisted legacy rows alone have zero safely
+exact-adaptable cases. Terms similarity, recommendation defaults, shadows,
+transaction linkage, latest-row ordering, and operator assertions cannot fill
+the missing historical actor or approval binding. Requiring a trusted
+certificate to bind both historical evidence and the exact target snapshot
+preserves M33.2's approval invariant; defining proposals as pre-snapshot data
+prevents reconstructed terms from inheriting historical approval silently.
+
+**Impact:** M33.4 is design-only and changes no M33.2 contract or runtime
+behavior. No code, model, migration, repository, API, writer, persistence,
+legacy conversion, or production import is added. M32 remains closed and
+canonical execution planning remains NO-GO. The next bounded milestone is a
+pure, ORM-free authority verifier and reconfirmation contract with fixtures,
+not a legacy adapter or persistence rollout.
+
+---
+
+## M33.6 - Authority Evidence Availability and Issuer Governance Study
+
+**Date:** 2026-07-17
+
+**Decision:** Existing historical recommendation and decision evidence cannot
+reach `CERTIFIED_EXACT` or `CERTIFIED_PROPOSAL_ONLY`. Historical records may at
+most seed an explicitly policy-enabled, warning-rich `UNVERIFIABLE` proposal
+that receives fresh human reconfirmation; rejected and expired decisions
+remain out of scope, and conflicting cases remain non-proposal. For prospective
+decisions, prefer direct fresh M33.2 approval of a predetermined frozen
+snapshot id and content hash. Do not introduce certificate infrastructure
+unless a later named relying party or compliance requirement justifies a
+separate trust domain. Persistence readiness is
+`PROSPECTIVE_CAPTURE_DESIGN_REQUIRED`.
+
+**Reasoning:** Repository and configured-development-database inspection found
+77 legacy decisions, including 21 `APPROVED`, but zero decision-owned
+allocation payloads; no persisted actor; no actor-scoped authorization;
+no frozen displayed/accepted payload digest; naive timestamps; no request or
+correlation identity; and no audit, archive, certificate, trust, or revocation
+store. The frontend submits only a decision label/notes, authentication reduces
+the JWT to boolean validity, and backups/sync/shadows/transactions cannot fill
+the missing authority. Signing those mutable facts later would authenticate a
+new statement, not prove the historical human act. M33.2 already supplies the
+needed direct approval invariant for new decisions, so certificates add value
+only for an independently justified relying system.
+
+**Impact:** M33 does not proceed to authority or reconfirmation persistence.
+The next bounded milestone is a design-only prospective human-identity,
+authorization, frozen-display, direct-approval, correlation, and atomicity
+contract. No code, model, migration, endpoint, frontend, writer, signing/key
+operation, adapter, legacy conversion, production behavior, or Graphify output
+changes. M32 remains closed and canonical execution planning remains NO-GO.
+
+---
+
+## M33.7 - Prospective Human Authority and Direct Approval Capture Design
+
+**Date:** 2026-07-17
+
+**Decision:** Prospective M33 approval must bind one stable, currently
+authorized human to one exact frozen M33.2 snapshot id and content hash, one
+canonical review-payload digest/display receipt, one exact workspace/portfolio
+scope, and one expected lifecycle sequence. The current shared-credential
+authentication path cannot supply authoritative actor or grant facts, so
+readiness is `IDENTITY_PREREQUISITE_REQUIRED`. The smallest future MVP is
+`MANUAL_INDEPENDENT` target-weight review with direct approve/reject, explicit
+expiry, and a durable internal audit receipt. Optimizer conversion, historical
+proposals, target-value terms, supersession, certificates, and execution
+behavior are deferred.
+
+**Reasoning:** Current JWT middleware reduces authentication to boolean token
+validity, discards the subject, and operates over one default workspace with no
+stable user, authentication-event, role/grant, portfolio permission, or
+disabled-user fact. The optimizer UI displays mutable recommendation-derived
+data and the decision endpoint records no exact M33.2 snapshot/hash, display
+digest, actor, idempotency key, or expected lifecycle sequence. Adding
+persistence first would make a shared credential appear to be a human
+authority and would leave approval vulnerable to stale displays and duplicate
+or racing decisions. A separate review digest and command receipt can add
+display/identity/audit bindings without changing M33.2 content hashing or
+transition semantics.
+
+**Impact:** The next bounded milestone is a stable-human-identity and scoped-
+authorization foundation, design/pure-contract only. No code, ORM, migration,
+repository, API, frontend, writer, identity store, runtime wiring, certificate,
+legacy adapter, snapshot, transition, Graphify output, or production behavior
+changes in M33.7. M32 remains closed and canonical execution planning remains
+NO-GO.
+
+---
+
+## M33.8 - Stable Human Identity and Scoped Authorization Foundation
+
+**Date:** 2026-07-17
+
+**Decision:** Keep account, credential, authentication/session lifecycle,
+actor status, workspace membership, role/grant management, portfolio
+permission, delegation, and impersonation in an owning Application Identity
+and Access domain. M33 consumes only immutable namespaced references and
+caller-supplied point-in-time facts. A human-review authority binding is valid
+only when an individually authenticated `HUMAN`, current active actor/session/
+credential status, exact workspace/portfolio scope, and current `ALLOW` for
+`EXECUTION_INTENT_REVIEW` all pass one pure fail-closed validator. Hash the
+exact validated actor, authentication, current-status, authority, scope,
+permission, time, and policy facts under a separate M33.8 grammar for later
+command/audit binding.
+
+**Reasoning:** M33.7 identified identity as a prerequisite but did not specify
+the consuming contract or prove that it could remain outside M33 persistence.
+Separating authentication event, current status, and authorization fact
+prevents a once-valid token from overriding later disablement or revocation.
+Exact namespaces and scope prevent default-workspace/current-owner inference;
+explicit individual credential and direct-subject fields make the current
+shared credential ineligible. A separate canonical binding hash lets a future
+approval receipt prove which external facts were validated without changing
+M33.2 snapshot content hashing or M33.7 review-payload hashing.
+
+**Impact:** `backend/services/execution_intent_identity.py` implements frozen,
+ORM-free facts, canonical hashes, and pure `validate_human_authority()`;
+`backend/tests/test_execution_intent_identity_m33_8.py` supplies the fail-
+closed fixture matrix. Identity persistence and a real provider/owner remain
+prerequisites; no user/session/grant model, migration, login/token change, API,
+frontend, M33 persistence, runtime authorization, certificate, adapter,
+snapshot, transition, Graphify output, or production behavior is added. M32
+remains closed and canonical execution planning remains NO-GO.
+
+---
+
+## M33.9 - Identity Authority Provider Selection and Integration Feasibility
+
+**Date:** 2026-07-17
+
+**Decision:** Select a hybrid identity/authorization ownership direction for
+prospective M33 human approval. A managed identity provider owns individual
+human accounts, authentication, sessions, disablement, and recovery. An
+application-owned Identity and Authorization domain owns provider-to-actor
+binding, workspace membership, direct portfolio grants, explicitly versioned
+workspace inheritance, resource status, authorization policy, and immutable
+point-in-time authority facts. M33 consumes only the resulting M33.8 facts and
+hashes. Clerk is the first non-production proof-of-concept target; Supabase
+Auth is the managed alternate; Keycloak is conditional on a confirmed self-
+hosting/control requirement. No production provider is adopted. Readiness is
+`PROVIDER_PROOF_OF_CONCEPT_REQUIRED`.
+
+**Reasoning:** The current shared credential cannot identify or revoke one
+human and is ineligible for M33.8. Building application-local credentials,
+recovery, MFA/step-up, sessions, disablement, abuse controls, key rotation,
+and incident response would be substantially larger than the bounded approval
+domain. A managed provider fits the split Next.js/FastAPI deployment, while
+application-owned grants preserve exact workspace/portfolio semantics, avoid
+high-cardinality token claims, and support approval-time revocation. Official
+provider documentation shows credible subject/session/JWKS/current-status
+primitives, but no configured provider has yet proven exact recent-
+authentication time, synchronous disablement/session revocation, or the
+deterministic credential/status version required by M33.8. An application-
+created recent-authentication receipt and synchronous provider/application
+checks must be proven before implementation design.
+
+**Impact:** The next bounded milestone is an isolated, synthetic,
+non-production managed-provider proof of concept, not identity or M33
+persistence. Provider outage, authorization-store outage, stale status, or
+unknown revocation blocks approval; separately governed read-only access may
+continue. No code, model, migration, login/token change, session/grant store,
+API, frontend, runtime wiring, provider tenant, production secret, approval
+endpoint, M33 persistence, certificate, legacy adaptation, snapshot,
+transition, Graphify output, or production behavior is added. M32 remains
+closed and canonical execution planning remains NO-GO.
+
+---
+
+## M33.10 - Managed Identity Claim, Current-Status, and Revocation Proof of Concept
+
+**Date:** 2026-07-17
+
+**Decision:** Provider identity is a replaceable binding, not the permanent
+M33 actor identity. `ActorRef.actor_id` must be an application-owned,
+non-reassignable opaque id; a provider configuration, issuer, and subject bind
+that actor to one managed account. Deletion, account merge, tenant migration,
+or provider migration tombstones or supersedes provider bindings without
+rewriting historical actor ids or joining identities by email. Clerk is not
+ready for implementation design because current official contracts do not
+prove forever subject stability, a complete monotonic credential-security
+revision, or unambiguous server assurance for every password, MFA, passkey,
+recovery, and step-up path. Readiness is `ALTERNATE_PROVIDER_REQUIRED`.
+
+**Reasoning:** Clerk supplies strong candidate primitives including signed
+issuer/subject/session claims, short-lived tokens, Backend User banned/locked
+state, Backend Session status, factor ages, reverification ids, JWKS, and
+revocation operations. Those facts can seed a provider-neutral adapter, but a
+deterministic hash of incomplete provider state would not honestly satisfy
+M33.8. The milestone also prohibits the tenant/accounts/secrets required to
+measure propagation, outage, downgrade, key rotation, deletion, and migration
+behavior. Supabase exposes richer timestamped AMR/AAL and inspectable session
+identity and is therefore a bounded alternate POC candidate, not an adopted
+provider. JWT validity, cached status, or webhooks never replace synchronous
+current user/session/application-grant facts.
+
+**Impact:** M33.8 contracts and validation remain unchanged and provider
+objects terminate outside M33. The next bounded milestone is an isolated,
+synthetic, non-production Supabase security-state/assurance POC with a final
+`IMPLEMENTATION_DESIGN_READY` or `STOP_M33_RUNTIME` decision. M33.10 adds no
+SDK, tenant, secret, account, login/token change, ORM, migration, API,
+frontend, runtime adapter, authorization store, M33 persistence, snapshot,
+transition, certificate, legacy adaptation, Graphify output, or production
+behavior. M32 remains closed and canonical execution planning remains NO-GO.
+
+---
+
+## M33.11 - Supabase Auth Security-State and Assurance Proof of Concept
+
+**Date:** 2026-07-17
+
+**Decision:** Stop M33 runtime adoption. Readiness is `STOP_M33_RUNTIME` because
+the final bounded provider-feasibility milestone had no approved
+non-production Supabase configuration and no available Supabase CLI, Docker,
+or Podman environment in which to produce the mandatory empirical evidence.
+Official Supabase claims, session, user, MFA, and signing-key documentation is
+candidate design evidence only; it does not prove direct-human authentication
+occurrence, recovery exclusion, current user/session status, revocation races,
+a complete credential-security revision, or fail-closed outage/key behavior.
+
+**Reasoning:** M33.10 permitted implementation design only after a synthetic
+provider environment passed every mandatory current-status and assurance
+fixture. M33.11 found no approved provider configuration or local isolated
+stack, executed zero provider fixtures, and did not fabricate results from
+documentation or self-invented adapter data. The unchanged M33.8 suite remains
+green (106 passed), proving the pure consuming boundary but not that Supabase
+can populate it. Under the explicit final decision rule, any mandatory
+unproved property requires the stop result rather than another provider study
+or weaker validation.
+
+**Impact:** M33.1-M33.8 remain pure, non-adopted foundations and current
+product behavior remains outside M33 human-approval authority. Do not add
+prospective M33 identity/authorization, review, intent, lifecycle, approval,
+or certificate persistence/runtime; do not investigate a third provider
+without a new externally imposed requirement; do not attribute legacy
+activity; and do not weaken M33.8. M33.11 adds only its implementation report
+and this decision entry. M32 remains closed and canonical execution planning
+remains NO-GO.

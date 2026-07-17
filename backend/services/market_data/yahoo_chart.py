@@ -39,6 +39,10 @@ import pandas as pd
 import requests
 
 from .base import MarketDataProvider
+from .execution_quote import (
+    ExecutionQuoteEnvelope,
+    adapt_yahoo_chart_execution_quote,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -205,6 +209,50 @@ class YahooChartProvider(MarketDataProvider):
             "previous_close": prev_close,
             "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+
+    def get_execution_quote_envelope(self, symbol: str) -> ExecutionQuoteEnvelope | None:
+        """Fetch one additive M32.3E2 quote envelope.
+
+        This is deliberately separate from ``get_quote`` so legacy consumers
+        retain their existing three-field dictionary.  The receipt instant is
+        captured at this I/O boundary and passed to the pure adapter.
+        """
+
+        with _SEMAPHORE:
+            result = _fetch_chart_result(symbol, range_="5d", interval="1d")
+            received_at = datetime.now(timezone.utc)
+        if result is None:
+            return None
+        return adapt_yahoo_chart_execution_quote(
+            result,
+            requested_symbol=symbol,
+            provider_symbol=symbol,
+            received_at=received_at,
+        )
+
+    def get_execution_quote_envelopes(
+        self,
+        symbols: list[str],
+    ) -> dict[str, ExecutionQuoteEnvelope | None]:
+        """Bounded concurrent Chart evidence fetches; the endpoint has no batch API."""
+
+        unique_symbols = list(dict.fromkeys(symbols))
+        if not unique_symbols:
+            return {}
+        results: dict[str, ExecutionQuoteEnvelope | None] = {}
+        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
+            futures = {
+                executor.submit(self.get_execution_quote_envelope, symbol): symbol
+                for symbol in unique_symbols
+            }
+            for future in as_completed(futures):
+                symbol = futures[future]
+                try:
+                    results[symbol] = future.result()
+                except Exception as exc:  # defensive: preserve per-symbol isolation
+                    _log.warning("YahooChartProvider execution quote failed symbol=%s: %s", symbol, exc)
+                    results[symbol] = None
+        return results
 
     def get_history(
         self, symbol: str, period: str = "6mo", interval: str = "1d"

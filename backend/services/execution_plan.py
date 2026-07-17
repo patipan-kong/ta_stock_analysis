@@ -17,6 +17,7 @@ build_execution_plan(portfolio_id, workspace_id, buy_symbols,
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel
@@ -29,10 +30,20 @@ from services.funding_source_analysis import (
 from services.execution_eligibility import (
     ShadowExecutionAction,
     consult_execution_eligibility_shadow,
+    evaluate_execution_eligibility,
 )
 from services.execution_eligibility_shadow import (
     resolve_execution_eligibility_shadow_facts,
 )
+from services.execution_trade_leg import project_execution_plan_trade_legs_shadow
+from services.execution_price_observation import (
+    project_execution_plan_price_observations_shadow,
+)
+from services.normalized_trade_input import (
+    project_execution_plan_normalized_inputs_shadow,
+)
+from services.execution_live_evidence_config import live_evidence_shadow_enabled
+from services.execution_live_evidence_shadow import project_live_execution_plan_shadow
 
 log = logging.getLogger(__name__)
 
@@ -282,6 +293,118 @@ def build_execution_plan(
                 legacy_path="EXECUTION_PLAN",
                 logger=log,
             )
+            # M32.2 shadow-only cost projection: this consumes the same
+            # one-batch facts resolution as eligibility, then logs a
+            # diagnostic after the immutable legacy result exists.  It cannot
+            # influence plan actions, funding arithmetic, warnings, status,
+            # response shape, or persistence.
+            eligibility_by_symbol = {
+                symbol: evaluate_execution_eligibility(facts)
+                for symbol, facts in facts_by_symbol.items()
+            }
+            shadow_at = datetime.now(timezone.utc)
+            leg_projection = project_execution_plan_trade_legs_shadow(
+                result.funding_actions,
+                facts_by_symbol,
+                eligibility_by_symbol,
+                quoted_at=shadow_at,
+                effective_at=shadow_at,
+                buy_actions=result.buy_actions,
+            )
+            log.debug(
+                "execution trade-leg shadow path=EXECUTION_PLAN legs=%d unprojectable=%d",
+                len(leg_projection.legs),
+                len(leg_projection.unprojectable_symbols),
+                extra={
+                    "execution_trade_leg_shadow": {
+                        "comparisons": [
+                            comparison.to_log_dict()
+                            for comparison in leg_projection.comparisons
+                        ],
+                        "unprojectable_symbols": list(
+                            leg_projection.unprojectable_symbols
+                        ),
+                    }
+                },
+            )
+            # M32.3C records the legacy plan's actual price evidence without
+            # selecting an execution price. BUYs have no unit price; funding
+            # actions expose only an average-cost balancing reference, which
+            # remains AVG_COST_REFERENCE and freshness UNKNOWN.
+            price_projection = project_execution_plan_price_observations_shadow(
+                result.buy_actions,
+                result.funding_actions,
+                facts_by_symbol,
+                assessed_at=shadow_at,
+            )
+            log.debug(
+                "execution price-observation shadow path=EXECUTION_PLAN observations=%d",
+                len(price_projection.comparisons),
+                extra={
+                    "execution_price_observation_shadow": {
+                        "comparisons": [
+                            comparison.to_log_dict()
+                            for comparison in price_projection.comparisons
+                        ],
+                    }
+                },
+            )
+            # M32.3B is a separate post-result, amount/quantity-intent
+            # diagnostic.  It reuses the same facts batch and deliberately
+            # preserves amount-only BUY actions as incomplete rather than
+            # inventing units, a price, a timestamp, or a quote.  It does not
+            # modify the M32.2 projection or any legacy plan output.
+            normalized_projection = project_execution_plan_normalized_inputs_shadow(
+                result.buy_actions,
+                result.funding_actions,
+                facts_by_symbol,
+                eligibility_by_symbol,
+                price_projection.evidence_by_symbol,
+            )
+            log.debug(
+                "normalized trade-input shadow path=EXECUTION_PLAN complete=%d incomplete=%d unavailable=%d",
+                normalized_projection.complete_count,
+                len(normalized_projection.results) - normalized_projection.complete_count,
+                len(normalized_projection.unavailable_symbols),
+                extra={
+                    "normalized_trade_input_shadow": {
+                        "failure_counts": normalized_projection.failure_counts(),
+                        "unavailable_symbols": list(
+                            normalized_projection.unavailable_symbols
+                        ),
+                    }
+                },
+            )
+            # M32.3E2 is separately opt-in because it can perform bounded live
+            # Market Data I/O.  It remains entirely post-result and private:
+            # no outcome can affect the legacy plan, response, or persistence.
+            if live_evidence_shadow_enabled():
+                from services.market_data.provider import get_provider
+
+                live_diagnostic = project_live_execution_plan_shadow(
+                    plan_reference=f"execution-plan:{portfolio_id}:{workspace_id}",
+                    buy_actions=result.buy_actions,
+                    funding_actions=result.funding_actions,
+                    holdings_by_symbol={item.symbol: item for item in portfolio_items},
+                    facts_by_symbol=facts_by_symbol,
+                    eligibility_by_symbol=eligibility_by_symbol,
+                    provider=get_provider(),
+                    assessed_at=shadow_at,
+                )
+                # Deliberately aggregate-only: symbols and Registry IDs never
+                # enter metric labels or the plan's public response.
+                log.debug(
+                    "live execution-evidence shadow path=EXECUTION_PLAN counts=%s",
+                    live_diagnostic.low_cardinality_labels(),
+                    extra={
+                        "execution_live_evidence_shadow": {
+                            "plan_reference": live_diagnostic.plan_reference,
+                            "assessed_at": live_diagnostic.assessed_at.isoformat(),
+                            "policy_bundle_ref": live_diagnostic.policy_bundle_ref,
+                            "counts": live_diagnostic.low_cardinality_labels(),
+                        }
+                    },
+                )
     except Exception as exc:
         log.warning(
             "execution eligibility shadow failed at EXECUTION_PLAN boundary: %s",
