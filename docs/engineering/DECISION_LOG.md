@@ -1345,3 +1345,33 @@ closed and canonical execution planning remains NO-GO. A future adapter
 milestone (M33.3) should study which legacy `RecommendationSnapshot`/
 `UserExecutionDecision` rows can honestly produce a complete intent snapshot
 before any persistence milestone is proposed.
+
+---
+
+## M33.4 - Historical Authority Certification and Reconfirmation Contract
+
+**Date:** 2026-07-17
+
+**Decision:** Historical approval may be recreated only from a trusted,
+unrevoked, versioned authority certificate that proves the exact reviewed and
+approved payloads, historical human identity and authority, immutable scope,
+unambiguous lineage, UTC event time, and a binding to the predetermined M33.2
+snapshot id and content hash. Lesser but non-conflicting evidence may seed only
+a visibly non-authoritative pre-snapshot proposal requiring fresh human review;
+conflicting and unusable cases remain quarantined, while rejected and expired
+decisions remain out of scope.
+
+**Reasoning:** M33.3 proved that persisted legacy rows alone have zero safely
+exact-adaptable cases. Terms similarity, recommendation defaults, shadows,
+transaction linkage, latest-row ordering, and operator assertions cannot fill
+the missing historical actor or approval binding. Requiring a trusted
+certificate to bind both historical evidence and the exact target snapshot
+preserves M33.2's approval invariant; defining proposals as pre-snapshot data
+prevents reconstructed terms from inheriting historical approval silently.
+
+**Impact:** M33.4 is design-only and changes no M33.2 contract or runtime
+behavior. No code, model, migration, repository, API, writer, persistence,
+legacy conversion, or production import is added. M32 remains closed and
+canonical execution planning remains NO-GO. The next bounded milestone is a
+pure, ORM-free authority verifier and reconfirmation contract with fixtures,
+not a legacy adapter or persistence rollout.
