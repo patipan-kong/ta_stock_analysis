@@ -1526,3 +1526,41 @@ API, frontend, runtime wiring, provider tenant, production secret, approval
 endpoint, M33 persistence, certificate, legacy adaptation, snapshot,
 transition, Graphify output, or production behavior is added. M32 remains
 closed and canonical execution planning remains NO-GO.
+
+---
+
+## M33.10 - Managed Identity Claim, Current-Status, and Revocation Proof of Concept
+
+**Date:** 2026-07-17
+
+**Decision:** Provider identity is a replaceable binding, not the permanent
+M33 actor identity. `ActorRef.actor_id` must be an application-owned,
+non-reassignable opaque id; a provider configuration, issuer, and subject bind
+that actor to one managed account. Deletion, account merge, tenant migration,
+or provider migration tombstones or supersedes provider bindings without
+rewriting historical actor ids or joining identities by email. Clerk is not
+ready for implementation design because current official contracts do not
+prove forever subject stability, a complete monotonic credential-security
+revision, or unambiguous server assurance for every password, MFA, passkey,
+recovery, and step-up path. Readiness is `ALTERNATE_PROVIDER_REQUIRED`.
+
+**Reasoning:** Clerk supplies strong candidate primitives including signed
+issuer/subject/session claims, short-lived tokens, Backend User banned/locked
+state, Backend Session status, factor ages, reverification ids, JWKS, and
+revocation operations. Those facts can seed a provider-neutral adapter, but a
+deterministic hash of incomplete provider state would not honestly satisfy
+M33.8. The milestone also prohibits the tenant/accounts/secrets required to
+measure propagation, outage, downgrade, key rotation, deletion, and migration
+behavior. Supabase exposes richer timestamped AMR/AAL and inspectable session
+identity and is therefore a bounded alternate POC candidate, not an adopted
+provider. JWT validity, cached status, or webhooks never replace synchronous
+current user/session/application-grant facts.
+
+**Impact:** M33.8 contracts and validation remain unchanged and provider
+objects terminate outside M33. The next bounded milestone is an isolated,
+synthetic, non-production Supabase security-state/assurance POC with a final
+`IMPLEMENTATION_DESIGN_READY` or `STOP_M33_RUNTIME` decision. M33.10 adds no
+SDK, tenant, secret, account, login/token change, ORM, migration, API,
+frontend, runtime adapter, authorization store, M33 persistence, snapshot,
+transition, certificate, legacy adaptation, Graphify output, or production
+behavior. M32 remains closed and canonical execution planning remains NO-GO.
