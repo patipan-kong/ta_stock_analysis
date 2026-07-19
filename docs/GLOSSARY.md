@@ -545,3 +545,578 @@ Additive within a version. New version to widen or narrow.
 Recorded facts replay under the version that admitted them.
 
 Definitions bind forward, never backward.
+
+
+## Portfolio Identity
+
+The stable identifier of one portfolio container.
+
+Owned by Ledger & Accounting.
+
+It establishes accounting identity. It does not own strategy, goals,
+decision policy, analytics, or UI selection.
+
+Governed by `M34-D-0002`.
+
+
+## Accounting Scope
+
+The accounting boundary to which a portfolio's holdings, transactions, cash,
+and balances belong.
+
+Owned by Ledger & Accounting.
+
+Every semantic projection of one portfolio refers to the same Accounting
+Scope. No downstream domain may redefine it.
+
+Governed by `M34-D-0002`.
+
+
+## Portfolio Strategy Metadata
+
+Metadata describing a portfolio as an investment-strategy container.
+
+Owned by Portfolio Intelligence.
+
+It excludes Goal Target, Decision Policy, and accounting truth.
+
+Governed by `M34-D-0002` and `M34-D-0007`.
+
+
+## Goal Target
+
+The desired investment objective, financial objective, or intended outcome.
+
+Owned by Wealth Intelligence.
+
+Strategy and policy may reference it but do not own it.
+
+Governed by `M34-D-0002` and `M34-D-0007`.
+
+
+## Current Selection
+
+The current Experience interaction state naming which portfolio a person is
+viewing.
+
+Owned by Experience Platform.
+
+It has no business meaning and never establishes or changes Portfolio
+Identity or Accounting Scope.
+
+Governed by `M34-D-0002`.
+
+
+## Portfolio Membership
+
+The Ledger fact that a holding or instrument belongs to one or more Portfolio
+Accounting Scopes.
+
+Owned by Ledger & Accounting.
+
+It is not an investment interpretation or cross-portfolio exposure measure.
+
+Governed by `M34-D-0003`.
+
+
+## Cross-Portfolio Aggregation
+
+A mathematical aggregation of holdings across multiple Ledger-owned
+Accounting Scopes.
+
+Owned by Ledger & Accounting.
+
+It adds no investment meaning and retains every contributing scope.
+
+Governed by `M34-D-0003`.
+
+
+## Cross-Portfolio Exposure
+
+The interpretation of Cross-Portfolio Aggregation as overall investment
+exposure.
+
+Owned by Wealth Intelligence.
+
+It consumes Ledger facts, Market Intelligence observations, and Asset
+Foundation classifications without owning them. Provenance to every
+contributing Accounting Scope is mandatory.
+
+Governed by `M34-D-0003`.
+
+
+## Asset Classification
+
+The canonical classification assigned to an Asset.
+
+Owned by Asset Foundation.
+
+Provider metadata, cached or persisted copies, transports, and UI projections
+never become canonical by being stored or displayed.
+
+Governed by `M34-D-0004`.
+
+
+## Market Classification Evidence
+
+Provider-supplied classification metadata used as evidence for Asset
+Classification.
+
+Owned by Market Intelligence as evidence.
+
+It informs Asset Foundation but never establishes canonical classification
+authority.
+
+Governed by `M34-D-0004`.
+
+
+## Analytical Grouping
+
+A context-specific grouping used for portfolio analysis, allocation, factor
+analysis, attribution, reporting, or visualization.
+
+Owned by Portfolio Intelligence for the M34 portfolio-analysis contexts.
+
+It is distinct from Asset Classification even when both are presented with a
+similar label. Experience may visualize it but cannot define it.
+
+Governed by `M34-D-0001` and `M34-D-0004`.
+
+
+## Canonical Temporal Claim
+
+An authoritative statement of when a material event occurred and what its
+availability means.
+
+It contains exactly:
+
+- Event Type;
+- Producing Domain;
+- authoritative timestamp; and
+- Degraded State.
+
+Governed by `M34-D-0005`.
+
+
+## Event Type
+
+The material event dated by a Canonical Temporal Claim.
+
+Approved event types are Observation, Retrieval, Calculation, Analysis
+Generation, Snapshot Creation, Batch Evaluation, and Synchronization.
+
+The Producing Domain owns the event's meaning.
+
+Governed by `M34-D-0005`.
+
+
+## Producing Domain
+
+The constitutional domain that owns the material event or source status in a
+Canonical Temporal Claim.
+
+It owns the event, timestamp meaning, and Degraded State. Experience Platform
+only renders them.
+
+Governed by `M34-D-0005`.
+
+
+## Degraded State
+
+The producing domain's canonical qualification that a fact or result is not
+fully available as ordinary current truth.
+
+Approved states are `UNKNOWN`, `UNAVAILABLE`, `DELAYED`, `STALE`, `PARTIAL`,
+and `CONFLICTING`.
+
+Experience Platform may render a Degraded State but never derives or
+reinterprets it.
+
+Governed by `M34-D-0005`.
+
+
+## Presentation Label
+
+Non-normative Experience language such as `Updated`, `As Of`, `Current`, or
+`Fresh`.
+
+Owned by Experience Platform as presentation vocabulary only.
+
+It has no canonical temporal meaning unless accompanied by the complete
+Canonical Temporal Claim. Client refresh, cache refresh, polling, rendering,
+and interaction do not redefine source freshness.
+
+Governed by `M34-D-0005`.
+
+
+## Decision Policy
+
+Policy envelopes, optimization rules, decision constraints, execution
+preferences, and optimizer behavior.
+
+Owned by Decision Intelligence.
+
+It may reference Goal Target and Portfolio Strategy Metadata but owns
+neither.
+
+Governed by `M34-D-0007`.
+
+
+## Portfolio Limits
+
+Constraints on portfolio composition and optimization.
+
+Owned by Decision Intelligence.
+
+They govern decision behavior, not Portfolio Identity or Accounting Scope.
+
+Governed by `M34-D-0007`.
+
+
+## Sector Limits
+
+Decision constraints that reference Asset Classification.
+
+Owned by Decision Intelligence.
+
+They do not redefine Asset Foundation classification or Market
+Classification Evidence.
+
+Governed by `M34-D-0004` and `M34-D-0007`.
+
+
+## Persona
+
+A bounded reference preset over independently owned settings.
+
+Persona has no independent business-rule authority.
+
+It never becomes Portfolio Strategy Metadata, Goal Target, Decision Policy,
+or a new domain. Every referenced setting retains its constitutional owner.
+
+Governed by `M34-D-0007`.
+
+
+## Model Selection
+
+Selection of an analytical or decision model used for a specific governed
+behavior.
+
+Owned by the one producing constitutional domain responsible for that
+behavior.
+
+It never creates platform-wide configuration authority. The concrete owner
+must be named before the setting can support WP6.
+
+Governed by `M34-D-0007`.
+
+
+## Analysis Source Selection
+
+Selection of data or analytical sources for one consuming constitutional
+domain.
+
+Owned by that one consuming constitutional domain.
+
+It configures consumption behavior and never establishes ownership of the
+underlying data or source.
+
+Governed by `M34-D-0007`.
+
+
+## Optimizer Configuration
+
+Configuration of optimizer-layer orchestration and fallback behavior.
+
+Owned by Decision Intelligence.
+
+It governs optimizer behavior only and grants no execution or approval
+authority.
+
+Governed by `M34-D-0007` and constrained by `M34-D-0008`.
+
+
+## Execution Plan Projection
+
+A historical projection presented by the legacy execution workflow.
+
+It is a `STOPPED_AUTHORITY` artifact.
+
+It is not a canonical execution plan, approved execution intent, authorized
+trading instruction, or execution authorization.
+
+Governed by `M34-D-0008`.
+
+
+## Legacy Decision Record
+
+A historical application record showing only that the legacy system stored a
+decision-related record.
+
+It is a `STOPPED_AUTHORITY` artifact.
+
+It proves no human approval, decision authority, authenticated actor,
+constitutional authorization, or actor attribution.
+
+Governed by `M34-D-0008`.
+
+
+## STOPPED_AUTHORITY
+
+A governance classification for a retained historical artifact whose
+unqualified label could imply authority denied by a closed predecessor
+decision.
+
+It permits verification of non-authority and other approved negative
+guarantees only.
+
+It never grants execution planning, approval, authorization, human intent,
+decision authority, or actor attribution.
+
+Governed by `M34-D-0008`; M32 and M33 remain closed.
+
+
+## Execution Detail
+
+Historical execution-related presentation derived from legacy records.
+
+It is a `STOPPED_AUTHORITY` artifact and is not proof of canonical planning,
+approval, authorization, or actor attribution.
+
+Governed by `M34-D-0008`.
+
+
+## Plan-versus-Actual Comparison
+
+An analytical comparison between a legacy projection and observed outcomes.
+
+Owned by Trust & Evaluation as a comparison.
+
+It evaluates the legacy projection only and never makes that projection a
+canonical plan or authorized instruction.
+
+Governed by `M34-D-0008`.
+
+
+## Decision Memory
+
+Historical context composed from legacy decision-related artifacts.
+
+It is a `STOPPED_AUTHORITY` reference composition.
+
+It establishes neither Decision Intelligence authority nor immutable
+governance truth.
+
+Governed by `M34-D-0008`.
+
+
+## Portfolio Status
+
+Status describing portfolio-derived information.
+
+Owned by Portfolio Intelligence.
+
+It is a source-domain status, not aggregate Operations truth.
+
+Governed by `M34-D-0009`.
+
+
+## Goal Status
+
+Status describing the current state of a Goal Target.
+
+Owned by Wealth Intelligence.
+
+It retains Goal Target provenance and the canonical temporal grammar.
+
+Governed by `M34-D-0005` and `M34-D-0009`.
+
+
+## Market Context Status
+
+Status describing market observations and context.
+
+Owned by Market Intelligence.
+
+It does not own portfolio, decision, or evaluation meaning.
+
+Governed by `M34-D-0009`.
+
+
+## Optimizer Status
+
+Status describing optimizer lifecycle, readiness, and internal processing.
+
+Owned by Decision Intelligence.
+
+It is operational status only and grants no execution or approval authority.
+
+Governed by `M34-D-0008` and `M34-D-0009`.
+
+
+## Policy Status
+
+Status describing Decision Policy evaluation and applicability.
+
+Owned by Decision Intelligence.
+
+It does not constitute approval, execution authorization, or human intent.
+
+Governed by `M34-D-0009`.
+
+
+## Station Health
+
+Operational status supplied by one responsible producing constitutional
+domain for a concrete station.
+
+Owned by that producing domain.
+
+There is no independent platform-wide Health concept. The concrete owner must
+be named before the status can support WP6.
+
+Governed by `M34-D-0009`.
+
+
+## Committee Status
+
+Status supplied by the one constitutional domain responsible for a concrete
+governance component.
+
+Owned by that producing domain.
+
+It never implies human approval. Legacy inputs remain `STOPPED_AUTHORITY`, and
+the concrete owner must be named before the status can support WP6.
+
+Governed by `M34-D-0008` and `M34-D-0009`.
+
+
+## Translation Status
+
+Operational lifecycle status supplied by a translation service.
+
+Owned by the one constitutional domain responsible for that service.
+
+It carries no investment, approval, authorization, or execution meaning. The
+concrete owner must be named before the status can support WP6.
+
+Governed by `M34-D-0009`.
+
+
+## Action Required
+
+Experience presentation indicating that one or more source domains require
+user attention.
+
+Owned by Experience Platform as presentation meaning only.
+
+It is not a decision, approval, execution instruction, authorization, or
+source-domain status.
+
+Governed by `M34-D-0009`.
+
+
+## Market Observation
+
+An observable market fact, including a price, technical observation, market
+statistic, provider observation, or news reference.
+
+Owned by Market Intelligence.
+
+It is evidence, not Investment Judgment. Its source and Canonical Temporal
+Claim are mandatory provenance.
+
+Governed by `M34-D-0010`.
+
+
+## Investment Judgment
+
+Interpretation of observations into an analytical conclusion, outlook, or
+expected direction.
+
+Owned by Decision Intelligence.
+
+It consumes Market Observations without owning or converting them into
+source authority.
+
+Governed by `M34-D-0010`.
+
+
+## Instrument-Level Risk
+
+A derived risk assessment for one instrument.
+
+Owned by Decision Intelligence.
+
+It is distinct from portfolio-level risk owned by Portfolio Intelligence.
+
+Governed by `M34-D-0010`.
+
+
+## Consensus
+
+An aggregated Investment Judgment derived from one or more analytical
+sources.
+
+Owned by Decision Intelligence.
+
+Consensus is judgment, not evidence and not source authority.
+
+Governed by `M34-D-0010`.
+
+
+## Analysis History
+
+A historical record of analytical outputs.
+
+Owned by Decision Intelligence.
+
+It preserves analytical context and does not establish correctness.
+
+Governed by `M34-D-0010`.
+
+
+## Evaluation
+
+Independent assessment of analytical quality or correctness.
+
+Owned by Trust & Evaluation.
+
+It remains independent of the observation or judgment being evaluated and
+does not become operational authority.
+
+Governed by `M34-D-0010`.
+
+
+## Watchlist Membership
+
+A user-maintained interaction state indicating that an Asset is intentionally
+retained for future viewing or investigation.
+
+Owned by Experience Platform.
+
+It expresses preference only and implies no ownership, portfolio inclusion,
+accounting identity, recommendation, investment decision, approval, execution
+authorization, transaction intent, plan, policy, or human authorization.
+
+Governed by `M34-D-0011`.
+
+
+## User Preference State
+
+An Experience-owned interaction preference with no independent financial,
+investment, portfolio, analytical, recommendation, or execution truth.
+
+Watchlist Membership is one approved User Preference State.
+
+Governed by `M34-D-0011`.
+
+
+## Interaction State
+
+The state of a bounded user interaction owned by Experience Platform.
+
+It owns no business truth and acquires no authority from adjacent content or
+workflows.
+
+Governed by `M34-D-0011`.

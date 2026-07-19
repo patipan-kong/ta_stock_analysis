@@ -1598,3 +1598,36 @@ without a new externally imposed requirement; do not attribute legacy
 activity; and do not weaken M33.8. M33.11 adds only its implementation report
 and this decision entry. M32 remains closed and canonical execution planning
 remains NO-GO.
+
+---
+
+## M34-WP6A - Post-ARB Semantic Governance Production
+
+**Date:** 2026-07-19
+
+**Decision:** Record the twelve approved M34 Architecture Review Board
+governance rulings as `M34-D-0001` through `M34-D-0012`. The rulings require
+claim-specific constitutional ownership, decompose the Portfolio,
+cross-portfolio, classification, configuration, Operations, instrument-
+analysis, and Watchlist concepts, adopt qualified temporal grammar, restrict
+legacy execution and decision records to negative `STOPPED_AUTHORITY`
+verification, and admit a claim family to WP6 only after its canonical
+vocabulary and governance artifacts are complete and effective. DQ-12 keeps
+WP6 closed pending those artifacts and a new gate review.
+
+**Reasoning:** WP5 verified a complete semantic-claim inventory but returned
+the WP6 handoff because frozen audit labels did not map unambiguously to
+constitutional domains, multiple visible claims grouped separately owned
+concepts, canonical vocabulary was incomplete, and legacy execution/decision
+labels could contradict the closed M32 and M33 authority boundaries. The ARB
+resolved the substantive questions without changing Platform Architecture,
+creating a domain, rewriting frozen evidence, or granting runtime authority.
+Effective records, mappings, Glossary terms, admission manifests, independent
+review, and a checkpoint remain readiness prerequisites.
+
+**Impact:** M34-WP6A may produce governance documentation only. WP6 remains
+unauthorized until a later gate review verifies every approved entry
+condition; no claim family is admitted by the ARB rulings alone. M34.1 remains
+NO-GO. No frontend, backend, database, API, schema, calculation, runtime,
+Portfolio Home, execution, identity, or approval change is authorized. M32
+and M33 remain closed.
