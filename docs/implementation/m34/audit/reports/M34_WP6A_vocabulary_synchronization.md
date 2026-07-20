@@ -49,7 +49,7 @@ effective results and owns none of their semantics.
 | DQ-04 | Asset Classification; Market Classification Evidence; Analytical Grouping | Asset Foundation; Market Intelligence; Portfolio Intelligence in the approved M34 contexts | `M34-D-0004` | Sections 4 and 11 | Sector-dependent claims require explicit classification/grouping provenance |
 | DQ-05 | Canonical Temporal Claim; Event Type; Producing Domain; Degraded State; Presentation Label | Every producing domain; Experience presentation only | `M34-D-0005` | Sections 5 and 11 | Every admitted time-bearing claim requires the full temporal tuple |
 | DQ-07 | Portfolio Strategy Metadata; Goal Target; Decision Policy; Portfolio Limits; Sector Limits; Persona; Model Selection; Analysis Source Selection; Optimizer Configuration | Portfolio Intelligence; Wealth Intelligence; Decision Intelligence; context-bound producing/consuming domains | `M34-D-0007` | Sections 6 and 11 | `SA25` and `SA39` require family decomposition and concrete context-bound owner bindings |
-| DQ-08 | Execution Plan Projection; Legacy Decision Record; `STOPPED_AUTHORITY`; Execution Detail; Plan-versus-Actual Comparison; Decision Memory | M32/M33 stop boundary; Ledger & Accounting facts; Trust & Evaluation comparison only | `M34-D-0008` | Section 7 | `SA27`-`SA30` may enter negative verification only |
+| DQ-08 | Execution Plan Projection; Legacy Decision Record; `STOPPED_AUTHORITY`; Execution Detail; Plan-versus-Actual Comparison; Decision Memory | M32/M33 stop boundary; Ledger & Accounting facts; Trust & Evaluation comparison; Decision Intelligence-owned Decision Memory composition under `M34-D-0001` | `M34-D-0008` | Section 7 | `SA27` and `SA28` remain excluded; `SA29` admits only Plan-versus-Actual Comparison and Ledger facts, and `SA30` admits only Decision Memory. Execution Detail and Legacy Decision Record remain outside every included verification contract |
 | DQ-09 | Portfolio Status; Goal Status; Market Context Status; Optimizer Status; Policy Status; Station Health; Committee Status; Translation Status; Action Required | Source constitutional domains; Trust & Evaluation independent; Experience composition only | `M34-D-0009` | Sections 8 and 11 | `SA36` and operational `SA37` require source owner, temporal tuple, and provenance |
 | DQ-10 | Market Observation; Investment Judgment; Instrument-Level Risk; Consensus; Analysis History; Evaluation | Asset Foundation; Market Intelligence; Decision Intelligence; Trust & Evaluation; Experience presentation only | `M34-D-0010` | Sections 9 and 11 | `SA20` and `SA21` require the complete decomposition |
 | DQ-11 | Watchlist Membership; User Preference State; Interaction State | Experience Platform for interaction only; all adjacent truth remains with source domains | `M34-D-0011` | Sections 10 and 11 | `SA38` may verify interaction semantics only |
@@ -175,6 +175,7 @@ authority; every referenced semantic concept retains its owner.
 | Approved decompositions and ownership | `M34-D-0002` through `M34-D-0005`, `M34-D-0007` through `M34-D-0011`; `M34_WP6A_semantic_mapping.md` |
 | Canonical vocabulary is the only vocabulary authority | `docs/GLOSSARY.md`; `M34-D-0006` |
 | Legacy authority remains stopped | `M34-D-0008`; `STOPPED_AUTHORITY` Glossary entry |
+| SA27/SA28 admission remains deferred | `M34-R-0019`; `M34_WP6A_wp6_admission_manifest.md` |
 | WP6 remains closed pending effective governance | `M34-D-0012` |
 | Project-level decision trace | `docs/engineering/DECISION_LOG.md::M34-WP6A - Post-ARB Semantic Governance Production` |
 
@@ -189,6 +190,12 @@ A claim family may be listed in `WP6_INCLUDED` only when:
 4. its required provenance and temporal qualifiers are explicit;
 5. its allowed positive or negative verification scope is explicit; and
 6. independent review confirms the artifacts are synchronized.
+
+An ownerless or excluded concept may appear only as opaque excluded evidence.
+It cannot enter an included family's effective vocabulary, verification
+subject, semantic provenance, lifecycle semantics, or negative-guarantee
+scope. In particular, `SA29` does not admit Execution Detail and `SA30` does
+not admit Legacy Decision Record.
 
 Otherwise the family belongs in `WP6_EXCLUDED` with its missing artifact,
 owner, remaining governance work, and readiness consequence.

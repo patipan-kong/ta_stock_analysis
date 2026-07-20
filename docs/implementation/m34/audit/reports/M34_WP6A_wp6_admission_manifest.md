@@ -2,9 +2,11 @@
 
 **Date:** 2026-07-19
 
-**Status:** Complete claim-family classification under `M34-D-0006`, pending
-independent architectural approval and checkpoint review. The manifest does
-not authorize WP6.
+**Status:** Corrected claim-family classification under `M34-D-0006`, pending
+fresh independent architectural approval and checkpoint review. `SA27` and
+`SA28` are deferred under `M34-R-0019`; `SA29` and `SA30` are narrowed under
+`M34-R-0020` so that neither indirectly admits an excluded ownerless concept.
+The manifest does not authorize WP6.
 
 **Current gate:** `WP6_BLOCKED` under `M34-D-0012`. M34.1 remains NO-GO.
 
@@ -37,10 +39,8 @@ silently omitted from M34 readiness.
 | `SA21` | Decision Intelligence for judgment/risk/consensus/history; source domains for identity and observations | Market Observation; Investment Judgment; Instrument-Level Risk; Consensus; Analysis History; Provenance | Verify instrument judgments separately from evidence and portfolio risk | `M34-D-0010` |
 | `SA25` | Portfolio Intelligence, Wealth Intelligence, and Decision Intelligence under DQ-07; Persona has no independent rule authority | Portfolio Strategy Metadata; Goal Target; Decision Policy; Portfolio Limits; Sector Limits; Persona | Verify decomposed concepts and reference-only Persona | `M34-D-0002`, `M34-D-0007` |
 | `SA26` | Decision Intelligence | Recommendation Snapshot; Consensus | Verify recommendation/belief record semantics without execution or approval authority | `M34-D-0001`, `M34-D-0008` |
-| `SA27` | `STOPPED_AUTHORITY` legacy context | Execution Plan Projection; `STOPPED_AUTHORITY` | Negative verification only | `M34-D-0008` |
-| `SA28` | `STOPPED_AUTHORITY` legacy context | Legacy Decision Record; `STOPPED_AUTHORITY` | Negative verification only; no approval or actor attribution | `M34-D-0008` |
-| `SA29` | Trust & Evaluation comparison over `STOPPED_AUTHORITY` inputs; Ledger facts retain Ledger ownership | Execution Detail; Plan-versus-Actual Comparison; Implementation Shortfall; `STOPPED_AUTHORITY` | Negative authority verification and bounded comparison semantics only | `M34-D-0008` |
-| `SA30` | Decision Intelligence for canonical decision concepts; legacy Decision Memory remains `STOPPED_AUTHORITY` | Decision Memory; Legacy Decision Record; `STOPPED_AUTHORITY` | Negative verification for legacy records only | `M34-D-0001`, `M34-D-0008` |
+| `SA29` | Trust & Evaluation owns Plan-versus-Actual Comparison; Ledger & Accounting retains ownership of actual transaction facts | Plan-versus-Actual Comparison | Verify only the Trust-owned comparison boundary and its use of Ledger-owned actual facts; any Execution Detail or legacy projection field is opaque excluded evidence that WP6 must not interpret, verify, normalize, or promote | `M34-D-0008` |
+| `SA30` | Decision Intelligence owns the Decision Memory concept under the claim-specific `M34-D-0001` mapping | Decision Memory | Verify only the Decision Memory reference-composition boundary and its DQ-08 non-authority; Legacy Decision Records are opaque excluded artifacts and are not verification targets or sources of decision meaning | `M34-D-0001`, `M34-D-0008` |
 | `SA31` | Trust & Evaluation | Shadow Portfolio; Ideal Portfolio; AI Portfolio; Gap A; Gap B | Verify counterfactual-track distinctions and source provenance | `M34-D-0001`, `M34-D-0006` |
 | `SA32` | Trust & Evaluation | Recommendation Grade; Evaluation | Verify independent belief/execution/outcome evaluation lenses | `M34-D-0001`, `M34-D-0010` |
 | `SA33` | Trust & Evaluation | Gap B; Evaluation | Verify human-versus-AI comparison as evaluation, not authority | `M34-D-0001`, `M34-D-0006` |
@@ -49,8 +49,15 @@ silently omitted from M34 readiness.
 
 ### 2.1 Included-set conditions
 
-- `SA27` through `SA30` are never admitted to positive execution, approval,
+- `SA29` and `SA30` are never admitted to positive execution, approval,
   planning, authorization, intent, or actor-attribution verification.
+- `SA29` does not admit `Execution Detail`; `SA30` does not admit `Legacy
+  Decision Record`. Those concepts cannot enter either family's effective
+  vocabulary, semantic scope, provenance interpretation, lifecycle
+  verification, or negative-guarantee verification.
+- `SA27` and `SA28` remain `STOPPED_AUTHORITY` but are excluded because no
+  constitutional semantic owner is currently approved for either exact
+  concept.
 - Every temporal dimension uses `M34-D-0005`.
 - Every mixed family expands into the concepts in
   `M34_WP6A_semantic_mapping.md`; a family-level label never transfers
@@ -76,6 +83,8 @@ silently omitted from M34 readiness.
 | `SA22` | No canonical Contribution or Contributor Ranking terms | Portfolio Intelligence | Distinguish contribution, P/L ranking, and attribution canonically | Blocks contributor and contribution claims |
 | `SA23` | No canonical Attribution, Effect, Residual, or Unexplained Amount terms | Portfolio Intelligence | Approve the decomposition vocabulary | Blocks attribution readiness |
 | `SA24` | No canonical Market Regime or Regime Attribution terms | Market Intelligence for regime observation; Portfolio Intelligence for attribution | Approve the two-concept vocabulary and provenance | Blocks regime-context and regime-attribution readiness |
+| `SA27` | No explicitly approved constitutional semantic owner for the exact Execution Plan Projection concept; `STOPPED_AUTHORITY` is a classification, not an owner | `UNKNOWN_OWNERSHIP` | Retain every DQ-08 negative guarantee and obtain a separate approved owner designation before any future admission | Admission is premature; blocks SA27 semantic verification while preserving non-authority |
+| `SA28` | No explicitly approved constitutional semantic owner for the exact Legacy Decision Record concept; `STOPPED_AUTHORITY` is a classification, not an owner | `UNKNOWN_OWNERSHIP` | Retain every DQ-08 negative guarantee and obtain a separate approved owner designation before any future admission | Admission is premature; blocks SA28 semantic verification while preserving non-authority |
 | `SA35` | No canonical Confidence Calibration term | Trust & Evaluation | Approve calibration vocabulary and its judged input boundary | Blocks calibration readiness |
 | `SA36` | Station Health, Committee Status, and Translation Status lack concrete constitutional-domain bindings for their current instances | One responsible producing constitutional domain per concrete status | Name and approve each concrete owner binding; retain DQ-05 provenance | Blocks complete Operations Center semantic readiness |
 | `SA37` | No canonical Trust Report or Verdict term; operational/evaluative split is not fully registered | Trust & Evaluation for evaluation; source domains for operational inputs | Approve trust-report/verdict vocabulary and source-status boundary | Blocks trust-summary readiness |
@@ -86,8 +95,8 @@ silently omitted from M34 readiness.
 
 ```text
 WP5 claim families:  40
-WP6_INCLUDED:        20
-WP6_EXCLUDED:        20
+WP6_INCLUDED:        18
+WP6_EXCLUDED:        22
 Unaccounted:          0
 Duplicated:           0
 Currently authorized: 0
@@ -108,6 +117,8 @@ expressly changes that consequence after the missing governance is completed.
 - Vocabulary synchronization:
   `M34_WP6A_vocabulary_synchronization.md`.
 - Canonical terms: `docs/GLOSSARY.md`.
+- Bounded SA27/SA28 admission correction: `M34-R-0019`.
+- Bounded SA29/SA30 semantic-containment correction: `M34-R-0020`.
 - Frozen claim population: WP5 `SA01` through `SA40`, supported by
   `M34-E-0048` through `M34-E-0050`.
 

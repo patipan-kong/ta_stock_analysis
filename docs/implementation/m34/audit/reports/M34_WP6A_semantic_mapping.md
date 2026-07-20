@@ -108,18 +108,27 @@ business concept.
 
 ## 7. Legacy `STOPPED_AUTHORITY` mapping
 
-| Concept | Record-domain context | Permitted meaning | Explicit non-authority | Decision |
+| Concept | Record context / owner status | Permitted meaning | Explicit non-authority | Decision |
 | --- | --- | --- | --- | --- |
-| Execution Plan Projection | Legacy Decision Intelligence presentation | Historical projection presented by the legacy workflow | Not a canonical plan, approved intent, instruction, or authorization | `M34-D-0008` |
-| Legacy Decision Record | Legacy application record | Proof only that the application stored a decision-related record | No approval, actor identity, decision authority, or constitutional authorization | `M34-D-0008` |
-| Execution Detail | Historical presentation | Historical execution-related fields derived from legacy records | No proof of canonical planning or approval | `M34-D-0008` |
+| Execution Plan Projection | Legacy presentation context; constitutional semantic owner unknown | Historical projection presented by the legacy workflow | Not a canonical plan, approved intent, instruction, or authorization | `M34-D-0008` |
+| Legacy Decision Record | Legacy application record; constitutional semantic owner unknown | Proof only that the application stored a decision-related record | No approval, actor identity, decision authority, or constitutional authorization | `M34-D-0008` |
+| Execution Detail | Constitutional semantic owner unknown; excluded historical presentation | Historical execution-related fields derived from legacy records | No proof of canonical planning or approval; excluded from every current `WP6_INCLUDED` verification contract | `M34-D-0008` |
 | Plan-versus-Actual Comparison | Trust & Evaluation analytical comparison | Comparison of a legacy projection with observed outcomes | Does not make the compared projection authoritative | `M34-D-0008` |
-| Decision Memory | Historical reference composition | Historical context of legacy decision-related artifacts | No Decision Intelligence authority or immutable governance truth | `M34-D-0008` |
+| Decision Memory | Decision Intelligence for the reference-composition concept under `M34-D-0001` | Historical context composed from opaque, excluded legacy artifacts | Semantic ownership of the composition grants no decision authority or immutable governance truth; source Legacy Decision Records remain outside WP6 | `M34-D-0001`, `M34-D-0008` |
 | Ledger Transaction | Ledger & Accounting | Ledger fact | Never proves plan, approval, authorization, intent, or actor attribution | `M34-D-0008` |
 
-WP6 may verify only the approved negative guarantees for `SA27`-`SA30`. It
-may not positively verify execution correctness, approval correctness,
-authorization, human intent, decision authority, or actor attribution.
+`SA27` and `SA28` remain `STOPPED_AUTHORITY` but are excluded from
+`WP6_INCLUDED`: neither exact concept has an explicitly approved
+constitutional semantic owner, and the governance classification cannot
+substitute for one under `M34-D-0006`. Their DQ-08 meanings and negative
+guarantees remain unchanged. `SA29` is narrowed to the Trust & Evaluation-owned
+Plan-versus-Actual Comparison and Ledger-owned actual facts; Execution Detail
+is opaque excluded evidence and is not a verification subject. `SA30` is
+narrowed to the Decision Intelligence-owned Decision Memory composition;
+Legacy Decision Records are opaque excluded artifacts and cannot supply
+decision meaning or become verification subjects. No affected family may
+positively verify execution correctness, approval correctness, authorization,
+human intent, decision authority, or actor attribution.
 
 ## 8. Operations-status decomposition
 
