@@ -621,3 +621,297 @@ WP6 gate review. Completion never authorizes WP6 automatically.
 The missing independent authority is an explicit DQ-12 dependency, not a
 semantic conflict and not permission for the documentation producer to
 self-approve. WP6 remains unauthorized; M34.1 remains NO-GO.
+
+## M34-R-0019 - Record bounded SA27 and SA28 admission correction
+
+- Occurred at UTC: `2026-07-19T14:55:52Z`
+- Reviewer: `Governance Documentation Engineer`
+- Reviewer role: `audit lead`
+- Stage: `VERIFICATION`
+- Subject ids: `M34-D-0006`, `M34-D-0008`, `M34-D-0012`
+- Evidence considered: `M34-E-0046`, `M34-E-0048`, `M34-E-0049`, `M34-E-0050`
+- Prior review corrected: `M34-R-0017`
+- Outcome: `VERIFIED`
+- Resulting status: `NONE`
+- Related decision id: `M34-D-0012`
+- Checkpoint: `NONE`
+
+### Review statement
+
+The bounded governance correction moves `SA27` and `SA28` from
+`WP6_INCLUDED` to `WP6_EXCLUDED`. DQ-06 requires one explicitly approved
+constitutional semantic owner for every admitted concept. Neither exact
+`STOPPED_AUTHORITY` concept has such an owner, and the classification itself
+is not an owner. Admission was therefore premature. The corrected manifest
+contains 18 review-eligible and 22 excluded families with zero unaccounted or
+duplicated families.
+
+This event corrects only the post-production classification and counts
+recorded by `M34-R-0017`. It does not rewrite that append-only historical
+event or the non-authorizing `M34-R-0018` checkpoint event.
+
+### Requested changes or conditions
+
+Repeat independent architectural review against the corrected corpus. No
+future admission of `SA27` or `SA28` is permitted without a separately
+approved constitutional semantic owner. No owner is appointed by this
+correction.
+
+### Conflicts and escalation
+
+`SA27` and `SA28` retain every DQ-08 negative guarantee. M32 and M33 remain
+closed. WP6 remains unauthorized, the independent architectural approval
+dependency remains unresolved, and M34.1 remains NO-GO.
+
+## M34-R-0020 - Record bounded SA29 and SA30 semantic-containment correction
+
+- Occurred at UTC: `2026-07-19T15:13:54Z`
+- Reviewer: `Governance Documentation Engineer`
+- Reviewer role: `audit lead`
+- Stage: `VERIFICATION`
+- Subject ids: `M34-D-0001`, `M34-D-0006`, `M34-D-0008`, `M34-D-0012`
+- Evidence considered: `M34-E-0046`, `M34-E-0048`, `M34-E-0049`, `M34-E-0050`
+- Prior review corrected: `M34-R-0019`
+- Outcome: `VERIFIED`
+- Resulting status: `NONE`
+- Related decision id: `M34-D-0012`
+- Checkpoint: `NONE`
+
+### Review statement
+
+The bounded correction selects `Narrow Included Scope` for both affected
+families. `SA29` remains meaningful as the Trust & Evaluation-owned
+Plan-versus-Actual Comparison using Ledger & Accounting-owned actual facts;
+Execution Detail is removed from its admitted vocabulary and verification
+scope and is retained only as opaque excluded evidence. `SA30` remains
+meaningful as the Decision Intelligence-owned Decision Memory reference
+composition under `M34-D-0001`; Legacy Decision Record is removed from its
+admitted vocabulary and verification scope and is retained only as an opaque
+excluded artifact.
+
+The correction does not interpret, verify, normalize, or promote either
+excluded concept. It does not derive decision meaning from Legacy Decision
+Records. The complete partition remains 18 review-eligible and 22 excluded
+families with zero unaccounted or duplicated families.
+
+### Requested changes or conditions
+
+Repeat fresh independent architectural review against the corrected corpus.
+No ownerless or excluded concept may enter WP6 through another included
+family's vocabulary, semantic scope, provenance interpretation, lifecycle
+semantics, or negative-guarantee verification.
+
+### Conflicts and escalation
+
+No owner is assigned or inferred for Execution Detail, Legacy Decision Record,
+Execution Plan Projection, or the exact `SA27`/`SA28` concepts. Every DQ-08
+negative guarantee remains in force. M32 and M33 remain closed. WP6 remains
+unauthorized and `WP6_BLOCKED`; the independent architectural approval
+dependency remains unresolved, and M34.1 remains NO-GO.
+
+## M34-R-0021 - Record final independent architectural approval
+
+- Occurred at UTC: `2026-07-20T03:14:13Z`
+- Reviewer: `Independent Architectural Reviewer`
+- Reviewer role: `independent architectural reviewer`
+- Stage: `APPROVAL`
+- Subject ids: `M34-D-0001`, `M34-D-0002`, `M34-D-0003`, `M34-D-0004`, `M34-D-0005`, `M34-D-0006`, `M34-D-0007`, `M34-D-0008`, `M34-D-0009`, `M34-D-0010`, `M34-D-0011`, `M34-D-0012`
+- Evidence considered: `M34-E-0039`, `M34-E-0040`, `M34-E-0041`, `M34-E-0042`, `M34-E-0043`, `M34-E-0044`, `M34-E-0045`, `M34-E-0046`, `M34-E-0047`, `M34-E-0048`, `M34-E-0049`, `M34-E-0050`
+- Prior review corrected: `NONE`
+- Outcome: `APPROVED`
+- Resulting status: `APPROVED FOR FUTURE GATE REVIEW`
+- Related decision id: `M34-D-0012`
+- Checkpoint: `NONE`
+
+### Review purpose
+
+Record as canonical repository evidence the already-completed final
+independent architectural review of the corrected M34-WP6A governance corpus.
+This event records the existing conclusion; it does not perform a new review,
+reconsider an approved governance question, or authorize WP6.
+
+### Scope
+
+The completed review covered constitutional authority, governance integrity,
+admission consistency, vocabulary authority, boundary integrity, and
+architectural readiness for submission to a future authorization gate. It did
+not evaluate implementation, runtime behavior, calculations, product
+correctness, or M34.1 readiness.
+
+### Evidence reviewed
+
+The review considered the Platform Architecture and canonical Glossary;
+`M34-D-0001` through `M34-D-0012`; the DQ-01 claim-family owner mapping;
+the semantic mapping; vocabulary synchronization; the corrected WP6 admission
+manifest; the non-authorizing `M34-CP1` checkpoint; and Review Log events
+`M34-R-0016` through `M34-R-0020`. The reviewed admission partition contains
+18 `WP6_INCLUDED` candidates and 22 `WP6_EXCLUDED` families, with zero
+unaccounted or duplicated families.
+
+### Final disposition
+
+**APPROVED FOR FUTURE GATE REVIEW.** Governance Production is `COMPLETE` and
+Independent Architectural Review is `COMPLETE`. The corrected governance
+corpus is constitutionally sufficient for submission to a future WP6
+authorization gate review. This disposition is governance-readiness approval
+only and is not gate authorization.
+
+### Constitutional findings
+
+No constitutional blocker remains in the reviewed governance corpus. Every
+remaining `WP6_INCLUDED` concept satisfies the recorded `M34-D-0006`
+admission prerequisites; excluded concepts are not indirectly readmitted;
+`STOPPED_AUTHORITY` is not treated as a constitutional owner; the Glossary
+remains the sole canonical vocabulary; no semantic ownership conflict remains
+within the admitted scope; and no implementation or runtime authority has
+leaked into governance. M32 and M33 boundaries remain intact. No new finding
+is created by this recording event.
+
+### Remaining non-authorizations
+
+- WP6 remains `WP6_BLOCKED` pending a later checkpoint and authorization gate.
+- M34.1 remains `NO-GO`.
+- Runtime authority remains `NONE`.
+- Implementation authority remains `NONE`.
+- No execution, approval, planning, intent, actor-attribution, or other M32/M33
+  authority is granted.
+
+### Traceability
+
+This approval satisfies the independent Review Log approval dependency in
+`M34-D-0012`. It relies on the bounded corrections recorded by `M34-R-0019`
+and `M34-R-0020` without modifying or reinterpreting them. `M34-CP1` remains
+the historical non-authorizing checkpoint; this event is not `M34-CP2` and
+does not replace the later checkpoint required before gate submission.
+
+### Append-only status
+
+`M34-R-0021` is appended after `M34-R-0020`. Review Log events
+`M34-R-0016` through `M34-R-0020`, DQ-01 through DQ-12, semantic mappings,
+ownership assignments, the corrected admission manifest, and all prior
+checkpoint history remain unchanged.
+
+### Conflicts and escalation
+
+`NONE`. This event records the completed independent approval only. It does
+not authorize WP6, implementation, runtime adoption, or M34.1.
+
+## M34-R-0022 - Record post-review M34-CP2 checkpoint
+
+- Occurred at UTC: `2026-07-20T03:18:18Z`
+- Reviewer: `Governance Documentation Engineer`
+- Reviewer role: `audit lead`
+- Stage: `CHECKPOINT`
+- Subject ids: `M34-D-0006`, `M34-D-0012`
+- Evidence considered: `M34-E-0048`, `M34-E-0049`, `M34-E-0050`
+- Prior review corrected: `NONE`
+- Outcome: `VERIFIED`
+- Resulting status: `APPROVED FOR FUTURE GATE REVIEW`
+- Related decision id: `M34-D-0012`
+- Checkpoint: `M34-CP2`
+
+### Review purpose
+
+Record creation of the post-correction, post-review `M34-CP2` checkpoint as
+canonical repository evidence. This is an administrative checkpoint event;
+it does not perform another architectural review or introduce a governance
+decision or finding.
+
+### Review statement
+
+`M34-CP2` evaluates the corrected governance corpus after `M34-R-0019`,
+`M34-R-0020`, and the independent approval in `M34-R-0021`. The twelve
+Decision Records, claim-family mapping, semantic mapping, canonical
+vocabulary, vocabulary synchronization, corrected admission manifest, and
+review chain are complete and repository-traceable. The admission partition
+remains 18 `WP6_INCLUDED` candidates and 22 `WP6_EXCLUDED` families, with
+zero unaccounted or duplicated families and zero currently admitted families.
+
+The checkpoint confirms governance readiness for submission to a future
+authorization gate. It does not constitute that gate and does not authorize
+WP6.
+
+### Constitutional findings
+
+`NONE`. This administrative event relies on the constitutional disposition
+already recorded by `M34-R-0021`. It does not add, remove, or reinterpret a
+finding, semantic boundary, owner, vocabulary term, DQ ruling, or milestone
+constraint.
+
+### Remaining non-authorizations
+
+- WP6 remains `WP6_BLOCKED`.
+- M34.1 remains `NO-GO`.
+- Runtime authority remains `NONE`.
+- Implementation authority remains `NONE`.
+- M32 and M33 remain closed, with no execution or approval authority created.
+
+### Traceability and append-only status
+
+This event records the `CHECKPOINT_RESULT` required by `M34-D-0012` after the
+independent approval in `M34-R-0021`. `M34-CP1` remains unchanged as the
+historical non-authorizing checkpoint. Review Log events `M34-R-0016` through
+`M34-R-0021` remain unchanged; `M34-R-0022` is appended after them.
+
+### Conflicts and escalation
+
+`NONE`. A separate future authorization gate remains mandatory. This event
+does not authorize WP6, implementation, runtime adoption, or M34.1.
+
+## M34-R-0023 - Record formal M34-WP6A governance closeout
+
+- Occurred at UTC: `2026-07-20T03:31:04Z`
+- Reviewer: `Governance Documentation Engineer`
+- Reviewer role: `audit lead`
+- Stage: `CLOSURE`
+- Subject ids: `M34-D-0001`, `M34-D-0002`, `M34-D-0003`, `M34-D-0004`, `M34-D-0005`, `M34-D-0006`, `M34-D-0007`, `M34-D-0008`, `M34-D-0009`, `M34-D-0010`, `M34-D-0011`, `M34-D-0012`
+- Evidence considered: `M34-E-0039`, `M34-E-0040`, `M34-E-0041`, `M34-E-0042`, `M34-E-0043`, `M34-E-0044`, `M34-E-0045`, `M34-E-0046`, `M34-E-0047`, `M34-E-0048`, `M34-E-0049`, `M34-E-0050`
+- Prior review corrected: `NONE`
+- Outcome: `CLOSED`
+- Resulting status: `M34-WP6A CLOSED`
+- Related decision id: `M34-D-0012`
+- Checkpoint: `M34-CP2`
+
+### Review statement
+
+The M34-WP6A governance-production work package is formally closed. Canonical
+Decision Records, claim-family and semantic mappings, canonical vocabulary,
+vocabulary synchronization, the corrected 18/22 admission manifest, bounded
+corrections, final independent architectural approval, and the post-review
+checkpoint are complete and repository-backed.
+
+`M34-R-0021` records `APPROVED FOR FUTURE GATE REVIEW`. `M34-CP2` and
+`M34-R-0022` confirm governance readiness for submission to a future
+authorization gate. Closure records completion of governance production only;
+it does not constitute the gate or authorize WP6.
+
+### Final status
+
+- Governance Production: `COMPLETE`
+- Independent Architectural Review: `COMPLETE`
+- Future Gate Readiness: `APPROVED`
+- M34-WP6A: `CLOSED`
+- WP6: `WP6_BLOCKED`
+- M34.1: `NO-GO`
+- Runtime authority: `NONE`
+- Implementation authority: `NONE`
+
+### Requested changes or conditions
+
+`NONE` for M34-WP6A governance production. A separate future authorization
+gate remains mandatory before WP6 can be admitted or implementation can
+begin. Reopening is limited to the objective conditions recorded in
+`M34_WP6A_governance_closeout.md`.
+
+### Append-only status
+
+`M34-R-0023` is appended after `M34-R-0022`. Review Log events
+`M34-R-0016` through `M34-R-0022`, `M34-CP1`, `M34-CP2`, DQ-01 through DQ-12,
+semantic mappings, ownership assignments, and the corrected admission
+manifest remain unchanged.
+
+### Conflicts and escalation
+
+`NONE`. This administrative archival event creates no finding, governance
+decision, semantic authority, implementation authority, runtime authority, or
+M34.1 authorization. M32 and M33 remain closed.
