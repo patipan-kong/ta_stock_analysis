@@ -572,6 +572,21 @@ Scope. No downstream domain may redefine it.
 Governed by `M34-D-0002`.
 
 
+## Portfolio Lifecycle State
+
+The recorded active, archived, or closed lifecycle state of one Portfolio
+Identity. It qualifies what the portfolio may do next and never rewrites
+Portfolio Identity, Accounting Scope, ledger history, or evaluation history.
+
+Owned by Ledger & Accounting.
+
+It is not Portfolio Status, Current Selection, source availability, authority,
+permission, action eligibility, or transition legitimacy.
+
+Governed by [Portfolio Domain Model](architecture/PORTFOLIO_DOMAIN_MODEL.md)
+sections 3 and 8, `M34-D-0002`, `M36-WP1-A01`, and `M36-WP1-A09`.
+
+
 ## Portfolio Strategy Metadata
 
 Metadata describing a portfolio as an investment-strategy container.

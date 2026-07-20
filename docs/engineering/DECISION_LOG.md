@@ -1631,3 +1631,28 @@ condition; no claim family is admitted by the ARB rulings alone. M34.1 remains
 NO-GO. No frontend, backend, database, API, schema, calculation, runtime,
 Portfolio Home, execution, identity, or approval change is authorized. M32
 and M33 remain closed.
+
+---
+
+## M36 - Multiple Portfolio Foundation Closeout
+
+**Date:** 2026-07-20
+
+**Decision:** Approve M36-WP1 as the canonical Multiple Portfolio Foundation
+and close M36. `M36-ARB-F01` and `M36-ARB-F02` are resolved, and Portfolio
+Lifecycle State is registered in the canonical Glossary as a Ledger &
+Accounting-owned fact. M36-WP2 is complete.
+
+**Reasoning:** The approved foundation preserves the frozen M35 workspace
+model while allowing one Product Workspace to reference zero or more exact
+Portfolio Identities and one Workspace Context to carry zero or one Current
+Selection. The remediation separates Portfolio Lifecycle State from Portfolio
+Status and separates portfolio referenceability, source availability,
+selection, and M33 governed-action authority. The same-change Glossary
+registration completes the sole condition from the second independent review.
+
+**Impact:** M36 is `CLOSED AND CANONICAL`; M36-WP1 is `APPROVED`; M36-WP2 is
+`COMPLETE`. Portfolio and authority ownership remain unchanged. Implementation
+authority and runtime authority remain `NONE`. The recommended next
+architecture milestone is M37 - Universal Asset Search Foundation; no M37
+implementation or runtime work is authorized.
