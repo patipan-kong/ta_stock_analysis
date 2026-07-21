@@ -5,23 +5,24 @@
 // GET /analytics/evaluation/recommendations verbatim; the Decision/Consensus
 // filters below only hide/show already-fetched rows — no value is recomputed.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { usePortfolio } from "@/lib/PortfolioContext";
-import { getRecommendationsLedger, type RecommendationLedger, type RecommendationLedgerRow } from "@/lib/api";
+import { getRecommendationsLedger, isUnresolvedPortfolioError, type RecommendationLedger, type RecommendationLedgerRow } from "@/lib/api";
 import EvidenceLedger, { type EvidenceColumn } from "@/components/evaluation/EvidenceLedger";
 import HorizonStrip from "@/components/evaluation/HorizonStrip";
 import DecisionStatusBadge from "@/components/evaluation/DecisionStatusBadge";
 import CounterfactualValue from "@/components/evaluation/CounterfactualValue";
 import AsOfStamp from "@/components/evaluation/AsOfStamp";
 import EvaluationColdStart from "@/components/evaluation/EvaluationColdStart";
+import PortfolioSelectionNotice from "@/components/PortfolioSelectionNotice";
 
 const PAGE_SIZE = 50;
 const DECISION_FILTERS = ["All", "APPROVED", "REJECTED", "PARTIAL_EXECUTION", "MANUAL_OVERRIDE", "EXPIRED", "No decision"];
 
 export default function RecommendationsLedgerPage() {
-  const { activeId } = usePortfolio();
-  const portfolioId = activeId ?? 0;
+  const { currentSelection, reportUnresolvedPortfolio } = usePortfolio();
+  const portfolioId = currentSelection;
   const router = useRouter();
 
   const [offset, setOffset] = useState(0);
@@ -31,23 +32,40 @@ export default function RecommendationsLedgerPage() {
   const [decisionFilter, setDecisionFilter] = useState("All");
   const [consensusFilter, setConsensusFilter] = useState("All");
 
+  // M36.1 WP4B F04 — captured Portfolio Identity; a response arriving after
+  // Current Selection has moved to a different portfolio (or cleared to
+  // NONE) is discarded instead of repopulating the page.
+  const requestIdRef = useRef<number | null>(null);
+
   const load = useCallback(async () => {
-    if (!portfolioId) return;
+    if (portfolioId == null) return;
+    const pid = portfolioId;
     setLoading(true);
     setError(null);
     try {
-      const result = await getRecommendationsLedger(portfolioId, PAGE_SIZE, offset);
+      const result = await getRecommendationsLedger(pid, PAGE_SIZE, offset);
+      if (requestIdRef.current !== pid) return;
       setData(result);
     } catch (e) {
+      if (requestIdRef.current !== pid) return;
       setError(e instanceof Error ? e.message : "Failed to load recommendations ledger");
+      if (isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(pid);
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === pid) setLoading(false);
     }
-  }, [portfolioId, offset]);
+  }, [portfolioId, offset, reportUnresolvedPortfolio]);
 
   useEffect(() => {
+    requestIdRef.current = portfolioId;
+    if (portfolioId == null) {
+      setData(null);
+      setError(null);
+      setLoading(false);
+      setOffset(0);
+      return;
+    }
     load();
-  }, [load]);
+  }, [portfolioId, load]);
 
   const consensusOptions = useMemo(() => {
     const set = new Set<string>();
@@ -65,6 +83,10 @@ export default function RecommendationsLedgerPage() {
     }
     return rows;
   }, [data, decisionFilter, consensusFilter]);
+
+  if (portfolioId == null) {
+    return <PortfolioSelectionNotice label="Recommendations" />;
+  }
 
   const columns: EvidenceColumn<RecommendationLedgerRow>[] = [
     { key: "id", header: "#", render: (r) => <span className="font-medium text-gray-500">{r.snapshot_id}</span> },

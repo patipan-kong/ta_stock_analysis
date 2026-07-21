@@ -49,6 +49,7 @@ from services.sector_taxonomy import (
     dr_prefix as _dr_prefix, normalize_sector, static_sector_lookup,
 )
 from services.json_utils import safe_parse_json
+from services.portfolio_reference import resolve_portfolio_or_404
 from services.portfolio_transactions import (
     execute_buy, execute_sell,
     execute_deposit, execute_withdraw,
@@ -564,9 +565,7 @@ class GoalUpdate(BaseModel):
 async def update_portfolio_goal(portfolio_id: int, body: GoalUpdate, db: Session = Depends(get_db)) -> dict:
     """Set or clear the portfolio value goal (Phase 4C.1 Operations Center)."""
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     p.goal_target_value = body.goal_target_value
     db.commit()
     return {"id": p.id, "goal_target_value": p.goal_target_value, "ok": True}
@@ -605,9 +604,7 @@ async def put_portfolio_goal_profile(
         valid_risk_personality, valid_goal_date,
     )
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     provided = body.model_dump(exclude_unset=True)
     validators = {
@@ -634,9 +631,7 @@ async def put_portfolio_goal_profile(
 @app.patch("/portfolios/{portfolio_id}/cash")
 async def update_portfolio_cash(portfolio_id: int, body: CashUpdate, db: Session = Depends(get_db)) -> dict:
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     p.cash_balance = max(0.0, body.cash_balance)
     db.commit()
     return {"id": p.id, "cash_balance": p.cash_balance}
@@ -645,9 +640,7 @@ async def update_portfolio_cash(portfolio_id: int, body: CashUpdate, db: Session
 @app.delete("/portfolios/{portfolio_id}")
 async def delete_portfolio(portfolio_id: int, db: Session = Depends(get_db)) -> dict:
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     if db.query(Portfolio).filter(Portfolio.workspace_id == ws).count() <= 1:
         raise HTTPException(status_code=400, detail="Cannot delete the last portfolio")
     db.delete(p)
@@ -672,9 +665,7 @@ async def list_holdings(portfolio_id: int, db: Session = Depends(get_db)) -> lis
     This makes the endpoint respond in < 500 ms regardless of portfolio size.
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     items = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == portfolio_id).all()
     if not items:
         return []
@@ -716,9 +707,7 @@ async def get_portfolio_prices(portfolio_id: int, db: Session = Depends(get_db))
     prices) so the frontend can patch all price-dependent columns in one round-trip.
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     items = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == portfolio_id).all()
     if not items:
         return []
@@ -780,9 +769,7 @@ async def get_sector_breakdown(portfolio_id: int, db: Session = Depends(get_db))
     at add-time), so this endpoint is pure SQL and responds in < 50 ms.
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     items = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == portfolio_id).all()
     if not items:
         return {"sectors": [], "total_value": 0}
@@ -841,9 +828,7 @@ class PersonaUpdate(BaseModel):
 async def get_portfolio_persona(portfolio_id: int, db: Session = Depends(get_db)) -> dict:
     """Return the current strategy persona for a portfolio."""
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     persona = valid_persona(p.strategy_persona or "BALANCED")
     from services.optimizer.strategy_profiles import get_profile
     profile = get_profile(persona)
@@ -856,9 +841,7 @@ async def update_portfolio_persona(
 ) -> dict:
     """Assign a strategy persona to a portfolio."""
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     persona = valid_persona(body.persona)
     p.strategy_persona = persona
     db.commit()
@@ -868,9 +851,7 @@ async def update_portfolio_persona(
 @app.post("/portfolios/{portfolio_id}/holdings", status_code=201)
 async def add_holding(portfolio_id: int, body: HoldingCreate, db: Session = Depends(get_db)) -> dict:
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     symbol = _resolve_symbol(body.symbol)
     existing = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     if existing:
@@ -923,9 +904,7 @@ async def update_swap_permission(
 ) -> dict:
     ws = _ws_id(db)
     symbol = _resolve_symbol(symbol)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     item = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     if not item:
         raise HTTPException(status_code=404, detail="Symbol not found in this portfolio")
@@ -938,9 +917,7 @@ async def update_swap_permission(
 async def remove_holding(portfolio_id: int, symbol: str, db: Session = Depends(get_db)) -> dict:
     ws = _ws_id(db)
     symbol = _resolve_symbol(symbol)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     item = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     if not item:
         raise HTTPException(status_code=404, detail="Symbol not found in this portfolio")
@@ -1500,9 +1477,7 @@ async def get_stock_chart(
 @app.post("/portfolios/{portfolio_id}/analyze")
 async def analyze_portfolio_holdings(portfolio_id: int, db: Session = Depends(get_db)) -> list[dict]:
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     items = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == portfolio_id).all()
     symbols = [i.symbol for i in items]
     cache_map = {
@@ -1551,9 +1526,7 @@ def _is_stale_60m(cache: AnalysisCache | None) -> bool:
 async def analyze_portfolio_all(portfolio_id: int, db: Session = Depends(get_db)) -> dict:
     """Analyze only stale holdings (> 60 min). Runs up to 10 concurrently with timeout protection."""
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     items = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == portfolio_id).all()
     symbols = [i.symbol for i in items]
     cache_map = {
@@ -1980,12 +1953,7 @@ async def analyze_optimizer(body: OptimizerRequest, db: Session = Depends(get_db
     then sends combined scores to Claude for swap suggestions and ranking.
     """
     ws = _ws_id(db)
-    portfolio = db.query(Portfolio).filter(
-        Portfolio.id == body.portfolio_id,
-        Portfolio.workspace_id == ws,
-    ).first()
-    if not portfolio:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    portfolio = resolve_portfolio_or_404(db, body.portfolio_id, ws)
 
     holdings = db.query(PortfolioItem).filter(PortfolioItem.portfolio_id == body.portfolio_id).all()
     watchlist_items = db.query(Watchlist).filter(Watchlist.workspace_id == ws).all()
@@ -3755,9 +3723,7 @@ async def transaction_buy(
     db: Session = Depends(get_db),
 ) -> dict:
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     symbol = _normalize_transaction_symbol(body.symbol)
 
@@ -3796,9 +3762,7 @@ async def transaction_sell(
     db: Session = Depends(get_db),
 ) -> dict:
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     symbol = _normalize_transaction_symbol(body.symbol)
 
@@ -3839,9 +3803,7 @@ async def list_transactions(
     db: Session = Depends(get_db),
 ) -> list[dict]:
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     q = db.query(Transaction).filter(
         Transaction.workspace_id == ws,
@@ -3861,9 +3823,7 @@ async def transaction_deposit(
     db: Session = Depends(get_db),
 ) -> dict:
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     if body.amount <= 0:
         raise HTTPException(status_code=422, detail="amount must be positive")
 
@@ -3890,9 +3850,7 @@ async def transaction_withdraw(
     db: Session = Depends(get_db),
 ) -> dict:
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     if body.amount <= 0:
         raise HTTPException(status_code=422, detail="amount must be positive")
 
@@ -3919,9 +3877,7 @@ async def transaction_initial_position(
     db: Session = Depends(get_db),
 ) -> dict:
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     if body.shares <= 0:
         raise HTTPException(status_code=422, detail="shares must be positive")
     if body.avg_cost <= 0:
@@ -3968,9 +3924,7 @@ async def transaction_quantity_correction(
     the equity change from investment_return_pct.
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     if body.shares_delta == 0:
         raise HTTPException(status_code=422, detail="shares_delta must be non-zero")
     if body.price_per_share <= 0:
@@ -4000,9 +3954,7 @@ async def transaction_initial_cash(
     db: Session = Depends(get_db),
 ) -> dict:
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     if body.amount <= 0:
         raise HTTPException(status_code=422, detail="amount must be positive")
 
@@ -4028,9 +3980,7 @@ async def transaction_dividend(
     db: Session = Depends(get_db),
 ) -> dict:
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     if body.amount <= 0:
         raise HTTPException(status_code=422, detail="amount must be positive")
 
@@ -4143,9 +4093,7 @@ async def list_snapshots(
 ) -> list[dict]:
     """Return historical snapshots for the portfolio, oldest-first (max 365)."""
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     snaps = (
         db.query(PortfolioSnapshot)
@@ -4259,12 +4207,7 @@ async def get_performance_comparison(
     ws = _ws_id(db)
 
     # Verify portfolio ownership
-    portfolio = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id,
-        Portfolio.workspace_id == ws,
-    ).first()
-    if not portfolio:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    portfolio = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     # Load all portfolio snapshots (oldest first)
     snap_rows = (
@@ -4739,12 +4682,7 @@ async def admin_validate_portfolio(
     Designed as a diagnostic tool; it does not mutate any data.
     """
     ws = _ws_id(db)
-    portfolio = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id,
-        Portfolio.workspace_id == ws,
-    ).first()
-    if not portfolio:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    portfolio = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     items = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id).all()
 
@@ -4987,12 +4925,7 @@ async def get_performance_stats(
     """
     ws = _ws_id(db)
 
-    portfolio = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id,
-        Portfolio.workspace_id == ws,
-    ).first()
-    if not portfolio:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    portfolio = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     # ── Cache check ────────────────────────────────────────────────────────────
     # Keyed on every param that affects the computed result — a stale entry from
@@ -5110,12 +5043,7 @@ async def get_factor_exposure(
     ws = _ws_id(db)
 
     # Verify portfolio ownership before computing
-    portfolio = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id,
-        Portfolio.workspace_id == ws,
-    ).first()
-    if not portfolio:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    portfolio = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     result = await asyncio.to_thread(
         compute_portfolio_factor_exposure, db, portfolio_id, ws
@@ -5174,9 +5102,7 @@ async def operations_center_status(portfolio_id: int, db: Session = Depends(get_
     no optimizer/regime/policy logic is recomputed here.
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
     from services.operations_center import build_operations_status
 
     return await asyncio.to_thread(build_operations_status, db, ws, portfolio_id)
@@ -6210,11 +6136,7 @@ async def idea_review(
     Maximum 10 symbols per request.
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
-    ).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     from services.idea_review import review_ideas
     return await asyncio.to_thread(review_ideas, body.symbols, portfolio_id, db, ws)
@@ -6239,11 +6161,7 @@ async def basket_simulation(
     Returns sector-level impacts, cash impact, warnings, and overall status.
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
-    ).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     if body.allocation_pct <= 0 or body.allocation_pct > 100:
         raise HTTPException(status_code=422, detail="allocation_pct must be between 0 and 100")
@@ -6275,11 +6193,7 @@ async def portfolio_construction(
     No AI calls.  No trades executed.  Read-only deterministic analysis.
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
-    ).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     from services.portfolio_construction import suggest_basket_allocation
     try:
@@ -6313,11 +6227,7 @@ async def position_sizing(
     No AI calls.  No trades executed.  Read-only deterministic analysis.
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
-    ).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     from services.position_sizing import suggest_position_sizes
     try:
@@ -6350,11 +6260,7 @@ async def risk_budget_allocation(
     No AI calls.  No trades executed.  Read-only deterministic analysis.
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
-    ).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     from services.allocation_engine import suggest_risk_budget
     try:
@@ -6386,11 +6292,7 @@ async def execution_plan(
     targets using the position sizing output.  No AI calls.  No mutations.
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
-    ).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     from services.execution_plan import build_execution_plan
     try:
@@ -6663,11 +6565,7 @@ async def get_timing_periods(
     Periods are sorted ascending by start_date and never overlap.
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
-    ).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     from services.timing_periods import build_allocation_periods
 
@@ -6713,11 +6611,7 @@ async def get_timing_performance(
     No AI calls.  No new tables.  Periods sorted ascending by start_date.
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
-    ).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     from services.timing_performance import build_period_performances
 
@@ -6769,11 +6663,7 @@ async def get_timing_scores(
     Confidence: HIGH / MEDIUM / LOW (based on snapshot_count)
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
-    ).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     from services.timing_performance import build_period_performances
     from services.timing_score import calculate_timing_score
@@ -6829,11 +6719,7 @@ async def get_timing_regime_attribution(
     Summary fields identify the best/worst regime by average timing score.
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
-    ).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     from services.regime_attribution import build_regime_attribution, build_summary
 
@@ -6884,11 +6770,7 @@ async def get_human_vs_ai_timing(
       |delta| < 0.25                   → NEUTRAL_OVERRIDE
     """
     ws = _ws_id(db)
-    p = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id, Portfolio.workspace_id == ws
-    ).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    p = resolve_portfolio_or_404(db, portfolio_id, ws)
 
     from services.human_vs_ai_timing import build_human_vs_ai_timing
 

@@ -12,14 +12,15 @@
 // net number plainly plus the waterfall, whose per-row `note` text is itself
 // backend-authored — never a client-synthesized narrative.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import BackBreadcrumb from "@/components/BackBreadcrumb";
 import { usePortfolio } from "@/lib/PortfolioContext";
-import { getOpportunityCost, type OpportunityCostLedger } from "@/lib/api";
+import { getOpportunityCost, isUnresolvedPortfolioError, type OpportunityCostLedger } from "@/lib/api";
 import AsOfStamp from "@/components/evaluation/AsOfStamp";
 import EffectWaterfall from "@/components/evaluation/EffectWaterfall";
 import EvaluationColdStart from "@/components/evaluation/EvaluationColdStart";
+import PortfolioSelectionNotice from "@/components/PortfolioSelectionNotice";
 
 const PERIODS = [
   { label: "30D", days: 30 },
@@ -36,8 +37,8 @@ const DIVERGENCE_LABEL: Record<string, string> = {
 };
 
 export default function OpportunityCostPage() {
-  const { activeId } = usePortfolio();
-  const portfolioId = activeId ?? 0;
+  const { currentSelection, reportUnresolvedPortfolio } = usePortfolio();
+  const portfolioId = currentSelection;
   const router = useRouter();
 
   const [periodDays, setPeriodDays] = useState(90);
@@ -45,26 +46,42 @@ export default function OpportunityCostPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // M36.1 WP4B F04 — captured Portfolio Identity; a response arriving after
+  // Current Selection has moved to a different portfolio (or cleared to
+  // NONE) is discarded instead of repopulating the page.
+  const requestIdRef = useRef<number | null>(null);
+
   const load = useCallback(async () => {
-    if (!portfolioId) return;
+    if (portfolioId == null) return;
+    const pid = portfolioId;
     setLoading(true);
     setError(null);
     try {
-      const result = await getOpportunityCost(portfolioId, periodDays);
+      const result = await getOpportunityCost(pid, periodDays);
+      if (requestIdRef.current !== pid) return;
       setData(result);
     } catch (e) {
+      if (requestIdRef.current !== pid) return;
       setError(e instanceof Error ? e.message : "Failed to load Opportunity Cost ledger");
+      if (isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(pid);
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === pid) setLoading(false);
     }
-  }, [portfolioId, periodDays]);
+  }, [portfolioId, periodDays, reportUnresolvedPortfolio]);
 
   useEffect(() => {
+    requestIdRef.current = portfolioId;
+    if (portfolioId == null) {
+      setData(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     load();
-  }, [load]);
+  }, [portfolioId, load]);
 
-  if (!portfolioId) {
-    return <p className="text-sm text-gray-400 py-10 text-center">Select a portfolio to view Opportunity Cost.</p>;
+  if (portfolioId == null) {
+    return <PortfolioSelectionNotice label="Opportunity Cost" />;
   }
 
   return (

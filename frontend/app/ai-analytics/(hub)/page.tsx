@@ -5,16 +5,17 @@
 // This page performs zero metric computation — every number, grade, and
 // sentence comes from GET /analytics/evaluation/scorecard.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePortfolio } from "@/lib/PortfolioContext";
-import { getEvaluationScorecard, type EvaluationScorecard } from "@/lib/api";
+import { getEvaluationScorecard, isUnresolvedPortfolioError, type EvaluationScorecard } from "@/lib/api";
 import VerdictSentence from "@/components/evaluation/VerdictSentence";
 import LensGradeChip from "@/components/evaluation/LensGradeChip";
 import SampleSizeChip from "@/components/evaluation/SampleSizeChip";
 import AsOfStamp from "@/components/evaluation/AsOfStamp";
 import GapAnnotation from "@/components/evaluation/GapAnnotation";
 import EvaluationColdStart from "@/components/evaluation/EvaluationColdStart";
+import PortfolioSelectionNotice from "@/components/PortfolioSelectionNotice";
 
 const PERIODS = [
   { label: "7D", days: 7 },
@@ -62,34 +63,50 @@ function Stat({ label, value, valueClass, sub }: { label: string; value: string;
 }
 
 export default function ScorecardPage() {
-  const { activeId } = usePortfolio();
-  const portfolioId = activeId ?? 0;
+  const { currentSelection, reportUnresolvedPortfolio } = usePortfolio();
+  const portfolioId = currentSelection;
 
   const [periodDays, setPeriodDays] = useState(90);
   const [data, setData] = useState<EvaluationScorecard | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // M36.1 WP4C F04 — captured Portfolio Identity; a response arriving after
+  // Current Selection has moved to a different portfolio (or cleared to
+  // NONE) is discarded instead of repopulating the page.
+  const requestIdRef = useRef<number | null>(null);
+
   const load = useCallback(async () => {
-    if (!portfolioId) return;
+    if (portfolioId == null) return;
+    const pid = portfolioId;
     setLoading(true);
     setError(null);
     try {
-      const result = await getEvaluationScorecard(portfolioId, periodDays);
+      const result = await getEvaluationScorecard(pid, periodDays);
+      if (requestIdRef.current !== pid) return;
       setData(result);
     } catch (e) {
+      if (requestIdRef.current !== pid) return;
       setError(e instanceof Error ? e.message : "Failed to load scorecard");
+      if (isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(pid);
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === pid) setLoading(false);
     }
-  }, [portfolioId, periodDays]);
+  }, [portfolioId, periodDays, reportUnresolvedPortfolio]);
 
   useEffect(() => {
+    requestIdRef.current = portfolioId;
+    if (portfolioId == null) {
+      setData(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     load();
-  }, [load]);
+  }, [portfolioId, load]);
 
-  if (!portfolioId) {
-    return <p className="text-sm text-gray-400 py-10 text-center">Select a portfolio to view its AI Scorecard.</p>;
+  if (portfolioId == null) {
+    return <PortfolioSelectionNotice label="its AI Scorecard" />;
   }
 
   return (

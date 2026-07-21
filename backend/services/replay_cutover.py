@@ -20,8 +20,9 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from models.database import Portfolio, Transaction
+from models.database import Transaction
 from services.portfolio_rebuilder import rebuild_portfolio
+from services.portfolio_reference import resolve_portfolio_reference
 from services.registry_replay_parity import GoldenBaseline, ParityReport, compare_against_baseline
 
 __all__ = ["CutoverResult", "attempt_cutover", "rollback_cutover", "unresolved_transaction_count"]
@@ -96,7 +97,7 @@ async def attempt_cutover(
     Never flips more than one portfolio_id per call — there is no "all
     portfolios" mode by design (TDD §9: "not a global flag day").
     """
-    portfolio = db.query(Portfolio).filter_by(id=portfolio_id, workspace_id=workspace_id).first()
+    portfolio = resolve_portfolio_reference(db, portfolio_id, workspace_id)
     if portfolio is None:
         return CutoverResult(
             portfolio_id=portfolio_id, portfolio_name="?", accepted=False, committed=False,
@@ -165,7 +166,7 @@ def rollback_cutover(db: Session, portfolio_id: int, workspace_id: int) -> bool:
     if the portfolio doesn't exist; True otherwise (idempotent — flipping
     an already-legacy portfolio back to legacy is a harmless no-op write).
     """
-    portfolio = db.query(Portfolio).filter_by(id=portfolio_id, workspace_id=workspace_id).first()
+    portfolio = resolve_portfolio_reference(db, portfolio_id, workspace_id)
     if portfolio is None:
         return False
     portfolio.replay_asset_id_native = False

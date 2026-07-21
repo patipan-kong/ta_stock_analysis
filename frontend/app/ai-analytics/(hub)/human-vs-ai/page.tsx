@@ -6,15 +6,16 @@
 // "AI beat you" render identically; this page never frames itself as the
 // machine keeping score against the user.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePortfolio } from "@/lib/PortfolioContext";
-import { getHumanVsAiScoreboard, type HumanVsAiScoreboard } from "@/lib/api";
+import { getHumanVsAiScoreboard, isUnresolvedPortfolioError, type HumanVsAiScoreboard } from "@/lib/api";
 import AsOfStamp from "@/components/evaluation/AsOfStamp";
 import SampleSizeChip from "@/components/evaluation/SampleSizeChip";
 import GapAnnotation from "@/components/evaluation/GapAnnotation";
 import ClassSegmentBars from "@/components/evaluation/ClassSegmentBars";
 import EvaluationColdStart from "@/components/evaluation/EvaluationColdStart";
+import PortfolioSelectionNotice from "@/components/PortfolioSelectionNotice";
 
 const PERIODS = [
   { label: "90D", days: 90 },
@@ -51,34 +52,50 @@ function composeLeadSentence(data: HumanVsAiScoreboard): string | null {
 }
 
 export default function HumanVsAiPage() {
-  const { activeId } = usePortfolio();
-  const portfolioId = activeId ?? 0;
+  const { currentSelection, reportUnresolvedPortfolio } = usePortfolio();
+  const portfolioId = currentSelection;
 
   const [periodDays, setPeriodDays] = useState(90);
   const [data, setData] = useState<HumanVsAiScoreboard | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // M36.1 WP4B F04 — captured Portfolio Identity; a response arriving after
+  // Current Selection has moved to a different portfolio (or cleared to
+  // NONE) is discarded instead of repopulating the page.
+  const requestIdRef = useRef<number | null>(null);
+
   const load = useCallback(async () => {
-    if (!portfolioId) return;
+    if (portfolioId == null) return;
+    const pid = portfolioId;
     setLoading(true);
     setError(null);
     try {
-      const result = await getHumanVsAiScoreboard(portfolioId, periodDays);
+      const result = await getHumanVsAiScoreboard(pid, periodDays);
+      if (requestIdRef.current !== pid) return;
       setData(result);
     } catch (e) {
+      if (requestIdRef.current !== pid) return;
       setError(e instanceof Error ? e.message : "Failed to load Human vs AI scoreboard");
+      if (isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(pid);
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === pid) setLoading(false);
     }
-  }, [portfolioId, periodDays]);
+  }, [portfolioId, periodDays, reportUnresolvedPortfolio]);
 
   useEffect(() => {
+    requestIdRef.current = portfolioId;
+    if (portfolioId == null) {
+      setData(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     load();
-  }, [load]);
+  }, [portfolioId, load]);
 
-  if (!portfolioId) {
-    return <p className="text-sm text-gray-400 py-10 text-center">Select a portfolio to view Human vs AI.</p>;
+  if (portfolioId == null) {
+    return <PortfolioSelectionNotice label="Human vs AI" />;
   }
 
   const total = data ? data.summary.you_beat_ai + data.summary.ai_beat_you + data.summary.ties : 0;

@@ -22,6 +22,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from models.database import Portfolio
+from services.portfolio_reference import resolve_portfolio_reference
 
 # ── Vocabulary (codes are the stored values; labels are display-only) ─────────
 
@@ -117,11 +118,7 @@ def build_goal_profile(portfolio: Portfolio | None) -> dict:
 
 def get_goal_profile(db: Session, ws_id: int, portfolio_id: int) -> dict | None:
     """Goal profile for one portfolio. None if the portfolio doesn't exist."""
-    portfolio = (
-        db.query(Portfolio)
-        .filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws_id)
-        .first()
-    )
+    portfolio = resolve_portfolio_reference(db, portfolio_id, ws_id)
     if portfolio is None:
         return None
     return build_goal_profile(portfolio)

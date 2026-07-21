@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import PortfolioTabs from "@/components/PortfolioTabs";
@@ -8,6 +8,7 @@ import {
   getPerformanceStats,
   getPerformanceComparison,
   benchmarkBackfill,
+  isUnresolvedPortfolioError,
 } from "@/lib/api";
 import type {
   PerformanceStatsResult,
@@ -85,7 +86,7 @@ function EmptyState({ message }: { message: string }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function AnalyticsPage() {
-  const { portfolios, activeId } = usePortfolio();
+  const { portfolios, currentSelection, reportUnresolvedPortfolio } = usePortfolio();
 
   const [stats, setStats] = useState<PerformanceStatsResult | null>(null);
   const [comparison, setComparison] = useState<PerformanceComparisonResult | null>(null);
@@ -97,26 +98,35 @@ export default function AnalyticsPage() {
   const [backfilling, setBackfilling] = useState(false);
   const [backfillMsg, setBackfillMsg] = useState<string | null>(null);
 
-  const portfolioName = portfolios.find((p) => p.id === activeId)?.name ?? "—";
+  // M36.1 WP4C F04 — captured Portfolio Identity; a response arriving after
+  // Current Selection has moved to a different portfolio (or cleared to
+  // NONE) is discarded instead of repopulating the page.
+  const requestIdRef = useRef<number | null>(null);
+
+  const portfolioName = portfolios.find((p) => p.id === currentSelection)?.name ?? "—";
 
   // ── Fetch ────────────────────────────────────────────────────────────────────
   const load = useCallback(async () => {
-    if (!activeId) return;
+    if (!currentSelection) return;
+    const pid = currentSelection;
     setLoading(true);
     setError(null);
     try {
       const [s, c] = await Promise.all([
-        getPerformanceStats(activeId, { benchmark, includeEquityCurve: true, includeSectorEvolution: false }),
-        getPerformanceComparison(activeId, benchmark),
+        getPerformanceStats(pid, { benchmark, includeEquityCurve: true, includeSectorEvolution: false }),
+        getPerformanceComparison(pid, benchmark),
       ]);
+      if (requestIdRef.current !== pid) return;
       setStats(s);
       setComparison(c);
     } catch (e) {
+      if (requestIdRef.current !== pid) return;
       setError(e instanceof Error ? e.message : "Failed to load analytics");
+      if (isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(pid);
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === pid) setLoading(false);
     }
-  }, [activeId, benchmark]);
+  }, [currentSelection, benchmark, reportUnresolvedPortfolio]);
 
   const handleBackfill = useCallback(async () => {
     setBackfilling(true);
@@ -133,8 +143,16 @@ export default function AnalyticsPage() {
   }, [benchmark, load]);
 
   useEffect(() => {
+    requestIdRef.current = currentSelection;
+    if (!currentSelection) {
+      setStats(null);
+      setComparison(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     load();
-  }, [load]);
+  }, [currentSelection, load]);
 
   // ── Derived chart data (filtered + rebased) ──────────────────────────────────
   const equityData = useMemo(() => {
@@ -151,7 +169,7 @@ export default function AnalyticsPage() {
   }, [stats, dateRange]);
 
   // ── No portfolio ─────────────────────────────────────────────────────────────
-  if (!activeId) {
+  if (!currentSelection) {
     return (
       <div className="max-w-5xl mx-auto px-4 py-8">
         <p className="text-center text-gray-400 text-sm">

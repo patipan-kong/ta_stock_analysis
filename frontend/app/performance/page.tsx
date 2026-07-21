@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePortfolio } from "@/lib/PortfolioContext";
@@ -10,6 +10,7 @@ import {
   getSnapshots,
   getPerformanceComparison,
   benchmarkBackfill,
+  isUnresolvedPortfolioError,
 } from "@/lib/api";
 import type {
   PortfolioSnapshotRow,
@@ -114,7 +115,11 @@ function HoldingsTable({ snapshot }: { snapshot: PortfolioSnapshotRow }) {
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function PerformancePage() {
-  const { activeId: activePortfolioId } = usePortfolio();
+  const { currentSelection: activePortfolioId, reportUnresolvedPortfolio } = usePortfolio();
+  // M36.1 WP4A F04 — captures the Portfolio Identity a request was issued
+  // for, so a response that lands after the user has switched away (A -> B)
+  // or cleared to NONE is ignored instead of repopulating the page.
+  const requestIdRef = useRef<number | null>(null);
   const [snapshots, setSnapshots] = useState<PortfolioSnapshotRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -127,39 +132,59 @@ export default function PerformancePage() {
   const [perfLoading, setPerfLoading] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
 
-  const portfolioId = activePortfolioId ?? 0;
+  const portfolioId = activePortfolioId;
 
   const loadSnapshots = useCallback(async () => {
-    if (!portfolioId) return;
+    if (portfolioId == null) return;
+    const pid = portfolioId;
     setLoading(true);
     setError(null);
     try {
-      const data = await getSnapshots(portfolioId);
+      const data = await getSnapshots(pid);
+      if (requestIdRef.current !== pid) return; // stale — user switched or cleared since this request began
       setSnapshots(data);
     } catch (e) {
+      if (requestIdRef.current !== pid) return;
       setError(e instanceof Error ? e.message : "Failed to load snapshots");
+      if (isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(pid);
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === pid) setLoading(false);
     }
-  }, [portfolioId]);
+  }, [portfolioId, reportUnresolvedPortfolio]);
 
   const loadPerfData = useCallback(async () => {
-    if (!portfolioId) return;
+    if (portfolioId == null) return;
+    const pid = portfolioId;
     setPerfLoading(true);
     try {
-      const data = await getPerformanceComparison(portfolioId);
+      const data = await getPerformanceComparison(pid);
+      if (requestIdRef.current !== pid) return;
       setPerfData(data);
-    } catch {
+    } catch (e) {
       // silently ignore — chart section shows empty state
+      if (requestIdRef.current === pid && isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(pid);
     } finally {
-      setPerfLoading(false);
+      if (requestIdRef.current === pid) setPerfLoading(false);
     }
-  }, [portfolioId]);
+  }, [portfolioId, reportUnresolvedPortfolio]);
 
+  // M36.1 WP4A F04 — Current Selection changed. Update the request identity
+  // first (so any in-flight request for the old id is now recognized as
+  // stale), then either clear portfolio-bound state (NONE) or issue fresh
+  // requests for the new id (A -> B).
   useEffect(() => {
+    requestIdRef.current = portfolioId;
+    if (portfolioId == null) {
+      setSnapshots([]);
+      setPerfData(null);
+      setError(null);
+      setLoading(false);
+      setPerfLoading(false);
+      return;
+    }
     loadSnapshots();
     loadPerfData();
-  }, [loadSnapshots, loadPerfData]);
+  }, [portfolioId, loadSnapshots, loadPerfData]);
 
   const handleBackfill = async () => {
     setBackfilling(true);
@@ -175,7 +200,7 @@ export default function PerformancePage() {
   };
 
   const handleGenerate = async () => {
-    if (!portfolioId) return;
+    if (portfolioId == null) return;
     setGenerating(true);
     setError(null);
     try {
@@ -218,7 +243,7 @@ export default function PerformancePage() {
           </p>
           {/* AI Evaluation M7 entry point (UX §2.3): "Why this return?" ->
               the Attribution breakdown (S8) for this portfolio. */}
-          {portfolioId > 0 && (
+          {portfolioId != null && (
             <Link
               href="/ai-analytics/attribution"
               className="inline-block text-xs font-semibold text-blue-600 hover:underline mt-1"
@@ -229,7 +254,7 @@ export default function PerformancePage() {
         </div>
         <button
           onClick={handleGenerate}
-          disabled={generating || !portfolioId}
+          disabled={generating || portfolioId == null}
           className="px-4 py-2 bg-blue-700 text-white text-sm font-medium rounded-lg hover:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {generating ? "Generating…" : "Generate Snapshot"}

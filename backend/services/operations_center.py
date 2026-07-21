@@ -26,12 +26,12 @@ from sqlalchemy.orm import Session
 from models.database import (
     BenchmarkPrice,
     OptimizerHistory,
-    Portfolio,
     PortfolioSnapshot,
     RecommendationSnapshot,
     UserExecutionDecision,
 )
 from services.goal_profile import build_goal_profile
+from services.portfolio_reference import resolve_portfolio_reference
 from services.translations.muji_translator import (
     build_muji_translation,
     station_label_th,
@@ -309,11 +309,7 @@ def _compute_agent_health(
 
 def build_operations_status(db: Session, ws_id: int, portfolio_id: int) -> dict:
     """Aggregate the full Operations Center status payload for one portfolio."""
-    portfolio = (
-        db.query(Portfolio)
-        .filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == ws_id)
-        .first()
-    )
+    portfolio = resolve_portfolio_reference(db, portfolio_id, ws_id)
     goal_target_value = portfolio.goal_target_value if portfolio else None
 
     summary, snap, days_since_rebalance = _portfolio_summary(db, ws_id, portfolio_id, goal_target_value)

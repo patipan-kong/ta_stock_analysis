@@ -7,6 +7,7 @@ import PortfolioTable from "@/components/PortfolioTable";
 import PortfolioTabs from "@/components/PortfolioTabs";
 import PortfolioSummary from "@/components/PortfolioSummary";
 import { usePortfolio } from "@/lib/PortfolioContext";
+import WorkspaceScopeSwitcher from "@/components/WorkspaceScopeSwitcher";
 import AnalyzeAllButton from "@/components/AnalyzeAllButton";
 import TransactionModal from "@/components/TransactionModal";
 import type { TransactionMode } from "@/components/TransactionModal";
@@ -15,6 +16,7 @@ import {
   getPortfolioPrices, getSectorBreakdown,
   buyTransaction, sellTransaction, depositTransaction, withdrawTransaction,
   initialPositionTransaction, dividendTransaction,
+  isUnresolvedPortfolioError,
 } from "@/lib/api";
 import type {
   PortfolioItem, AnalyzeAllResult, SectorBreakdown,
@@ -74,27 +76,30 @@ interface ModalState {
 }
 
 export default function PortfolioPage() {
-  const { portfolios, activeId, setActiveId, createPortfolio, deletePortfolio, refreshPortfolios, loading: ctxLoading } = usePortfolio();
+  const { portfolios, currentSelection, createPortfolio, deletePortfolio, refreshPortfolios, reportUnresolvedPortfolio, loading: ctxLoading } = usePortfolio();
 
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const activePortfolio = portfolios.find((p) => p.id === activeId);
+  const activePortfolio = portfolios.find((p) => p.id === currentSelection);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     const name = newName.trim();
     if (!name) return;
-    const p = await createPortfolio(name);
-    setActiveId(p.id);
+    // M36.1 WP4A F02 — creation and selection are separate interaction
+    // boundaries. The new portfolio is exposed through the list only;
+    // Current Selection (NONE or a prior valid selection) is untouched
+    // until a human explicitly selects it via WorkspaceScopeSwitcher.
+    await createPortfolio(name);
     setNewName("");
     setCreating(false);
   }
 
   async function handleDelete() {
-    if (activeId == null) return;
-    await deletePortfolio(activeId);
+    if (currentSelection == null) return;
+    await deletePortfolio(currentSelection);
     setConfirmDelete(false);
   }
 
@@ -137,6 +142,10 @@ export default function PortfolioPage() {
     setRefreshingPrices(true);
     try {
       const prices = await getPortfolioPrices(pid);
+      // M36.1 WP4C F04 — discard a manually-triggered refresh's response if
+      // Current Selection has since moved away from the portfolio it was
+      // issued for.
+      if (activeIdRef.current !== pid) return;
       setItems((prev) => applyPrices(prev, prices));
       setPriceRefreshAt(new Date());
     } catch {
@@ -152,6 +161,9 @@ export default function PortfolioPage() {
       getHoldings(pid),
       getSectorBreakdown(pid).catch(() => null),
     ]);
+    // M36.1 WP4C F04 — discard this response if Current Selection has since
+    // moved away from the portfolio the transaction/refresh was issued for.
+    if (activeIdRef.current !== pid) return;
     setItems(updated);
     if (breakdown) setSectorBreakdown(breakdown);
     // Fetch prices in background — non-blocking
@@ -166,8 +178,21 @@ export default function PortfolioPage() {
 
   // Initial load — Phase 1: holdings from DB (< 500 ms), Phase 2: prices in background
   useEffect(() => {
-    if (activeId == null) return;
-    activeIdRef.current = activeId;
+    if (currentSelection == null) {
+      // M36.1 WP4A F04 — Current Selection is NONE: synchronously clear
+      // portfolio-bound state and invalidate the request identity so any
+      // still-in-flight response for the previous portfolio is dropped by
+      // the activeIdRef checks below instead of repopulating the page.
+      activeIdRef.current = null;
+      setItems([]);
+      setSectorBreakdown(null);
+      setCashBalance(0);
+      setPriceRefreshAt(null);
+      setLoading(false);
+      setPricesLoading(false);
+      return;
+    }
+    activeIdRef.current = currentSelection;
     setLoading(true);
     setPricesLoading(false);
     setItems([]);
@@ -176,7 +201,7 @@ export default function PortfolioPage() {
     const cash = activePortfolio?.cash_balance ?? 0;
     setCashBalance(cash);
 
-    const pid = activeId;
+    const pid = currentSelection;
     getHoldings(pid)
       .then((data) => {
         if (activeIdRef.current !== pid) return;
@@ -199,8 +224,15 @@ export default function PortfolioPage() {
           if (activeIdRef.current === pid) setPricesLoading(false);
         });
       })
-      .catch(() => setLoading(false));
-  }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
+      .catch((e) => {
+        setLoading(false);
+        // M36.1 WP4A F03 — bounded unresolved-response recovery: only an
+        // authoritative "Portfolio not found" for the currently-selected
+        // portfolio triggers re-resolution. A generic fetch failure never
+        // clears Current Selection.
+        if (isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(pid);
+      });
+  }, [currentSelection]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync cash from context
   useEffect(() => {
@@ -209,7 +241,7 @@ export default function PortfolioPage() {
 
   // Auto-refresh prices every 60s
   useEffect(() => {
-    if (activeId == null) return;
+    if (currentSelection == null) return;
     const id = setInterval(async () => {
       const pid = activeIdRef.current;
       if (pid == null || refreshingRef.current) return;
@@ -217,6 +249,11 @@ export default function PortfolioPage() {
       setRefreshingPrices(true);
       try {
         const prices = await getPortfolioPrices(pid);
+        // M36.1 WP4C F04 — the interval captures pid from activeIdRef at
+        // fire time, but Current Selection can still move during the await;
+        // re-check before writing so a slow response for the old portfolio
+        // never patches prices onto the now-different portfolio's items.
+        if (activeIdRef.current !== pid) return;
         setItems((prev) => applyPrices(prev, prices));
         setPriceRefreshAt(new Date());
       } catch { /* silent */ } finally {
@@ -225,39 +262,39 @@ export default function PortfolioPage() {
       }
     }, PRICE_REFRESH_INTERVAL);
     return () => clearInterval(id);
-  }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentSelection]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Transaction handlers ──────────────────────────────────────────────────
 
   async function handleTransactionConfirm(
     payload: BuyPayload | SellPayload | DepositPayload | WithdrawPayload | InitialPositionPayload | DividendPayload
   ): Promise<TransactionResult> {
-    if (activeId == null) throw new Error("No active portfolio");
+    if (currentSelection == null) throw new Error("No active portfolio");
     if (!modal) throw new Error("No active modal");
 
     let result: TransactionResult;
     switch (modal.mode) {
       case "buy":
-        result = await buyTransaction(activeId, payload as BuyPayload);
+        result = await buyTransaction(currentSelection, payload as BuyPayload);
         break;
       case "sell":
-        result = await sellTransaction(activeId, payload as SellPayload);
+        result = await sellTransaction(currentSelection, payload as SellPayload);
         break;
       case "deposit":
-        result = await depositTransaction(activeId, payload as DepositPayload);
+        result = await depositTransaction(currentSelection, payload as DepositPayload);
         break;
       case "withdraw":
-        result = await withdrawTransaction(activeId, payload as WithdrawPayload);
+        result = await withdrawTransaction(currentSelection, payload as WithdrawPayload);
         break;
       case "initial_position":
-        result = await initialPositionTransaction(activeId, payload as InitialPositionPayload);
+        result = await initialPositionTransaction(currentSelection, payload as InitialPositionPayload);
         break;
       case "dividend":
-        result = await dividendTransaction(activeId, payload as DividendPayload);
+        result = await dividendTransaction(currentSelection, payload as DividendPayload);
         break;
     }
 
-    await refreshHoldings(activeId);
+    await refreshHoldings(currentSelection);
     await refreshPortfolios();
     if (result.cash_balance != null) setCashBalance(result.cash_balance);
 
@@ -270,14 +307,14 @@ export default function PortfolioPage() {
   }
 
   async function handleRemove(sym: string) {
-    if (activeId == null) return;
-    await removeHolding(activeId, sym);
+    if (currentSelection == null) return;
+    await removeHolding(currentSelection, sym);
     setItems((prev) => prev.filter((i) => i.symbol !== sym));
   }
 
   async function handleToggleSwap(sym: string, allow_swap: boolean) {
-    if (activeId == null) return;
-    await updateSwapPermission(activeId, sym, allow_swap);
+    if (currentSelection == null) return;
+    await updateSwapPermission(currentSelection, sym, allow_swap);
     setItems((prev) => prev.map((i) => i.symbol === sym ? { ...i, allow_swap } : i));
   }
 
@@ -367,17 +404,7 @@ export default function PortfolioPage() {
           </div>
         ) : (
           <>
-            {portfolios.length > 0 && (
-              <select
-                value={activeId ?? ""}
-                onChange={(e) => setActiveId(parseInt(e.target.value, 10))}
-                className="text-sm border rounded px-2.5 py-1.5 bg-white"
-              >
-                {portfolios.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
-            )}
+            <WorkspaceScopeSwitcher variant="select" noneLabel="No portfolio selected" />
             <button
               onClick={() => setCreating(true)}
               className="text-sm border rounded px-2.5 py-1.5 hover:bg-gray-50 text-gray-600"
@@ -400,9 +427,9 @@ export default function PortfolioPage() {
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold">Portfolio</h1>
-          {activeId != null && (
+          {currentSelection != null && (
             <Link
-              href={`/portfolio/${activeId}/factors`}
+              href={`/portfolio/${currentSelection}/factors`}
               className="flex items-center gap-1.5 text-xs font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg px-3 py-1.5 transition-colors"
             >
               <span>◈</span> DNA Analysis
@@ -410,10 +437,10 @@ export default function PortfolioPage() {
           )}
         </div>
         <div className="flex items-center gap-3 flex-wrap">
-          {hasData && activeId != null && (
+          {hasData && currentSelection != null && (
             <AnalyzeAllButton
               type="portfolio"
-              portfolioId={activeId}
+              portfolioId={currentSelection}
               staleCount={staleCount}
               totalCount={items.length}
               onComplete={handleAnalyzeAllComplete}
@@ -423,8 +450,8 @@ export default function PortfolioPage() {
             <div className="flex items-center gap-2 text-xs text-gray-400">
               {priceLabel && <span>{priceLabel}</span>}
               <button
-                onClick={() => activeId != null && refreshPrices(activeId)}
-                disabled={refreshingPrices || activeId == null}
+                onClick={() => currentSelection != null && refreshPrices(currentSelection)}
+                disabled={refreshingPrices || currentSelection == null}
                 className="flex items-center gap-1 text-blue-500 hover:text-blue-700 disabled:opacity-40 border border-blue-200 rounded px-2.5 py-1 hover:bg-blue-50 transition-colors"
               >
                 <span className={refreshingPrices ? "animate-spin inline-block" : ""}>↻</span>
@@ -438,14 +465,14 @@ export default function PortfolioPage() {
       {/* ── Transaction action buttons ── */}
       <div className="flex flex-wrap gap-2">
         <button
-          disabled={activeId == null}
+          disabled={currentSelection == null}
           onClick={() => setModal({ mode: "buy" })}
           className="px-4 py-1.5 rounded text-sm font-semibold text-white bg-[#27500A] hover:bg-[#1d3c07] disabled:opacity-40 transition-colors"
         >
           Buy
         </button>
         <button
-          disabled={activeId == null || items.length === 0}
+          disabled={currentSelection == null || items.length === 0}
           onClick={() => {
             // If only one holding, pre-select it; otherwise let user pick in modal
             if (items.length === 1) {
@@ -459,28 +486,28 @@ export default function PortfolioPage() {
           Sell
         </button>
         <button
-          disabled={activeId == null}
+          disabled={currentSelection == null}
           onClick={() => setModal({ mode: "deposit" })}
           className="px-4 py-1.5 rounded text-sm font-semibold text-white bg-[#0C447C] hover:bg-[#093560] disabled:opacity-40 transition-colors"
         >
           Deposit
         </button>
         <button
-          disabled={activeId == null}
+          disabled={currentSelection == null}
           onClick={() => setModal({ mode: "withdraw" })}
           className="px-4 py-1.5 rounded text-sm font-semibold text-white bg-[#791F1F] hover:bg-[#611919] disabled:opacity-40 transition-colors"
         >
           Withdraw
         </button>
         <button
-          disabled={activeId == null}
+          disabled={currentSelection == null}
           onClick={() => setModal({ mode: "dividend" })}
           className="px-4 py-1.5 rounded text-sm font-semibold text-white bg-[#0F6E56] hover:bg-[#0b5844] disabled:opacity-40 transition-colors"
         >
           💰 Dividend
         </button>
         <button
-          disabled={activeId == null}
+          disabled={currentSelection == null}
           onClick={() => setShowImport((v) => !v)}
           className="px-4 py-1.5 rounded text-sm font-semibold text-gray-600 border border-gray-300 hover:bg-gray-50 disabled:opacity-40 transition-colors"
         >
@@ -489,7 +516,7 @@ export default function PortfolioPage() {
       </div>
 
       {/* ── Import Existing Portfolio ── */}
-      {showImport && activeId != null && (
+      {showImport && currentSelection != null && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-3">
           <div>
             <p className="text-sm font-semibold text-amber-800">Import Existing Portfolio</p>

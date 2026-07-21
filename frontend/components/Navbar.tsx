@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { logout } from "@/lib/auth";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import { getSystemStatus, type SystemStatus } from "@/lib/api";
+import WorkspaceScopeSwitcher from "@/components/WorkspaceScopeSwitcher";
 
 // Phase 4C.2A — Soft consolidation: 4 top-level destinations.
 // `match` lists every route prefix that belongs to this hub, so the nav item
@@ -45,13 +46,11 @@ function isActive(match: string[], pathname: string) {
 
 export default function Navbar() {
   const pathname = usePathname();
-  const { portfolios, activeId, setActiveId } = usePortfolio();
+  const { portfolios } = usePortfolio();
   const [adminOpen, setAdminOpen] = useState(false);
-  const [portfolioOpen, setPortfolioOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [sysStatus, setSysStatus] = useState<SystemStatus | null>(null);
   const adminRef = useRef<HTMLDivElement>(null);
-  const portfolioRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     getSystemStatus()
@@ -65,9 +64,6 @@ export default function Navbar() {
       if (adminRef.current && !adminRef.current.contains(e.target as Node)) {
         setAdminOpen(false);
       }
-      if (portfolioRef.current && !portfolioRef.current.contains(e.target as Node)) {
-        setPortfolioOpen(false);
-      }
     }
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
@@ -76,11 +72,8 @@ export default function Navbar() {
   // Close everything on route change
   useEffect(() => {
     setAdminOpen(false);
-    setPortfolioOpen(false);
     setMobileOpen(false);
   }, [pathname]);
-
-  const activePortfolioName = portfolios.find((p) => p.id === activeId)?.name ?? "พอร์ต";
 
   const adminActive = NAV_ADMIN.some((n) => isActive([n.href], pathname));
 
@@ -127,39 +120,8 @@ export default function Navbar() {
         {/* Push admin + logout to the right */}
         <div className="hidden md:flex items-center gap-2 ml-auto">
 
-          {/* Portfolio selector */}
-          {portfolios.length > 0 && (
-            <div className="relative" ref={portfolioRef}>
-              <button
-                onClick={() => setPortfolioOpen((o) => !o)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors max-w-[160px]"
-              >
-                <span className="truncate">{activePortfolioName}</span>
-                <span className="text-xs text-gray-400 shrink-0">
-                  {portfolioOpen ? "▲" : "▼"}
-                </span>
-              </button>
-              {portfolioOpen && (
-                <div className="absolute right-0 mt-1.5 w-48 bg-white border border-gray-200 rounded-xl shadow-lg py-1.5 z-50">
-                  <p className="px-4 pb-1 pt-0.5 text-xs font-semibold text-gray-400 uppercase tracking-wider">เลือกพอร์ต</p>
-                  {portfolios.map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() => { setActiveId(p.id); setPortfolioOpen(false); }}
-                      className={`flex items-center w-full px-4 py-2 text-sm transition-colors ${
-                        p.id === activeId
-                          ? "bg-blue-50 text-blue-700 font-medium"
-                          : "text-gray-700 hover:bg-gray-50"
-                      }`}
-                    >
-                      {p.id === activeId && <span className="mr-2 text-blue-500">✓</span>}
-                      <span className="truncate">{p.name}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          {/* Portfolio selector — M36.1 Phase 3 shared Workspace-Scope contract */}
+          <WorkspaceScopeSwitcher variant="dropdown" label="เลือกพอร์ต" noneLabel="ไม่ได้เลือกพอร์ต" />
 
           {/* Admin dropdown */}
           <div className="relative" ref={adminRef}>
@@ -236,20 +198,7 @@ export default function Navbar() {
             <>
               <div className="my-2 border-t" />
               <p className="px-3 pb-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">เลือกพอร์ต</p>
-              {portfolios.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => setActiveId(p.id)}
-                  className={`flex items-center w-full px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                    p.id === activeId
-                      ? "bg-blue-50 text-blue-700"
-                      : "text-gray-700 hover:bg-gray-100"
-                  }`}
-                >
-                  {p.id === activeId && <span className="mr-2 text-blue-500">✓</span>}
-                  {p.name}
-                </button>
-              ))}
+              <WorkspaceScopeSwitcher variant="list" noneLabel="ไม่ได้เลือกพอร์ต" className="space-y-0.5" />
             </>
           )}
 

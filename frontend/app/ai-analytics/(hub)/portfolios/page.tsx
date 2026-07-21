@@ -18,14 +18,15 @@
 // and defers Allocation/Contribution/underwater-Drawdown to a future
 // milestone rather than fabricate them client-side.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePortfolio } from "@/lib/PortfolioContext";
-import { getShadowPerformanceSummary, type ShadowPerformanceSummary } from "@/lib/api";
+import { getShadowPerformanceSummary, isUnresolvedPortfolioError, type ShadowPerformanceSummary } from "@/lib/api";
 import AsOfStamp from "@/components/evaluation/AsOfStamp";
 import GapAnnotation from "@/components/evaluation/GapAnnotation";
 import EvaluationColdStart from "@/components/evaluation/EvaluationColdStart";
 import ThreePortfolioChart from "@/components/evaluation/ThreePortfolioChart";
 import ComparisonWindowCard from "@/components/evaluation/ComparisonWindowCard";
+import PortfolioSelectionNotice from "@/components/PortfolioSelectionNotice";
 
 const PERIODS = [
   { label: "90D", days: 90 },
@@ -60,34 +61,50 @@ function daysBetweenInclusive(a: string, b: string): number {
 }
 
 export default function PortfoliosPage() {
-  const { activeId } = usePortfolio();
-  const portfolioId = activeId ?? 0;
+  const { currentSelection, reportUnresolvedPortfolio } = usePortfolio();
+  const portfolioId = currentSelection;
 
   const [periodDays, setPeriodDays] = useState(90);
   const [data, setData] = useState<ShadowPerformanceSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // M36.1 WP4B F04 — captured Portfolio Identity; a response arriving after
+  // Current Selection has moved to a different portfolio (or cleared to
+  // NONE) is discarded instead of repopulating the page.
+  const requestIdRef = useRef<number | null>(null);
+
   const load = useCallback(async () => {
-    if (!portfolioId) return;
+    if (portfolioId == null) return;
+    const pid = portfolioId;
     setLoading(true);
     setError(null);
     try {
-      const result = await getShadowPerformanceSummary(portfolioId, periodDays);
+      const result = await getShadowPerformanceSummary(pid, periodDays);
+      if (requestIdRef.current !== pid) return;
       setData(result);
     } catch (e) {
+      if (requestIdRef.current !== pid) return;
       setError(e instanceof Error ? e.message : "Failed to load Three Portfolios comparison");
+      if (isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(pid);
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === pid) setLoading(false);
     }
-  }, [portfolioId, periodDays]);
+  }, [portfolioId, periodDays, reportUnresolvedPortfolio]);
 
   useEffect(() => {
+    requestIdRef.current = portfolioId;
+    if (portfolioId == null) {
+      setData(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     load();
-  }, [load]);
+  }, [portfolioId, load]);
 
-  if (!portfolioId) {
-    return <p className="text-sm text-gray-400 py-10 text-center">Select a portfolio to view Portfolios.</p>;
+  if (portfolioId == null) {
+    return <PortfolioSelectionNotice label="Portfolios" />;
   }
 
   const tp = data?.three_portfolios;

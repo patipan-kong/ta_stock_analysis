@@ -31,7 +31,8 @@ from typing import Any
 
 import numpy as np
 
-from models.database import Portfolio, PortfolioItem
+from models.database import PortfolioItem
+from services.portfolio_reference import resolve_portfolio_reference
 from services.data_fetcher import (
     fetch_info,
     fetch_history,
@@ -759,11 +760,7 @@ def compute_portfolio_factor_exposure(db, portfolio_id: int, workspace_id: int) 
         )
 
     # Load portfolio
-    portfolio = (
-        db.query(Portfolio)
-        .filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == workspace_id)
-        .first()
-    )
+    portfolio = resolve_portfolio_reference(db, portfolio_id, workspace_id)
     if not portfolio:
         return {"error": "portfolio_not_found"}
 

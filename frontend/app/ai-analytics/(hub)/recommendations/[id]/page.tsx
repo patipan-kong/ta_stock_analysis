@@ -6,11 +6,12 @@
 // GET /analytics/evaluation/recommendations/{id} verbatim; no section
 // recomputes anything the backend already delivered.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { usePortfolio } from "@/lib/PortfolioContext";
-import { getRecommendationReportCard, type RecommendationReportCard, type ExecutionAnalysis } from "@/lib/api";
+import { getRecommendationReportCard, isUnresolvedPortfolioError, type RecommendationReportCard, type ExecutionAnalysis } from "@/lib/api";
 import BackBreadcrumb from "@/components/BackBreadcrumb";
+import PortfolioSelectionNotice from "@/components/PortfolioSelectionNotice";
 import VerdictSentence from "@/components/evaluation/VerdictSentence";
 import DecisionStatusBadge from "@/components/evaluation/DecisionStatusBadge";
 import HorizonStrip from "@/components/evaluation/HorizonStrip";
@@ -202,30 +203,50 @@ function OutcomeSection({ outcomes }: { outcomes: RecommendationReportCard["outc
 export default function ReportCardPage() {
   const params = useParams();
   const snapshotId = Number(params?.id);
-  const { activeId } = usePortfolio();
-  const portfolioId = activeId ?? 0;
+  const { currentSelection, reportUnresolvedPortfolio } = usePortfolio();
+  const portfolioId = currentSelection;
 
   const [data, setData] = useState<RecommendationReportCard | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // M36.1 WP4C F04 — captured Portfolio Identity; a response arriving after
+  // Current Selection has moved to a different portfolio (or cleared to
+  // NONE) is discarded instead of repopulating the page.
+  const requestIdRef = useRef<number | null>(null);
+
   const load = useCallback(async () => {
-    if (!portfolioId || !snapshotId) return;
+    if (portfolioId == null || !snapshotId) return;
+    const pid = portfolioId;
     setLoading(true);
     setError(null);
     try {
-      const result = await getRecommendationReportCard(portfolioId, snapshotId);
+      const result = await getRecommendationReportCard(pid, snapshotId);
+      if (requestIdRef.current !== pid) return;
       setData(result);
     } catch (e) {
+      if (requestIdRef.current !== pid) return;
       setError(e instanceof Error ? e.message : "Failed to load report card");
+      if (isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(pid);
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === pid) setLoading(false);
     }
-  }, [portfolioId, snapshotId]);
+  }, [portfolioId, snapshotId, reportUnresolvedPortfolio]);
 
   useEffect(() => {
+    requestIdRef.current = portfolioId;
+    if (portfolioId == null) {
+      setData(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     load();
-  }, [load]);
+  }, [portfolioId, load]);
+
+  if (portfolioId == null) {
+    return <PortfolioSelectionNotice label="this Recommendation Report Card" />;
+  }
 
   return (
     <div className="space-y-4">

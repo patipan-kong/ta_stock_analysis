@@ -178,7 +178,14 @@ def _make_db(
                 fm.first.return_value = rows["portfolio"]
             return fm
 
+        def _filter(*args):
+            # M36.1 WP4C — services.portfolio_reference.resolve_portfolio_reference
+            # queries via db.query(Portfolio).filter(Portfolio.id == ..., ...).first(),
+            # not .filter_by(...). Route it to the same stub data as _filter_by.
+            return _filter_by()
+
         qm.filter_by = _filter_by
+        qm.filter    = _filter
         qm.order_by  = lambda *a: qm
         qm.all.return_value = []
         return qm

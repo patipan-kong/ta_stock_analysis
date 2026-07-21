@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { getFactorExposure } from "@/lib/api";
@@ -127,11 +127,19 @@ export default function FactorsPage({ params }: { params: { id: string } }) {
   const [loading, setLoading] = useState(true);
   const [error, setError]   = useState<string | null>(null);
 
+  // M36.1 WP4B F04 — this page is anchored to the URL's Portfolio Identity
+  // (validated deep-entry), not Current Selection, but a request identity
+  // guard still prevents a stale response for a previous [id] from
+  // repopulating the page if the route param changes without a full remount.
+  const requestIdRef = useRef<number | null>(null);
+
   const load = useCallback(async () => {
+    const pid = portfolioId;
     setLoading(true);
     setError(null);
     try {
-      const result = await getFactorExposure(portfolioId);
+      const result = await getFactorExposure(pid);
+      if (requestIdRef.current !== pid) return;
       if (result.error) {
         setError(result.error === "portfolio_not_found"
           ? "Portfolio not found. Check the URL or select a portfolio from the portfolio page."
@@ -141,13 +149,19 @@ export default function FactorsPage({ params }: { params: { id: string } }) {
         setData(result);
       }
     } catch (e: unknown) {
+      if (requestIdRef.current !== pid) return;
       setError(e instanceof Error ? e.message : "Unexpected error loading factor data.");
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === pid) setLoading(false);
     }
   }, [portfolioId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    requestIdRef.current = portfolioId;
+    setData(null);
+    setError(null);
+    load();
+  }, [portfolioId, load]);
 
   const isEmpty = data && data.per_stock_scores.length === 0;
 

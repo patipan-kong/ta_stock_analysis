@@ -134,7 +134,7 @@ function RiskBadge({ level }: { level: RiskLevel | null }) {
 }
 
 export default function WatchlistPage() {
-  const { activeId: activePortfolioId } = usePortfolio();
+  const { currentSelection: activePortfolioId } = usePortfolio();
   const [items, setItems] = useState<WatchlistItem[]>([]);
   const [symbol, setSymbol] = useState("");
   const [loading, setLoading] = useState(true);

@@ -5,16 +5,17 @@
 // — zero metric computation. Class-segmented acceptance is the only honest
 // way to read acceptance (UX D5) and is never rendered as an unsegmented total.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { usePortfolio } from "@/lib/PortfolioContext";
-import { getExecutionLedger, type ExecutionLedger, type ExecutionLedgerRow } from "@/lib/api";
+import { getExecutionLedger, isUnresolvedPortfolioError, type ExecutionLedger, type ExecutionLedgerRow } from "@/lib/api";
 import AsOfStamp from "@/components/evaluation/AsOfStamp";
 import DecisionStatusBadge from "@/components/evaluation/DecisionStatusBadge";
 import CounterfactualValue from "@/components/evaluation/CounterfactualValue";
 import EvidenceLedger, { type EvidenceColumn } from "@/components/evaluation/EvidenceLedger";
 import EvaluationColdStart from "@/components/evaluation/EvaluationColdStart";
 import ClassSegmentBars from "@/components/evaluation/ClassSegmentBars";
+import PortfolioSelectionNotice from "@/components/PortfolioSelectionNotice";
 
 const PERIODS = [
   { label: "30D", days: 30 },
@@ -29,8 +30,8 @@ function pct(n: number | null | undefined, decimals = 1): string {
 }
 
 export default function ExecutionLedgerPage() {
-  const { activeId } = usePortfolio();
-  const portfolioId = activeId ?? 0;
+  const { currentSelection, reportUnresolvedPortfolio } = usePortfolio();
+  const portfolioId = currentSelection;
   const router = useRouter();
 
   const [periodDays, setPeriodDays] = useState(90);
@@ -38,26 +39,42 @@ export default function ExecutionLedgerPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // M36.1 WP4B F04 — captured Portfolio Identity; a response arriving after
+  // Current Selection has moved to a different portfolio (or cleared to
+  // NONE) is discarded instead of repopulating the page.
+  const requestIdRef = useRef<number | null>(null);
+
   const load = useCallback(async () => {
-    if (!portfolioId) return;
+    if (portfolioId == null) return;
+    const pid = portfolioId;
     setLoading(true);
     setError(null);
     try {
-      const result = await getExecutionLedger(portfolioId, periodDays);
+      const result = await getExecutionLedger(pid, periodDays);
+      if (requestIdRef.current !== pid) return;
       setData(result);
     } catch (e) {
+      if (requestIdRef.current !== pid) return;
       setError(e instanceof Error ? e.message : "Failed to load execution ledger");
+      if (isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(pid);
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === pid) setLoading(false);
     }
-  }, [portfolioId, periodDays]);
+  }, [portfolioId, periodDays, reportUnresolvedPortfolio]);
 
   useEffect(() => {
+    requestIdRef.current = portfolioId;
+    if (portfolioId == null) {
+      setData(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     load();
-  }, [load]);
+  }, [portfolioId, load]);
 
-  if (!portfolioId) {
-    return <p className="text-sm text-gray-400 py-10 text-center">Select a portfolio to view Execution Intelligence.</p>;
+  if (portfolioId == null) {
+    return <PortfolioSelectionNotice label="Execution Intelligence" />;
   }
 
   const columns: EvidenceColumn<ExecutionLedgerRow>[] = [

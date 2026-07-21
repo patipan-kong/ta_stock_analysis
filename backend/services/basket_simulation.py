@@ -157,11 +157,12 @@ def simulate_basket(
     db: Session,
 ) -> BasketSimulationResult:
     """Load current portfolio state, resolve constraints, run simulation."""
-    from models.database import Portfolio, PortfolioItem, Settings, Watchlist
+    from models.database import PortfolioItem, Settings, Watchlist
     from services.optimizer.constraint_resolver import (
         effective_sector_cap,
         resolve_constraints,
     )
+    from services.portfolio_reference import resolve_portfolio_reference
 
     symbols = [s.strip().upper() for s in symbols if s.strip()]
     if not symbols:
@@ -170,11 +171,7 @@ def simulate_basket(
         )
 
     # ── Load portfolio ────────────────────────────────────────────────────────
-    portfolio = (
-        db.query(Portfolio)
-        .filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == workspace_id)
-        .first()
-    )
+    portfolio = resolve_portfolio_reference(db, portfolio_id, workspace_id)
     if not portfolio:
         raise ValueError(f"Portfolio {portfolio_id} not found")
 

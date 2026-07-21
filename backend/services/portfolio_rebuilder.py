@@ -993,6 +993,13 @@ def _export_backup(
     ts   = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     path = os.path.join(backup_dir, f"rebuild_{portfolio_id}_{ts}.json")
 
+    # M36.1 F05 documented exception: id-only lookup, not
+    # resolve_portfolio_reference(). _export_backup has no workspace_id in
+    # its signature and is reachable only from the rebuild_portfolio CLI
+    # subcommand (operator tool) — it never receives an untrusted or
+    # mismatched workspace/portfolio pair, so there is no referenceability
+    # gap to close here. Threading a workspace_id through the whole CLI
+    # rebuild pipeline for this alone is out of scope for this pass.
     portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
     items     = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id).all()
     snaps     = db.query(PortfolioSnapshot).filter_by(portfolio_id=portfolio_id).all()

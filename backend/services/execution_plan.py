@@ -110,14 +110,11 @@ def build_execution_plan(
         timing_scores:      {symbol: score} used to annotate buy actions.
         db:                 SQLAlchemy session.
     """
-    from models.database import AnalysisCache, Portfolio, PortfolioItem
+    from models.database import AnalysisCache, PortfolioItem
+    from services.portfolio_reference import resolve_portfolio_reference
     from services.registry_symbol_matching import match_known_symbols
 
-    portfolio = (
-        db.query(Portfolio)
-        .filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == workspace_id)
-        .first()
-    )
+    portfolio = resolve_portfolio_reference(db, portfolio_id, workspace_id)
     if not portfolio:
         raise ValueError(f"Portfolio {portfolio_id} not found")
 

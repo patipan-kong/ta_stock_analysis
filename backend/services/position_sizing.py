@@ -238,7 +238,7 @@ def suggest_position_sizes(
     timing_scores: dict[str, int] | None = None,
 ) -> PositionSizingResult:
     """Load portfolio + analysis cache, resolve constraints, size positions."""
-    from models.database import AnalysisCache, Portfolio, PortfolioItem, Watchlist
+    from models.database import AnalysisCache, PortfolioItem, Watchlist
     from services.basket_simulation import (
         _CANONICAL_SECTORS,
         _load_settings,
@@ -252,17 +252,14 @@ def suggest_position_sizes(
     )
     from services.optimizer.constraint_resolver import effective_sector_cap, resolve_constraints
     from services.optimizer.strategy_profiles import valid_persona
+    from services.portfolio_reference import resolve_portfolio_reference
     from services.registry_symbol_matching import match_known_symbols
 
     symbols = [s.strip().upper() for s in symbols if s.strip()]
     if not symbols:
         return compute_position_sizes(portfolio_id, [], {}, {}, 100.0, {}, {}, 0.0)
 
-    portfolio = (
-        db.query(Portfolio)
-        .filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == workspace_id)
-        .first()
-    )
+    portfolio = resolve_portfolio_reference(db, portfolio_id, workspace_id)
     if not portfolio:
         raise ValueError(f"Portfolio {portfolio_id} not found")
 

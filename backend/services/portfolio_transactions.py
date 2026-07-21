@@ -51,6 +51,7 @@ from sqlalchemy.orm import Session
 
 from models.database import Portfolio, PortfolioItem, Transaction
 from services import capability_lookup_service, registry_lookup
+from services.portfolio_reference import resolve_portfolio_reference
 from services.broker_fees import FeeProfile, FeeQuoteStatus, TradeSide
 from services.broker_fees_compat import quote_transaction_fee_compat
 from services.capability_lookup_service import UnresolvedCapability
@@ -274,6 +275,10 @@ def execute_buy(
     this column; it rides on the ledger as evaluation-layer metadata, not
     ledger data itself.
     """
+    portfolio = resolve_portfolio_reference(db, portfolio_id, ws_id)
+    if not portfolio:
+        raise ValueError(f"Portfolio {portfolio_id} not found")
+
     d_shares = _d(shares)
     d_price  = _d(price_per_share)
     d_gross  = d_shares * d_price
@@ -323,9 +328,7 @@ def execute_buy(
         )
         db.add(item)
 
-    portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
-    if portfolio:
-        portfolio.cash_balance = _f(_d(portfolio.cash_balance) - total)
+    portfolio.cash_balance = _f(_d(portfolio.cash_balance) - total)
 
     tx = Transaction(
         workspace_id=ws_id,
@@ -404,6 +407,10 @@ def execute_sell(
     Because avg_cost already embeds the BUY-side fees, this correctly reflects
     the complete round-trip cost of the position.
     """
+    portfolio = resolve_portfolio_reference(db, portfolio_id, ws_id)
+    if not portfolio:
+        raise ValueError(f"Portfolio {portfolio_id} not found")
+
     item = db.query(PortfolioItem).filter_by(portfolio_id=portfolio_id, symbol=symbol).first()
     if not item:
         raise ValueError(f"No holding found for {symbol} in this portfolio")
@@ -457,9 +464,7 @@ def execute_sell(
         remaining_shares = item.shares
         remaining_avg    = item.avg_cost   # avg_cost unchanged on partial sell
 
-    portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
-    if portfolio:
-        portfolio.cash_balance = _f(_d(portfolio.cash_balance) + net_proceeds)
+    portfolio.cash_balance = _f(_d(portfolio.cash_balance) + net_proceeds)
 
     tx = Transaction(
         workspace_id=ws_id,
@@ -527,7 +532,7 @@ def execute_deposit(
     d_amount = _d(amount)
     tx_date  = transaction_date or datetime.utcnow()
 
-    portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
+    portfolio = resolve_portfolio_reference(db, portfolio_id, ws_id)
     if not portfolio:
         raise ValueError("Portfolio not found")
 
@@ -583,7 +588,7 @@ def execute_withdraw(
     d_amount = _d(amount)
     tx_date  = transaction_date or datetime.utcnow()
 
-    portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
+    portfolio = resolve_portfolio_reference(db, portfolio_id, ws_id)
     if not portfolio:
         raise ValueError("Portfolio not found")
 
@@ -647,7 +652,7 @@ def execute_dividend(
     d_amount = _d(amount)
     tx_date  = transaction_date or datetime.utcnow()
 
-    portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
+    portfolio = resolve_portfolio_reference(db, portfolio_id, ws_id)
     if not portfolio:
         raise ValueError("Portfolio not found")
 
@@ -713,6 +718,8 @@ def execute_initial_position(
         raise ValueError("shares must be positive")
     if avg_cost <= 0:
         raise ValueError("avg_cost must be positive")
+    if resolve_portfolio_reference(db, portfolio_id, ws_id) is None:
+        raise ValueError(f"Portfolio {portfolio_id} not found")
 
     d_shares = _d(shares)
     d_avg    = _d(avg_cost)
@@ -812,6 +819,8 @@ def execute_quantity_correction(
         raise ValueError("shares_delta must be non-zero")
     if price_per_share <= 0:
         raise ValueError("price_per_share must be positive")
+    if resolve_portfolio_reference(db, portfolio_id, ws_id) is None:
+        raise ValueError(f"Portfolio {portfolio_id} not found")
 
     d_delta = _d(shares_delta)
     d_price = _d(price_per_share)
@@ -894,7 +903,7 @@ def execute_initial_cash(
     d_amount = _d(amount)
     tx_date  = transaction_date or datetime.utcnow()
 
-    portfolio = db.query(Portfolio).filter_by(id=portfolio_id).first()
+    portfolio = resolve_portfolio_reference(db, portfolio_id, ws_id)
     if not portfolio:
         raise ValueError("Portfolio not found")
 

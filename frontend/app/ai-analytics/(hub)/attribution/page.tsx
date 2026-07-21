@@ -14,18 +14,20 @@
 // data yet) rather than fabricated numbers; By Holding is similarly honest
 // about not having per-holding attribution in this milestone's scope.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { usePortfolio } from "@/lib/PortfolioContext";
 import {
   getAttributionSummary,
   getRegimeAttribution,
+  isUnresolvedPortfolioError,
   type AttributionSummaryResponse,
   type RegimeAttributionResponse,
 } from "@/lib/api";
 import AsOfStamp from "@/components/evaluation/AsOfStamp";
 import EffectWaterfall, { type WaterfallRow } from "@/components/evaluation/EffectWaterfall";
 import EvaluationColdStart from "@/components/evaluation/EvaluationColdStart";
+import PortfolioSelectionNotice from "@/components/PortfolioSelectionNotice";
 
 const PERIODS = [
   { label: "30D", days: 30 },
@@ -36,8 +38,8 @@ const PERIODS = [
 type Tab = "sector" | "regime" | "holding";
 
 export default function AttributionPage() {
-  const { activeId } = usePortfolio();
-  const portfolioId = activeId ?? 0;
+  const { currentSelection, reportUnresolvedPortfolio } = usePortfolio();
+  const portfolioId = currentSelection;
   const router = useRouter();
 
   const [periodDays, setPeriodDays] = useState(90);
@@ -47,30 +49,47 @@ export default function AttributionPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // M36.1 WP4A F04 — captures the Portfolio Identity a request was issued
+  // for; a response arriving after Current Selection has moved to a
+  // different portfolio (or cleared to NONE) is discarded.
+  const requestIdRef = useRef<number | null>(null);
+
   const load = useCallback(async () => {
-    if (!portfolioId) return;
+    if (portfolioId == null) return;
+    const pid = portfolioId;
     setLoading(true);
     setError(null);
     try {
       const [summary, regimeResult] = await Promise.all([
-        getAttributionSummary(portfolioId, periodDays),
-        getRegimeAttribution(portfolioId, periodDays),
+        getAttributionSummary(pid, periodDays),
+        getRegimeAttribution(pid, periodDays),
       ]);
+      if (requestIdRef.current !== pid) return;
       setData(summary);
       setRegime(regimeResult);
     } catch (e) {
+      if (requestIdRef.current !== pid) return;
       setError(e instanceof Error ? e.message : "Failed to load Attribution");
+      if (isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(pid);
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === pid) setLoading(false);
     }
-  }, [portfolioId, periodDays]);
+  }, [portfolioId, periodDays, reportUnresolvedPortfolio]);
 
   useEffect(() => {
+    requestIdRef.current = portfolioId;
+    if (portfolioId == null) {
+      setData(null);
+      setRegime(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     load();
-  }, [load]);
+  }, [portfolioId, load]);
 
-  if (!portfolioId) {
-    return <p className="text-sm text-gray-400 py-10 text-center">Select a portfolio to view Attribution.</p>;
+  if (portfolioId == null) {
+    return <PortfolioSelectionNotice label="Attribution" />;
   }
 
   const wf = data?.waterfall;

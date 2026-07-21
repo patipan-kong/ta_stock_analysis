@@ -9,7 +9,7 @@ import BackBreadcrumb from "@/components/BackBreadcrumb";
 import GoalWizard from "@/components/goal/GoalWizard";
 
 export default function GoalWizardPage() {
-  const { activeId, loading } = usePortfolio();
+  const { currentSelection, loading } = usePortfolio();
 
   if (loading) {
     return (
@@ -19,7 +19,7 @@ export default function GoalWizardPage() {
     );
   }
 
-  if (activeId == null) {
+  if (currentSelection == null) {
     return (
       <div className="max-w-5xl mx-auto px-4 py-8">
         <div className="rounded-2xl border-2 border-gray-200 bg-white p-8 text-center text-gray-500">
@@ -36,7 +36,7 @@ export default function GoalWizardPage() {
         current="ตั้งเป้าหมายการลงทุน"
         href="/operations-center"
       />
-      <GoalWizard portfolioId={activeId} />
+      <GoalWizard portfolioId={currentSelection} />
     </div>
   );
 }

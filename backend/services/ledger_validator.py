@@ -42,6 +42,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from models.database import Portfolio, PortfolioItem, PortfolioSnapshot, Transaction
+from services.portfolio_reference import resolve_portfolio_reference
 from services.asset_definitions import (
     BindingResolver,
     DefinitionRegistry,
@@ -1374,11 +1375,7 @@ async def validate_portfolio_ledger(
     t_start = time.monotonic()
 
     # ── Load portfolio ────────────────────────────────────────────────────────
-    portfolio = (
-        db.query(Portfolio)
-        .filter_by(id=portfolio_id, workspace_id=workspace_id)
-        .first()
-    )
+    portfolio = resolve_portfolio_reference(db, portfolio_id, workspace_id)
     if portfolio is None:
         return LedgerValidationReport(
             portfolio_id           = portfolio_id,

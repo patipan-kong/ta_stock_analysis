@@ -275,7 +275,7 @@ function RegimePerformanceCard({ regime }: { regime: RegimeAttributionResponse |
 }
 
 export default function PortfolioIntelligencePage() {
-  const { portfolios, activeId } = usePortfolio();
+  const { portfolios, currentSelection } = usePortfolio();
   const [timeline, setTimeline] = useState<AIvsHumanTimeline | null>(null);
   const [attribution, setAttribution] = useState<AttributionSummaryResponse | null>(null);
   const [calibration, setCalibration] = useState<EnhancedCalibrationDetail | null>(null);
@@ -285,17 +285,17 @@ export default function PortfolioIntelligencePage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!activeId) return;
+    if (!currentSelection) return;
 
     let active = true;
     setLoading(true);
     Promise.all([
-      getAIvsHumanTimeline(activeId, 180, 50),
-      getAttributionSummary(activeId, 30),
-      getConfidenceCalibrationV2(activeId, 30, false),
-      getCalibrationHistory(activeId, 30),
-      getRegimeAttribution(activeId, 120),
-      getDecisionMemoryTimeline(activeId, 50),
+      getAIvsHumanTimeline(currentSelection, 180, 50),
+      getAttributionSummary(currentSelection, 30),
+      getConfidenceCalibrationV2(currentSelection, 30, false),
+      getCalibrationHistory(currentSelection, 30),
+      getRegimeAttribution(currentSelection, 120),
+      getDecisionMemoryTimeline(currentSelection, 50),
     ])
       .then(([ai, attr, cal, calHist, reg, dec]) => {
         if (!active) return;
@@ -322,9 +322,9 @@ export default function PortfolioIntelligencePage() {
 
     const onDecision = () => {
       Promise.all([
-        getAIvsHumanTimeline(activeId, 180, 50),
-        getAttributionSummary(activeId, 30),
-        getDecisionMemoryTimeline(activeId, 50),
+        getAIvsHumanTimeline(currentSelection, 180, 50),
+        getAttributionSummary(currentSelection, 30),
+        getDecisionMemoryTimeline(currentSelection, 50),
       ])
         .then(([ai, attr, dec]) => {
           setTimeline(ai);
@@ -343,9 +343,9 @@ export default function PortfolioIntelligencePage() {
       active = false;
       window.removeEventListener("execution-decision-recorded", onDecision);
     };
-  }, [activeId]);
+  }, [currentSelection]);
 
-  if (!activeId) {
+  if (!currentSelection) {
     return (
       <div className="space-y-5">
         <BackBreadcrumb parent="ศูนย์บัญชาการ AI" current="Portfolio Intelligence" href="/operations-center" />
@@ -358,7 +358,7 @@ export default function PortfolioIntelligencePage() {
     );
   }
 
-  const portfolioName = portfolios.find((p) => p.id === activeId)?.name ?? "Portfolio";
+  const portfolioName = portfolios.find((p) => p.id === currentSelection)?.name ?? "Portfolio";
 
   return (
     <div className="space-y-5">
@@ -371,7 +371,7 @@ export default function PortfolioIntelligencePage() {
         </p>
       </div>
 
-      <ShadowPortfolioPanel portfolioId={activeId} />
+      <ShadowPortfolioPanel portfolioId={currentSelection} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <HumanVsAIComparisonCard attribution={attribution} />
@@ -383,7 +383,7 @@ export default function PortfolioIntelligencePage() {
         <RegimePerformanceCard regime={regime} />
       </div>
 
-      <DecisionMemoryTimeline portfolioId={activeId} limit={20} />
+      <DecisionMemoryTimeline portfolioId={currentSelection} limit={20} />
     </div>
   );
 }

@@ -351,19 +351,16 @@ def suggest_risk_budget(
     risk_score = 100 − round((ta_pct + fa_pct) / 2)
     High-quality stocks (high ta+fa) → low risk → larger allocation.
     """
-    from models.database import AnalysisCache, Portfolio, PortfolioItem, Watchlist
+    from models.database import AnalysisCache, PortfolioItem, Watchlist
     from services.basket_simulation import _resolve_symbol_sectors
+    from services.portfolio_reference import resolve_portfolio_reference
     from services.registry_symbol_matching import match_known_symbols
 
     symbols = [s.strip().upper() for s in symbols if s.strip()]
     if not symbols:
         return compute_allocations([])
 
-    portfolio = (
-        db.query(Portfolio)
-        .filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == workspace_id)
-        .first()
-    )
+    portfolio = resolve_portfolio_reference(db, portfolio_id, workspace_id)
     if not portfolio:
         raise ValueError(f"Portfolio {portfolio_id} not found")
 

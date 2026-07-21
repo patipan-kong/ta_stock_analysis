@@ -26,6 +26,17 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// M36.1 WP4A F03 — the exact, authoritative classification of "this response
+// means the referenced Portfolio no longer resolves." Matches only the
+// backend's shared resolve_portfolio_or_404() signature (404 + this literal
+// detail string, used consistently by every portfolio-scoped endpoint) —
+// never a bare 404, which can also mean e.g. "symbol not found in this
+// portfolio". Deliberately narrow: an arbitrary 404 must not be treated as a
+// deleted portfolio.
+export function isUnresolvedPortfolioError(err: unknown): boolean {
+  return err instanceof Error && /^API 404:/.test(err.message) && err.message.includes("Portfolio not found");
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface Portfolio {

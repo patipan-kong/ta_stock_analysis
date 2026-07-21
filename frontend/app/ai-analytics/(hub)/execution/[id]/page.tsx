@@ -5,13 +5,14 @@
 // shipped) verbatim — plan-vs-actual per trade, the four deltas, and the
 // §8 PARTIAL-execution warning when applicable.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { usePortfolio } from "@/lib/PortfolioContext";
-import { getExecutionDetail, type ExecutionDetail } from "@/lib/api";
+import { getExecutionDetail, isUnresolvedPortfolioError, type ExecutionDetail } from "@/lib/api";
 import BackBreadcrumb from "@/components/BackBreadcrumb";
 import DecisionStatusBadge from "@/components/evaluation/DecisionStatusBadge";
 import AsOfStamp from "@/components/evaluation/AsOfStamp";
+import PortfolioSelectionNotice from "@/components/PortfolioSelectionNotice";
 
 function pct(n: number | null | undefined, decimals = 1): string {
   if (n == null) return "not measurable";
@@ -21,30 +22,50 @@ function pct(n: number | null | undefined, decimals = 1): string {
 export default function ExecutionDetailPage() {
   const params = useParams();
   const decisionId = Number(params?.id);
-  const { activeId } = usePortfolio();
-  const portfolioId = activeId ?? 0;
+  const { currentSelection, reportUnresolvedPortfolio } = usePortfolio();
+  const portfolioId = currentSelection;
 
   const [data, setData] = useState<ExecutionDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // M36.1 WP4C F04 — captured Portfolio Identity; a response arriving after
+  // Current Selection has moved to a different portfolio (or cleared to
+  // NONE) is discarded instead of repopulating the page.
+  const requestIdRef = useRef<number | null>(null);
+
   const load = useCallback(async () => {
-    if (!portfolioId || !decisionId) return;
+    if (portfolioId == null || !decisionId) return;
+    const pid = portfolioId;
     setLoading(true);
     setError(null);
     try {
-      const result = await getExecutionDetail(portfolioId, decisionId);
+      const result = await getExecutionDetail(pid, decisionId);
+      if (requestIdRef.current !== pid) return;
       setData(result);
     } catch (e) {
+      if (requestIdRef.current !== pid) return;
       setError(e instanceof Error ? e.message : "Failed to load execution detail");
+      if (isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(pid);
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === pid) setLoading(false);
     }
-  }, [portfolioId, decisionId]);
+  }, [portfolioId, decisionId, reportUnresolvedPortfolio]);
 
   useEffect(() => {
+    requestIdRef.current = portfolioId;
+    if (portfolioId == null) {
+      setData(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     load();
-  }, [load]);
+  }, [portfolioId, load]);
+
+  if (portfolioId == null) {
+    return <PortfolioSelectionNotice label="this Execution Detail" />;
+  }
 
   return (
     <div className="space-y-4">

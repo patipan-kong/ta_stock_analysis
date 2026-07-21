@@ -31,10 +31,11 @@ _DR_DIGIT_PATTERN = re.compile(r"^[A-Z]+\d+$")
 from sqlalchemy.orm import Session
 
 from models.database import (
-    AnalysisCache, Portfolio, PortfolioItem,
+    AnalysisCache, PortfolioItem,
     RecommendationSnapshot, Settings, Watchlist,
 )
 from services.data_fetcher import fetch_info, fetch_price_info
+from services.portfolio_reference import resolve_portfolio_reference
 from services.symbol_normalization import get_yfinance_symbol
 from services.optimizer.strategy_profiles import (
     STRATEGY_PROFILES, valid_persona,
@@ -364,11 +365,7 @@ def review_ideas(
         return {"portfolio_context": {}, "reviews": []}
 
     # ── Load portfolio ─────────────────────────────────────────────────────────
-    portfolio = (
-        db.query(Portfolio)
-        .filter(Portfolio.id == portfolio_id, Portfolio.workspace_id == workspace_id)
-        .first()
-    )
+    portfolio = resolve_portfolio_reference(db, portfolio_id, workspace_id)
     if not portfolio:
         return {"error": "portfolio_not_found", "reviews": []}
 

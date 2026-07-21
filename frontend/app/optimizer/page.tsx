@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import BackBreadcrumb from "@/components/BackBreadcrumb";
@@ -10,6 +10,7 @@ import {
   listStrategyProfiles, getPortfolioPersona, updatePortfolioPersona,
   recordDecisionBySnapshot, listExecutionDecisions,
   getDecisionMemoryTimeline, getShadowPerformanceSummary, getOperationsStatus,
+  isUnresolvedPortfolioError,
 } from "@/lib/api";
 import SignalBadge from "@/components/SignalBadge";
 import AIBadge from "@/components/AIBadge";
@@ -20,6 +21,8 @@ import OperationsTimeline from "@/components/operations-center/quant/OperationsT
 import ExecutionPlanCard from "@/components/optimizer/ExecutionPlanCard";
 import { isDeferred, NO_ACTION_REASON_LABELS } from "@/lib/executionPlan";
 import PersonaMatchCard from "@/components/PersonaMatchCard";
+import WorkspaceScopeSwitcher from "@/components/WorkspaceScopeSwitcher";
+import PortfolioSelectionNotice from "@/components/PortfolioSelectionNotice";
 import { ReasonCell, type ReasonFact } from "@/components/ReasonCell";
 import type {
   OptimizerResult, OptimizerHistoryItem, TargetAllocation, AllocationAction,
@@ -2562,8 +2565,10 @@ function AnalysisHistory({
 export default function OptimizerPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { portfolios, activeId } = usePortfolio();
-  const [selectedPortfolioId, setSelectedPortfolioId] = useState<number | null>(null);
+  // M36.1 WP4A F01 — the optimizer consumes canonical Current Selection
+  // exclusively. No page-local selectedPortfolioId override: that shadowed
+  // PortfolioContext with a second, competing effective selector.
+  const { portfolios, currentSelection, reportUnresolvedPortfolio } = usePortfolio();
   const [result, setResult] = useState<OptimizerResult | null>(null);
   const [history, setHistory] = useState<OptimizerHistoryItem[]>([]);
   const [historyDetails, setHistoryDetails] = useState<Record<number, OptimizerResult | null>>({});
@@ -2579,21 +2584,35 @@ export default function OptimizerPage() {
   const [persona, setPersona] = useState<StrategyPersona>("BALANCED");
   const [savingPersona, setSavingPersona] = useState(false);
 
-  const portfolioId = selectedPortfolioId ?? activeId;
+  const portfolioId = currentSelection;
+
+  // M36.1 WP4C F04 — synchronously tracks the latest Current Selection
+  // (updated every render, not via effect, so it's current before any
+  // in-flight promise from a stale render resolves). Async completions
+  // (persona, ops status, history load, run completion) discard themselves
+  // if the user has since switched away from the portfolio identity they
+  // were issued for.
+  const selectionRef = useRef<number | null>(portfolioId);
+  selectionRef.current = portfolioId;
 
   const loadHistory = useCallback(async (pid: number): Promise<OptimizerHistoryItem[]> => {
     setLoadingHistory(true);
     try {
       const items = await listOptimizerHistory(pid);
+      if (selectionRef.current !== pid) return items;
       setHistory(items);
       return items;
-    } catch {
-      setHistory([]);
+    } catch (e) {
+      if (selectionRef.current === pid) setHistory([]);
+      // M36.1 WP4C F03 — only the canonical "Portfolio not found" response
+      // triggers bounded re-resolution; a network/validation/generic error
+      // never clears Current Selection.
+      if (isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(pid);
       return [];
     } finally {
-      setLoadingHistory(false);
+      if (selectionRef.current === pid) setLoadingHistory(false);
     }
-  }, []);
+  }, [reportUnresolvedPortfolio]);
 
   const preloadRecentDetails = useCallback(async (items: OptimizerHistoryItem[]) => {
     const top = items.slice(0, 5).map((h) => h.id);
@@ -2622,13 +2641,35 @@ export default function OptimizerPage() {
 
   // Load portfolio persona when portfolio changes
   useEffect(() => {
-    if (portfolioId == null) return;
-    getPortfolioPersona(portfolioId).then((d) => setPersona(d.persona)).catch(() => {});
+    if (portfolioId == null) {
+      // M36.1 WP4B F04 — Current Selection is NONE: don't leave a previous
+      // portfolio's persona choice visible/authoritative.
+      setPersona("BALANCED");
+      return;
+    }
+    const pid = portfolioId;
+    getPortfolioPersona(pid)
+      .then((d) => {
+        if (selectionRef.current !== pid) return;
+        setPersona(d.persona);
+      })
+      .catch(() => {});
   }, [portfolioId]);
 
   useEffect(() => {
-    if (portfolioId == null) return;
-    getOperationsStatus(portfolioId).then(setOpsStatus).catch(() => setOpsStatus(null));
+    if (portfolioId == null) {
+      setOpsStatus(null);
+      return;
+    }
+    const pid = portfolioId;
+    getOperationsStatus(pid)
+      .then((s) => {
+        if (selectionRef.current !== pid) return;
+        setOpsStatus(s);
+      })
+      .catch(() => {
+        if (selectionRef.current === pid) setOpsStatus(null);
+      });
   }, [portfolioId]);
 
   useEffect(() => {
@@ -2636,7 +2677,21 @@ export default function OptimizerPage() {
   }, [history, preloadRecentDetails]);
 
   useEffect(() => {
-    if (portfolioId == null) return;
+    if (portfolioId == null) {
+      // M36.1 WP4B F04 — Current Selection is NONE: synchronously clear all
+      // portfolio-bound optimizer state (previously only cleared on the
+      // next non-null portfolioId, leaving stale result/history in memory
+      // while NONE was active — invisible only because the render boundary
+      // hid it, not because it was actually cleared).
+      setResult(null);
+      setSelectedHistoryId(null);
+      setHistory([]);
+      setHistoryDetails({});
+      setError("");
+      setLoadingHistory(false);
+      setLoadingDetail(false);
+      return;
+    }
     let cancelled = false;
 
     setResult(null);
@@ -2664,8 +2719,13 @@ export default function OptimizerPage() {
           setHistoryDetails((prev) => ({ ...prev, [target.id]: detail }));
           rememberSelectedHistory(portfolioId, target.id);
         }
-      } catch {
-        if (!cancelled) setError("Failed to load history");
+      } catch (e) {
+        if (!cancelled) {
+          setError("Failed to load history");
+          // M36.1 WP4C F03 — only the canonical "Portfolio not found"
+          // response triggers bounded re-resolution.
+          if (isUnresolvedPortfolioError(e)) reportUnresolvedPortfolio(portfolioId);
+        }
       } finally {
         if (!cancelled) setLoadingDetail(false);
       }
@@ -2676,7 +2736,7 @@ export default function OptimizerPage() {
     return () => {
       cancelled = true;
     };
-  }, [portfolioId, loadHistory, searchParams]);
+  }, [portfolioId, loadHistory, searchParams, reportUnresolvedPortfolio]);
 
   async function handlePersonaSave(p: StrategyPersona) {
     if (portfolioId == null) return;
@@ -2691,6 +2751,7 @@ export default function OptimizerPage() {
 
   async function handleRun(forceRebalance = false) {
     if (portfolioId == null) return;
+    const pid = portfolioId;
     if (forceRebalance) {
       setForceRunning(true);
     } else {
@@ -2698,17 +2759,31 @@ export default function OptimizerPage() {
     }
     setError("");
     try {
-      const data = await runOptimizer(portfolioId, undefined, undefined, forceRebalance || undefined);
+      const data = await runOptimizer(pid, undefined, undefined, forceRebalance || undefined);
+      // M36.1 WP4C F04 — discard a run's completion if the user has since
+      // switched Current Selection away from the portfolio this run was
+      // issued for; never let it repopulate a different portfolio's page.
+      if (selectionRef.current !== pid) return;
       setResult(data);
       setSelectedHistoryId(data.history_id ?? null);
       if (data.history_id != null) {
         setHistoryDetails((prev) => ({ ...prev, [data.history_id as number]: data }));
-        rememberSelectedHistory(portfolioId, data.history_id);
+        rememberSelectedHistory(pid, data.history_id);
       }
-      await loadHistory(portfolioId);
-      getOperationsStatus(portfolioId).then(setOpsStatus).catch(() => {});
+      await loadHistory(pid);
+      getOperationsStatus(pid)
+        .then((s) => {
+          if (selectionRef.current === pid) setOpsStatus(s);
+        })
+        .catch(() => {});
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Optimizer failed");
+      if (selectionRef.current === pid) {
+        setError(err instanceof Error ? err.message : "Optimizer failed");
+        // M36.1 WP4C F03 — only the canonical "Portfolio not found" response
+        // triggers bounded re-resolution; any other failure (e.g. optimizer
+        // logic errors, network) never clears Current Selection.
+        if (isUnresolvedPortfolioError(err)) reportUnresolvedPortfolio(pid);
+      }
     } finally {
       setRunning(false);
       setForceRunning(false);
@@ -2729,14 +2804,16 @@ export default function OptimizerPage() {
     }
     setLoadingDetail(true);
     setError("");
+    const pid = portfolioId;
     try {
       const detail = await getOptimizerHistory(item.id);
+      if (selectionRef.current !== pid) return;
       setResult(detail);
       setHistoryDetails((prev) => ({ ...prev, [item.id]: detail }));
     } catch {
-      setError("Failed to load history");
+      if (selectionRef.current === pid) setError("Failed to load history");
     } finally {
-      setLoadingDetail(false);
+      if (selectionRef.current === pid) setLoadingDetail(false);
     }
   }
 
@@ -2787,15 +2864,7 @@ export default function OptimizerPage() {
         <div className="flex flex-wrap gap-4 items-end">
         <div>
           <label className="block text-xs text-gray-500 mb-1">Portfolio</label>
-          <select
-            value={portfolioId ?? ""}
-            onChange={(e) => setSelectedPortfolioId(parseInt(e.target.value, 10))}
-            className="border rounded px-3 py-1.5 text-sm bg-white"
-          >
-            {portfolios.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
+          <WorkspaceScopeSwitcher variant="select" noneLabel="No portfolio selected" />
         </div>
 
         <PersonaSelector
@@ -2827,55 +2896,61 @@ export default function OptimizerPage() {
         </div>
       </div>
 
-      {/* Mobile: Analysis History stacked (UX.3A.2) */}
-      <div className="lg:hidden">
-        <AnalysisHistory
-          items={history}
-          details={historyDetails}
-          loading={loadingHistory}
-          selectedId={selectedHistoryId}
-          onSelect={handleSelectHistory}
-        />
-      </div>
+      {portfolioId == null ? (
+        <PortfolioSelectionNotice label="the Optimizer" />
+      ) : (
+        <>
+          {/* Mobile: Analysis History stacked (UX.3A.2) */}
+          <div className="lg:hidden">
+            <AnalysisHistory
+              items={history}
+              details={historyDetails}
+              loading={loadingHistory}
+              selectedId={selectedHistoryId}
+              onSelect={handleSelectHistory}
+            />
+          </div>
 
-      {/* Desktop: main content + Analysis History sidebar (UX.3A.2) */}
-      <div className="flex gap-6 items-start">
-        <div className="flex-1 min-w-0">
-          {running && portfolioId != null && (
-            <div className="max-w-xl mx-auto py-6 space-y-3">
-              <OperationsTimeline portfolioId={portfolioId} active={running} />
-              <p className="text-xs text-gray-400 text-center">This may take 60–180 seconds</p>
+          {/* Desktop: main content + Analysis History sidebar (UX.3A.2) */}
+          <div className="flex gap-6 items-start">
+            <div className="flex-1 min-w-0">
+              {running && (
+                <div className="max-w-xl mx-auto py-6 space-y-3">
+                  <OperationsTimeline portfolioId={portfolioId} active={running} />
+                  <p className="text-xs text-gray-400 text-center">This may take 60–180 seconds</p>
+                </div>
+              )}
+
+              {!running && result && <OptimizerJumpNav />}
+
+              {!running && (
+                <div className={`rounded-xl transition-colors ${isViewingDeepLinkedHistory ? "ring-1 ring-blue-200 bg-blue-50/30" : ""}`}>
+                  <ResultPanel
+                    result={result}
+                    loading={loadingDetail}
+                    profiles={profiles}
+                    portfolioId={portfolioId}
+                    onForceRebalance={() => handleRun(true)}
+                    forceRunning={forceRunning}
+                    onSendToWorkspace={handleSendToWorkspace}
+                  />
+                </div>
+              )}
             </div>
-          )}
 
-          {!running && result && <OptimizerJumpNav />}
-
-          {!running && (
-            <div className={`rounded-xl transition-colors ${isViewingDeepLinkedHistory ? "ring-1 ring-blue-200 bg-blue-50/30" : ""}`}>
-              <ResultPanel
-                result={result}
-                loading={loadingDetail}
-                profiles={profiles}
-                portfolioId={portfolioId}
-                onForceRebalance={() => handleRun(true)}
-                forceRunning={forceRunning}
-                onSendToWorkspace={handleSendToWorkspace}
+            {/* Desktop sidebar: Analysis History (320px, sticky) */}
+            <div className="w-80 shrink-0 hidden lg:block sticky top-4 self-start">
+              <AnalysisHistory
+                items={history}
+                details={historyDetails}
+                loading={loadingHistory}
+                selectedId={selectedHistoryId}
+                onSelect={handleSelectHistory}
               />
             </div>
-          )}
-        </div>
-
-        {/* Desktop sidebar: Analysis History (320px, sticky) */}
-        <div className="w-80 shrink-0 hidden lg:block sticky top-4 self-start">
-          <AnalysisHistory
-            items={history}
-            details={historyDetails}
-            loading={loadingHistory}
-            selectedId={selectedHistoryId}
-            onSelect={handleSelectHistory}
-          />
-        </div>
-      </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
