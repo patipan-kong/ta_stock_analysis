@@ -71,6 +71,7 @@ from services.analytics.quant_engine import (
 )
 from auth import router as auth_router, verify_token
 from routers.scheduler import router as scheduler_router
+from routers.asset_search import router as asset_search_router
 
 import sys
 try:
@@ -121,6 +122,14 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(scheduler_router)
+# M37.2 WP5 §15/§20: "mounted behind a feature flag" — a single env-var
+# boolean, matching this repo's existing env-var-boolean convention
+# (services.core.runtime_env's APP_ENV pattern), rather than inventing a new
+# flag subsystem. Default-OFF: the frozen design does not explicitly require
+# default-on anywhere in §15/§20's WP5 entries, so the safer rollout default
+# applies — absent or any non-"true" value disables the route.
+if os.environ.get("FEATURE_ASSET_SEARCH", "false").strip().lower() == "true":
+    app.include_router(asset_search_router)
 
 _OPEN_PATHS = {"/auth/login", "/docs", "/openapi.json", "/redoc"}
 
