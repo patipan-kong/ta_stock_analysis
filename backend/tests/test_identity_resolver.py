@@ -68,6 +68,11 @@ def _asset_count(db) -> int:
     return db.query(Asset).count()
 
 
+def _finding_count(db) -> int:
+    from models.registry_finding import RegistryFinding
+    return db.query(RegistryFinding).count()
+
+
 # ── RESOLVED ─────────────────────────────────────────────────────────────
 
 def test_resolve_current_identifier_match_resolves():
@@ -336,3 +341,128 @@ def test_resolve_never_mutates_assets_table(identifiers):
     resolver.resolve(db, ResolutionClaim(identifiers=identifiers))
 
     assert _asset_count(db) == before
+
+
+# ── record_finding=False (M37.1 WP2a) ───────────────────────────────────
+# Universal Asset Search reuses resolve()'s matching/scoring logic to
+# preview a claim without writing to the Registry's findings audit trail.
+# Every case below is run twice — default (True) and explicit False — to
+# prove the two calls differ *only* in whether a RegistryFinding row is
+# written, never in the returned ResolutionResult's verdict/candidates.
+
+def test_default_record_finding_still_records_ambiguous():
+    """Calling resolve() with no record_finding argument at all — the
+    exact call shape every pre-existing caller uses — must keep writing
+    findings. This is the backward-compatibility guarantee itself."""
+    db = make_session()
+    asset = svc.mint_asset(db, _claim())
+    svc.attach_identifier(db, asset.id, IdentifierRecord(IdentifierType.BROKER_CODE, "BR1", source="broker"))
+
+    result = resolver.resolve(
+        db, ResolutionClaim(identifiers=(IdentifierRecord(IdentifierType.BROKER_CODE, "BR1", source="claim"),)),
+    )
+
+    assert result.verdict == ResolutionVerdict.AMBIGUOUS
+    assert result.finding is not None
+    assert _finding_count(db) == 1
+
+
+def test_record_finding_false_never_records_ambiguous():
+    """Two calls against the same DB state — one with record_finding=True,
+    one with False — must return an identical verdict/candidates/score, and
+    differ only in whether a RegistryFinding was written."""
+    db = make_session()
+    asset = svc.mint_asset(db, _claim())
+    svc.attach_identifier(db, asset.id, IdentifierRecord(IdentifierType.BROKER_CODE, "BR1", source="broker"))
+    claim = ResolutionClaim(identifiers=(IdentifierRecord(IdentifierType.BROKER_CODE, "BR1", source="claim"),))
+
+    recorded = resolver.resolve(db, claim, record_finding=True)
+    non_recorded = resolver.resolve(db, claim, record_finding=False)
+
+    assert non_recorded.verdict == recorded.verdict == ResolutionVerdict.AMBIGUOUS
+    assert non_recorded.finding is None
+    assert non_recorded.resolved_asset_id == recorded.resolved_asset_id
+    assert [c.asset_id for c in non_recorded.candidates] == [c.asset_id for c in recorded.candidates]
+    assert [c.score for c in non_recorded.candidates] == [c.score for c in recorded.candidates]
+    # exactly one finding exists — from the record_finding=True call only
+    assert _finding_count(db) == 1
+
+
+def test_record_finding_false_never_records_conflict():
+    db = make_session()
+    asset_a = svc.mint_asset(db, _claim(canonical_symbol="AAA"))
+    asset_b = svc.mint_asset(db, _claim(canonical_symbol="BBB"))
+    svc.attach_identifier(db, asset_a.id, IdentifierRecord(IdentifierType.ISIN, "US1111111111", source="manual"))
+    svc.attach_identifier(db, asset_b.id, IdentifierRecord(IdentifierType.PROVIDER_SYMBOL, "BBB.BK", source="yfinance"))
+    claim = ResolutionClaim(identifiers=(
+        IdentifierRecord(IdentifierType.ISIN, "US1111111111", source="claim"),
+        IdentifierRecord(IdentifierType.PROVIDER_SYMBOL, "BBB.BK", source="claim"),
+    ))
+
+    result = resolver.resolve(db, claim, record_finding=False)
+
+    assert result.verdict == ResolutionVerdict.CONFLICT
+    assert result.resolved_asset_id is None
+    assert {c.asset_id for c in result.candidates} == {asset_a.id, asset_b.id}
+    assert result.finding is None
+    assert _finding_count(db) == 0
+
+
+@pytest.mark.parametrize("record_finding", [True, False])
+def test_record_finding_flag_does_not_change_resolved_verdict(record_finding):
+    """RESOLVED never wrote a finding either way — record_finding must not
+    change that, and must not change the resolved asset."""
+    db = make_session()
+    asset = svc.mint_asset(db, _claim())
+    svc.attach_identifier(db, asset.id, IdentifierRecord(IdentifierType.ISIN, "TH0001010006", source="manual"))
+
+    result = resolver.resolve(
+        db,
+        ResolutionClaim(identifiers=(IdentifierRecord(IdentifierType.ISIN, "TH0001010006", source="claim"),)),
+        record_finding=record_finding,
+    )
+
+    assert result.verdict == ResolutionVerdict.RESOLVED
+    assert result.resolved_asset_id == asset.id
+    assert result.finding is None
+    assert _finding_count(db) == 0
+
+
+@pytest.mark.parametrize("record_finding", [True, False])
+def test_record_finding_flag_does_not_change_unknown_verdict(record_finding):
+    db = make_session()
+
+    result = resolver.resolve(
+        db,
+        ResolutionClaim(identifiers=(IdentifierRecord(IdentifierType.BROKER_CODE, "XYZ1", source="claim"),)),
+        record_finding=record_finding,
+    )
+
+    assert result.verdict == ResolutionVerdict.UNKNOWN
+    assert result.finding is None
+    assert _finding_count(db) == 0
+
+
+def test_record_finding_false_leaves_adjudicate_unaffected():
+    """A record_finding=False preview call must not interfere with the
+    normal finding lifecycle for a subsequent, normally-recorded claim —
+    there is exactly one resolver, one code path, no second implementation
+    silently diverging in adjudicate()'s reach."""
+    db = make_session()
+    asset = svc.mint_asset(db, _claim())
+    svc.attach_identifier(db, asset.id, IdentifierRecord(IdentifierType.BROKER_CODE, "BR1", source="broker"))
+    claim = ResolutionClaim(identifiers=(IdentifierRecord(IdentifierType.BROKER_CODE, "BR1", source="claim"),))
+
+    preview = resolver.resolve(db, claim, record_finding=False)
+    assert preview.finding is None
+    assert _finding_count(db) == 0
+
+    recorded = resolver.resolve(db, claim)
+    assert recorded.finding is not None
+    assert _finding_count(db) == 1
+
+    finding = resolver.adjudicate(
+        db, recorded.finding.id, AdjudicationDecision.CONFIRM_MATCH,
+        asset_id=asset.id, resolution_note="confirmed by ops", resolved_by="tester",
+    )
+    assert finding.status == FindingStatus.RESOLVED.value

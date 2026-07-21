@@ -71,17 +71,25 @@ __all__ = ["resolve", "adjudicate"]
 # ── Resolve ──────────────────────────────────────────────────────────────
 
 def resolve(
-    db: Session, claim: ResolutionClaim, *, policy: ResolutionPolicy = DEFAULT_POLICY,
+    db: Session,
+    claim: ResolutionClaim,
+    *,
+    policy: ResolutionPolicy = DEFAULT_POLICY,
+    record_finding: bool = True,
 ) -> ResolutionResult:
     """Resolves a claim against the Registry's current and historical
     identifier evidence. Read-only: never mints, never merges, never
-    attaches. AMBIGUOUS/CONFLICT verdicts create a durable finding."""
+    attaches. AMBIGUOUS/CONFLICT verdicts create a durable finding, unless
+    record_finding=False (M37.1 WP2a — Universal Asset Search reusing this
+    matching/scoring logic to preview a claim without writing to the
+    Registry's findings audit trail; default stays True so every existing
+    caller's behavior is unchanged)."""
     claim_evaluations, contributions_by_asset = _match_candidates(db, claim, policy)
     candidates = _score_candidates(db, claim, contributions_by_asset, policy)
     verdict, resolved_asset_id = _classify(claim_evaluations, candidates, policy)
 
     finding: Optional[RegistryFinding] = None
-    if verdict in (ResolutionVerdict.AMBIGUOUS, ResolutionVerdict.CONFLICT):
+    if record_finding and verdict in (ResolutionVerdict.AMBIGUOUS, ResolutionVerdict.CONFLICT):
         finding = _record_finding(db, claim, verdict, candidates, policy)
 
     return ResolutionResult(
