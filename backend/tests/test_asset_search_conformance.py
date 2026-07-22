@@ -1,19 +1,15 @@
-"""Structural conformance tests for the Universal Asset Search WP5 delivery
-(Milestone M37.2).
+"""Structural conformance tests for the Universal Asset Search WP6 delivery.
 
 Validates docs/implementation/M37_1_Universal_Asset_Search_Technical_Design.md
-Section 3's module-placement table and Section 20's WP5 dependency row
+Section 3's module-placement table and Section 21's WP6 dependency row
 against `services/asset_search/search_service.py` and
 `routers/asset_search.py`, via `ast` inspection rather than brittle
 substring search:
 
-  - No provider adapter imports (no discovery fan-out exists yet).
-  - No `identity_resolver` import (search never resolves identity itself).
-  - No `merge` import (F12 - WP3 is not a WP5 dependency for the
-    CATALOG-only delivery; this also proves WP3 is invoked *zero* times,
-    and that `RegistryConsistencyError` cannot be raised on this pipeline
-    - both are the counterpart to test_asset_search_service.py's item 9/12
-    notes).
+  - Search orchestration imports discovery and merge, but never imports a
+    concrete provider or the identity resolver directly.
+  - Provider-specific code remains in provider_adapter.py; discovery_search
+    performs capability-gated fan-out without Registry or ranking ownership.
   - No `adjudicate` import/call (search never adjudicates).
   - No write-shaped calls anywhere in either module (`db.add`, `.flush`,
     `.commit`, `.delete`, `.merge`, `mint_asset`, `attach_identifier`,
@@ -34,9 +30,20 @@ SEARCH_SERVICE_PATH = os.path.join(
     os.path.dirname(__file__), "..", "services", "asset_search", "search_service.py"
 )
 ROUTER_PATH = os.path.join(os.path.dirname(__file__), "..", "routers", "asset_search.py")
+DISCOVERY_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "services", "asset_search", "discovery_search.py"
+)
+CACHE_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "services", "asset_search", "cache.py"
+)
 
 _FORBIDDEN_WRITE_CALLS = {"add", "flush", "commit", "delete", "merge", "mint_asset", "attach_identifier", "record_classification"}
-_FORBIDDEN_IMPORT_SUBSTRINGS = ("identity_resolver", "adjudicate", "merge", "provider", "yfinance")
+_ORCHESTRATION_FORBIDDEN_IMPORTS = (
+    "identity_resolver", "adjudicate", "provider_adapter", "yahoo", "yfinance"
+)
+_DISCOVERY_FORBIDDEN_IMPORTS = (
+    "identity_resolver", "adjudicate", "registry_service", "ranking", "merge"
+)
 
 
 def _tree(path: str) -> ast.Module:
@@ -70,20 +77,31 @@ def _called_function_names(tree: ast.Module) -> set:
     return names
 
 
-def _check_module_forbidden_imports(tree: ast.Module):
+def _check_module_forbidden_imports(tree: ast.Module, forbidden_names):
     imported = _imported_names(tree)
     for name in imported:
         lowered = name.lower()
-        for forbidden in _FORBIDDEN_IMPORT_SUBSTRINGS:
+        for forbidden in forbidden_names:
             assert forbidden not in lowered, f"forbidden import found: {name}"
 
 
-def test_search_service_imports_no_identity_resolver_no_merge_no_adjudicate_no_provider():
-    _check_module_forbidden_imports(_tree(SEARCH_SERVICE_PATH))
+def test_search_service_does_not_bypass_discovery_or_merge_boundaries():
+    _check_module_forbidden_imports(
+        _tree(SEARCH_SERVICE_PATH), _ORCHESTRATION_FORBIDDEN_IMPORTS
+    )
 
 
 def test_router_imports_no_identity_resolver_no_merge_no_adjudicate_no_provider():
-    _check_module_forbidden_imports(_tree(ROUTER_PATH))
+    _check_module_forbidden_imports(
+        _tree(ROUTER_PATH), _ORCHESTRATION_FORBIDDEN_IMPORTS + ("merge",)
+    )
+
+
+def test_discovery_owns_provider_fanout_but_not_registry_merge_or_ranking():
+    tree = _tree(DISCOVERY_PATH)
+    _check_module_forbidden_imports(tree, _DISCOVERY_FORBIDDEN_IMPORTS)
+    imported = _imported_names(tree)
+    assert any("provider_adapter" in name for name in imported)
 
 
 def test_search_service_contains_no_write_shaped_calls():
@@ -98,16 +116,25 @@ def test_router_contains_no_write_shaped_calls():
     assert not forbidden_hit, f"forbidden write-shaped call(s) found: {forbidden_hit}"
 
 
+def test_discovery_and_cache_contain_no_registry_write_shaped_calls():
+    for path in (DISCOVERY_PATH, CACHE_PATH):
+        called = _called_function_names(_tree(path))
+        forbidden_hit = called & _FORBIDDEN_WRITE_CALLS
+        assert not forbidden_hit, f"forbidden write-shaped call(s) found in {path}: {forbidden_hit}"
+
+
 def test_search_service_positively_imports_catalog_search_and_ranking():
     imported = _imported_names(_tree(SEARCH_SERVICE_PATH))
     assert any("catalog_search" in name for name in imported)
     assert any("ranking" in name for name in imported)
+    assert any("discovery_search" in name for name in imported)
+    assert any("asset_search.merge" in name for name in imported)
 
 
 def test_router_imports_only_search_service_and_catalog_search_error_types():
-    """WP5 may import WP2 and WP4 (F12) - the router's own imports should
+    """WP6 changes orchestration, not transport ownership. Router imports
     be limited to `search_service` (orchestration) and the catalog-search
-    exception types it maps to HTTP codes (§13), never `ranking` or
+    the search service and catalog exception types it maps (§13), never `ranking` or
     `catalog_search.search` directly (that composition belongs to
     `search_service.py`, not the transport layer)."""
     tree = _tree(ROUTER_PATH)

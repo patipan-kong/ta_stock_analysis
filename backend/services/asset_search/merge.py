@@ -23,15 +23,15 @@ mints an asset, never attaches an identifier, never records a
 classification. It never imports a provider adapter and never imports
 `ranking.py` — per §8's stage table, ranking (stage 8) is a separate stage
 from merge (stage 7), owned by `ranking.py` and invoked by
-`search_service.py` (WP5, not yet built), not by this module. `merge()`
+`search_service.py` (WP6 orchestration), not by this module. `merge()`
 returns its reconciled list unranked, exactly as §8 specifies.
 
 Discovery-shaped input is consumed structurally (duck-typed): this module
 does not define, import, or require a `DiscoveryCandidate` base class.
-WP6 remains the future canonical producer and owner of that concrete type
-(§3); until it exists, callers (today, tests) supply any object exposing
-the §6 field shape (`reported_identifiers`, `provider_name`, `market`,
-`currency`, `match_field`, ...).
+WP6's `discovery_search.py` is the canonical producer and owner of that
+concrete type (§3); this module consumes only the §6 field shape
+(`reported_identifiers`, `provider_name`, `market`, `currency`,
+`match_field`, ...).
 """
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ class RegistryConsistencyError(Exception):
     never by raising). It must never be silently downgraded to a discovery
     result: doing so would hide a real data-integrity problem behind an
     ordinary "no match" outcome. This is an internal exception, not a
-    public API error shape — mapping it to an HTTP response is WP5's
+    public API error shape — mapping it to an HTTP response is orchestration's
     concern, not this module's."""
 
 

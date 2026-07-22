@@ -13,12 +13,10 @@ rather than price). It carries only what a provider might genuinely report;
 absent fields are None, never guessed or defaulted (Section 4: "fidelity
 plus confession").
 
-ProviderCapabilities is a purely declarative descriptor an adapter attaches
-to itself — no routing, selection, or confidence logic reads it yet. It
-exists so a future provider-selection or confidence-weighting policy has an
-extension point already in place (PROVIDER_INTERFACE.md Section 5:
-"declare, don't branch") rather than requiring a breaking change to the
-adapter interface later.
+ProviderCapabilities is a declarative descriptor an adapter attaches to
+itself. Universal Asset Search reads only ``supports_search`` as an
+eligibility gate; no routing, priority, health, or confidence policy is
+introduced by that use.
 """
 from __future__ import annotations
 
@@ -56,17 +54,14 @@ class ProviderObservation:
 @dataclass(frozen=True)
 class ProviderCapabilities:
     """Declarative-only descriptor of what identity evidence an adapter can
-    supply. No behavior is implemented against this today — no router, no
-    confidence policy consumes it — it exists purely as a stated extension
-    point so a future provider-selection or confidence-weighting policy
-    does not require changing the ProviderAdapter interface to add it.
+    supply. Universal Asset Search consumes only ``supports_search`` before
+    fan-out; no provider routing or confidence policy consumes this shape.
 
     identifier_types: which IdentifierType values this provider can, in
         principle, supply evidence for (mirrors PROVIDER_INTERFACE.md
         Section 5's capability declarations, scoped to identity).
     supports_search: whether this provider can answer instrument search
-        queries at all (distinct from whether M4 wires that up — it
-        doesn't; this is a label, not a callable capability).
+        queries at all. It is checked before any provider network call.
     """
 
     identifier_types: FrozenSet[IdentifierType] = frozenset({IdentifierType.PROVIDER_SYMBOL})

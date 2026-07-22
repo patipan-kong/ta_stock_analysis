@@ -5,7 +5,7 @@ Connects external market-data providers to the Identity Resolution Engine
 (PROVIDER_INTERFACE.md Section 1: "the interface is the waterline;
 provider knowledge exists only above it, and it must never rise").
 
-An adapter's entire job is translation, never judgment:
+An adapter's entire job is provider transport and translation, never judgment:
 
   - It converts a vendor-shaped payload into ProviderObservation
     (provider_domain.py) — one canonical shape per observation kind,
@@ -25,26 +25,59 @@ What an adapter must never do (PROVIDER_INTERFACE.md Section 2):
     no regex normalization, no DR-suffix handling — that is
     services/symbol_resolver.py's job, and this module does not call it
     (M0/M3 already flagged that module as a separate, untouched concern).
-  - Never touch the database or the Registry directly. Every method here
-    is a pure function of its input; nothing in this module imports
-    registry_service, identity_resolver, or a Session.
+  - Never touch the database or the Registry directly. Translation methods
+    are pure; search performs provider I/O only. Nothing in this module
+    imports registry_service, identity_resolver, or a Session.
 
 build_claim() is the one shared, non-overridable implementation of
 "ProviderObservation -> ResolutionClaim" (ADR-004 — one implementation per
-rule): every adapter subclass writes only normalize(); adding a new
-provider never requires touching claim-construction logic.
+rule): every adapter subclass supplies provider-specific normalize() and
+search() methods; adding one never changes shared claim-construction logic.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Any, ClassVar, List, Mapping, Optional, Tuple, final
+from typing import Any, ClassVar, List, Mapping, Optional, Sequence, Tuple, final
+
+import requests
 
 from services.asset_domain import IdentifierRecord, IdentifierType
 from services.provider_domain import ProviderCapabilities, ProviderObservation
 from services.resolver_domain import ResolutionClaim
 
 __all__ = ["ProviderAdapter", "YahooFinanceAdapter"]
+
+log = logging.getLogger(__name__)
+
+_YAHOO_SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search"
+_YAHOO_SEARCH_TIMEOUT_SECONDS = 5
+_YAHOO_SEARCH_HEADERS = {
+    "User-Agent": "stock-analysis/asset-search",
+    "Accept": "application/json",
+}
+
+
+def _fetch_yahoo_search_payload(query: str, limit: int) -> Mapping[str, Any]:
+    response = requests.get(
+        _YAHOO_SEARCH_URL,
+        params={
+            "q": query,
+            "quotesCount": limit,
+            "newsCount": 0,
+            "listsCount": 0,
+            "enableFuzzyQuery": "false",
+        },
+        headers=_YAHOO_SEARCH_HEADERS,
+        timeout=_YAHOO_SEARCH_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, Mapping):
+        raise ValueError("Yahoo Finance search returned a malformed payload")
+    return payload
 
 
 def _clean_str(value: Any) -> Optional[str]:
@@ -60,8 +93,11 @@ def _clean_str(value: Any) -> Optional[str]:
 
 
 class ProviderAdapter(ABC):
-    """One adapter per provider. Stateless and DB-free by construction —
-    every method is a pure transformation of its input payload."""
+    """One stateless, DB-free adapter per provider.
+
+    Adapters perform provider I/O and pure translation only; they hold no
+    Registry state and make no identity or ranking judgment.
+    """
 
     provider_name: ClassVar[str]
     capabilities: ClassVar[ProviderCapabilities]
@@ -72,6 +108,15 @@ class ProviderAdapter(ABC):
         adapter must write. Must not guess, default, or repair a missing
         field — leave it None (PROVIDER_INTERFACE.md Section 2: "never
         fill gaps creatively")."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def search(self, query: str, *, limit: int) -> Sequence[ProviderObservation]:
+        """Search provider instruments and return provider observations.
+
+        This additive I/O boundary returns evidence only.  It must not rank,
+        resolve identity, write Registry state, or return provider relevance.
+        """
         raise NotImplementedError
 
     @final
@@ -134,13 +179,18 @@ class YahooFinanceAdapter(ProviderAdapter):
     provider_name = "yahoo_finance"
     capabilities = ProviderCapabilities(
         identifier_types=frozenset({IdentifierType.PROVIDER_SYMBOL, IdentifierType.ISIN}),
-        supports_search=False,
+        supports_search=True,
     )
 
     def normalize(self, raw: Mapping[str, Any]) -> ProviderObservation:
         return ProviderObservation(
             provider_symbol=_clean_str(raw.get("symbol")),
-            name=_clean_str(raw.get("longName") or raw.get("shortName")),
+            name=_clean_str(
+                raw.get("longName")
+                or raw.get("longname")
+                or raw.get("shortName")
+                or raw.get("shortname")
+            ),
             market=_clean_str(raw.get("market")),
             exchange=_clean_str(raw.get("exchange")),
             currency=_clean_str(raw.get("currency")),
@@ -150,3 +200,20 @@ class YahooFinanceAdapter(ProviderAdapter):
             figi=None,
             observed_at=self._now(),
         )
+
+    async def search(self, query: str, *, limit: int) -> Sequence[ProviderObservation]:
+        bounded_limit = max(1, min(limit, 50))
+        payload = await asyncio.to_thread(
+            _fetch_yahoo_search_payload,
+            query,
+            bounded_limit,
+        )
+        quotes = payload.get("quotes", ())
+        if not isinstance(quotes, (list, tuple)):
+            raise ValueError("Yahoo Finance search quotes were malformed")
+        observations = tuple(
+            self.normalize(raw) for raw in quotes if isinstance(raw, Mapping)
+        )
+        if len(observations) != len(quotes):
+            log.warning("Yahoo Finance search dropped malformed quote entries")
+        return observations

@@ -1,43 +1,13 @@
-"""Market Intelligence — Search Orchestration (Milestone M37.2, WP5).
+"""Market Intelligence search orchestration (Milestone M37.3, WP6).
 
-Implements docs/implementation/M37_1_Universal_Asset_Search_Technical_Design.md
-Section 8's query-processing lifecycle for the CATALOG-only delivery this
-work package ships (§3, §15). This module owns stages 2/3/9/10 of that
-lifecycle (query normalization delegation, scope echoing, pagination,
-degradation assembly) and composes — never reimplements — the stages owned
-by earlier work packages:
+Implements the complete CATALOG/UNIVERSE lifecycle from the frozen M37.1
+technical design.  It composes the existing owners rather than duplicating
+them: Asset Foundation catalog search (WP2), external discovery fan-out
+(WP6), Registry-authoritative merge (WP3), and canonical ranking (WP4).
 
-- Stage 4 (catalog search): `catalog_search.search()` (WP2).
-- Stage 8 (ranking): `ranking.rank()` (WP4).
-
-**F12 — `merge.py` (WP3) is deliberately never imported or called here.**
-The frozen design's own WP5 dependency row (§20, "WP5 — Orchestration +
-CATALOG-only API") states this explicitly: "Dependencies: WP2, WP4 (F12 —
-WP3/merge removed: this package's CATALOG-only delivery never invokes
-`merge.py`, since UNIVERSE-scope dedup is not part of its exclusions; the
-original dependency was incorrect)." Registry-authoritative deduplication
-(§8 stage 7) only has work to do when discovery candidates exist to
-reconcile against the Registry — and discovery candidates do not exist
-until WP6 ships `discovery_search.py`. Wiring `merge.py` into a pipeline
-that will only ever hand it registered candidates (nothing to merge) would
-be dead code, not conformance. When WP6 ships and this module gains a real
-UNIVERSE-scope discovery stage, `merge.py` becomes a genuine dependency of
-*that* future stage — not of this one.
-
-`scope=UNIVERSE` is accepted (§4: "scope absent or invalid -> 400
-INVALID_SCOPE, never defaulted" implies UNIVERSE is a valid contract value,
-not one to reject) but is never given a discovery fan-out — v1's
-permanent, honest state is "zero capability-eligible providers" (§13's own
-documented row, true today independent of WP6), so a UNIVERSE-scope
-request runs the exact same catalog-only pipeline as CATALOG scope and
-returns `degraded=true` with a single `reason=UNSUPPORTED, source=universe`
-DegradationEntry (§13). This is not "implementing UNIVERSE search" — no
-provider is contacted, no fan-out logic exists — it is honestly disclosing
-that UNIVERSE search does not exist yet, exactly as §13/§17 already require
-independent of WP6's timeline.
-
-Read-only: this module never calls `db.add`/`flush`/`commit`, never
-imports a provider adapter, and never imports `identity_resolver`.
+Read-only: this module never writes Registry state, imports a concrete
+provider, or calls the identity resolver directly.  External observations
+reach the resolver only through merge.py's non-recording F3-safe boundary.
 
 Pagination limitation (disclosed, not silently absent): `catalog_search.py`
 (WP2) has no offset/skip parameter — `search()` always returns the top
@@ -56,7 +26,7 @@ page always has `cursor_next=None` — all provable from `ranked` being a
 fixed-length list per request and `start_index` advancing by at least one
 page's worth each hop.
 
-What this module *cannot* tell the caller (disclosed limitation, not
+What this module cannot tell the caller (disclosed limitation, not
 silently overclaimed): `catalog_search.search()` returns only the
 already-truncated top-50 window, with no total-match count alongside it.
 When the window is exactly full (50 candidates), this module cannot
@@ -82,7 +52,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from services.asset_search import catalog_search
+from services.asset_search import catalog_search, discovery_search
+from services.asset_search.merge import merge as merge_candidates
 from services.asset_search.ranking import rank
 
 __all__ = [
@@ -193,7 +164,7 @@ def _decode_cursor(cursor: str, *, query: str, scope: str, filters: Mapping[str,
         raise InvalidCursorError("cursor is malformed") from exc
 
 
-def search(
+async def search(
     db: Session,
     *,
     query: str,
@@ -201,19 +172,17 @@ def search(
     filters: Sequence[Tuple[str, str]] = (),
     limit: int = catalog_search.DEFAULT_LIMIT,
     cursor: Optional[str] = None,
+    timeout_ms: int = discovery_search.DEFAULT_PROVIDER_TIMEOUT_MS,
 ) -> SearchResult:
-    """Orchestrates the approved CATALOG-only lifecycle (§8): normalizes
-    and searches the catalog (WP2, stage 4), ranks the result (WP4, stage
-    8), paginates it (stage 9), and assembles degradation disclosure
-    (stage 10). Never calls `merge.py` (F12, see module docstring). Never
-    writes anything; never imports a provider adapter or
-    `identity_resolver`.
+    """Orchestrate the approved CATALOG or UNIVERSE search lifecycle.
 
-    `scope` must already be validated by the caller (router stage 1) to be
-    one of `VALID_SCOPES` — this function trusts that and only branches on
-    it to decide whether to add the UNIVERSE "zero capability-eligible
-    providers" degradation entry (§13)."""
-    filters_map: Dict[str, str] = dict(filters)
+    Provider fan-out remains inside ``discovery_search``; Registry identity
+    checks remain inside ``merge``; deterministic order remains exclusively
+    owned by ``ranking.rank``.  This function assembles those results and
+    their degradation disclosures without writing permanent state.
+    """
+    normalized_query = catalog_search.normalize_query(query)
+    filters_map = catalog_search.validate_filters(filters)
     clamped_limit = max(catalog_search.MIN_LIMIT, min(limit, catalog_search.MAX_LIMIT))
     warnings: List[str] = []
     if limit > catalog_search.MAX_LIMIT:
@@ -221,17 +190,93 @@ def search(
     elif limit < catalog_search.MIN_LIMIT:
         warnings.append(f"limit clamped to {catalog_search.MIN_LIMIT}")
 
+    degradation: List[DegradationEntry] = []
+    catalog_candidates: List[Any] = []
+    catalog_unavailable = False
     try:
         catalog_result = catalog_search.search(
-            db, query, filters=filters, limit=_CATALOG_WINDOW_LIMIT
+            db, normalized_query, filters=filters, limit=_CATALOG_WINDOW_LIMIT
         )
+        catalog_candidates = list(catalog_result.candidates)
     except SQLAlchemyError as exc:
-        raise CatalogUnavailableError("catalog search unavailable") from exc
+        if scope == CATALOG_SCOPE:
+            raise CatalogUnavailableError("catalog search unavailable") from exc
+        catalog_unavailable = True
+        log.error("asset_search: catalog unavailable during UNIVERSE search", exc_info=True)
+        degradation.append(
+            DegradationEntry(
+                source="catalog",
+                reason="UNAVAILABLE",
+                message="Catalog search is unavailable.",
+            )
+        )
 
-    normalized_query = catalog_search.normalize_query(query)
-    ranked = rank(list(catalog_result.candidates))
+    candidates: List[Any] = catalog_candidates
+    if scope == UNIVERSE_SCOPE:
+        discovery_result = await discovery_search.discover(
+            normalized_query,
+            filters=filters_map,
+            timeout_ms=timeout_ms,
+        )
 
-    if len(ranked) >= _CATALOG_WINDOW_LIMIT:
+        if discovery_result.eligible_provider_count == 0:
+            degradation.append(
+                DegradationEntry(
+                    source="universe",
+                    reason="UNSUPPORTED",
+                    message="No discovery providers are capability-eligible yet.",
+                )
+            )
+        elif discovery_result.successful_provider_count == 0:
+            degradation.append(
+                DegradationEntry(
+                    source="universe",
+                    reason="UNAVAILABLE",
+                    message="All discovery providers are unavailable.",
+                )
+            )
+        else:
+            degradation.extend(
+                DegradationEntry(
+                    source=failure.source,
+                    reason=failure.reason,
+                    message=failure.message,
+                )
+                for failure in discovery_result.failures
+            )
+
+        merge_failures: List[Exception] = []
+        if catalog_unavailable:
+            candidates = catalog_candidates + list(discovery_result.candidates)
+            if discovery_result.candidates:
+                merge_failures.append(
+                    CatalogUnavailableError("Registry merge check unavailable")
+                )
+        else:
+            candidates = merge_candidates(
+                db,
+                catalog_candidates,
+                discovery_result.candidates,
+                on_resolve_error=lambda _candidate, exc: merge_failures.append(exc),
+            )
+
+        if merge_failures:
+            log.error(
+                "asset_search: Registry merge check unavailable for %d candidate(s)",
+                len(merge_failures),
+            )
+            degradation.append(
+                DegradationEntry(
+                    source="registry-merge",
+                    reason="ERROR",
+                    message="Registry standing could not be verified for some discovery candidates.",
+                    candidate_kind_uncertain=True,
+                )
+            )
+
+    ranked = rank(candidates)
+
+    if len(catalog_candidates) >= _CATALOG_WINDOW_LIMIT:
         # Window is full — WP2 exposes no total-match count, so a genuine
         # 50-match catalog and a truncated >50-match catalog are
         # indistinguishable from here (see module docstring). Disclose the
@@ -269,16 +314,6 @@ def search(
             filters=filters_map,
             tier=_tier_for_cursor(last),
             symbol=last.canonical_symbol,
-        )
-
-    degradation: List[DegradationEntry] = []
-    if scope == UNIVERSE_SCOPE:
-        degradation.append(
-            DegradationEntry(
-                source="universe",
-                reason="UNSUPPORTED",
-                message="No discovery providers are capability-eligible yet.",
-            )
         )
 
     return SearchResult(

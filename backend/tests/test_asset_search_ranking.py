@@ -44,8 +44,8 @@ from services.asset_search.ranking import rank
 class DiscoveryCandidate:
     """Test-local double matching §6's DiscoveryCandidate field shape.
     `ranking.py` is duck-typed and does not define or import this class —
-    per the WP4 conformance review (B2), the real contract belongs to
-    WP6's `discovery_search.py`, not yet built. This double exists only so
+    per the WP4 conformance review (B2), the production contract belongs to
+    WP6's `discovery_search.py`. This double exists only so
     WP4's tests can exercise mixed registered/discovery ranking without
     creating a premature ownership dependency."""
 
@@ -153,6 +153,24 @@ def test_stable_ordering_preserves_input_order_for_true_ties():
     assert result == [a, b]
     result_reversed = rank([b, a])
     assert result_reversed == [b, a]
+
+
+def test_provider_name_does_not_affect_canonical_ranking():
+    first = _discovery(
+        claim_id="c1",
+        provider_name="z-provider",
+        reported_symbol="SHARED",
+        match_field="identifier:PROVIDER_SYMBOL",
+    )
+    second = _discovery(
+        claim_id="c2",
+        provider_name="a-provider",
+        reported_symbol="SHARED",
+        match_field="identifier:PROVIDER_SYMBOL",
+    )
+
+    assert rank([first, second]) == [first, second]
+    assert rank([second, first]) == [second, first]
 
 
 # -- B1 regression: missing tie-break symbol sorts LAST, never first --------

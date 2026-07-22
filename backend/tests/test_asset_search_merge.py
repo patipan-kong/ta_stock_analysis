@@ -106,9 +106,8 @@ def _all_row_counts(db) -> dict:
 @dataclass(frozen=True)
 class DiscoveryCandidate:
     """Test-local double matching §6's DiscoveryCandidate field shape.
-    `merge.py` is duck-typed and does not define or import this class -
-    the real contract belongs to WP6's `discovery_search.py`, not yet
-    built."""
+    `merge.py` is duck-typed and does not define or import this class; the
+    production contract belongs to WP6's `discovery_search.py`."""
 
     kind: str = field(default="DISCOVERY", init=False)
     claim_id: str = ""

@@ -1,4 +1,4 @@
-"""FastAPI router — Universal Asset Search, CATALOG-only (Milestone M37.2, WP5).
+"""FastAPI router — Universal Asset Search (Milestone M37.3, WP6).
 
 Implements docs/implementation/M37_1_Universal_Asset_Search_Technical_Design.md
 Section 15's API design and Section 8 stage 1 (request validation) / stage
@@ -6,10 +6,8 @@ Section 15's API design and Section 8 stage 1 (request validation) / stage
 request, calls `search_service.search()` (stages 2-10), maps exceptions to
 the approved HTTP error codes (§13), and serializes the approved response
 shape (§5). It never touches the database directly, never imports
-`catalog_search`/`ranking` internals beyond what `search_service` already
-returns, and never imports `merge.py` (F12 — see search_service.py's
-module docstring for why WP5's CATALOG-only delivery has no merge stage
-to invoke).
+`catalog_search`/`ranking`/provider internals beyond what `search_service`
+already returns, and never imports `merge.py` directly.
 
 Endpoint: `POST /asset-search`, `SearchRequest` JSON body (§4), mounted in
 `main.py` via `app.include_router(asset_search_router)` alongside the
@@ -31,6 +29,9 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
+import threading
+import time
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -57,15 +58,54 @@ router = APIRouter(prefix="/asset-search", tags=["asset-search"])
 
 _MIN_TIMEOUT_MS = 200
 _MAX_TIMEOUT_MS = 5000
+_DEFAULT_TIMEOUT_MS = 2000
+_UNIVERSE_RATE_LIMIT_PER_MINUTE = 30
+
+
+class _TokenBucket:
+    """Per-process token bucket for the repository's single shared caller."""
+
+    def __init__(self, capacity: int, refill_per_second: float) -> None:
+        self._capacity = float(capacity)
+        self._refill_per_second = refill_per_second
+        self._tokens = float(capacity)
+        self._updated_at = time.monotonic()
+        self._lock = threading.Lock()
+
+    def consume(self) -> int | None:
+        """Consume one token, or return the retry delay in whole seconds."""
+        now = time.monotonic()
+        with self._lock:
+            elapsed = max(0.0, now - self._updated_at)
+            self._tokens = min(
+                self._capacity,
+                self._tokens + elapsed * self._refill_per_second,
+            )
+            self._updated_at = now
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return None
+            return max(1, math.ceil((1.0 - self._tokens) / self._refill_per_second))
+
+    def reset(self) -> None:
+        with self._lock:
+            self._tokens = self._capacity
+            self._updated_at = time.monotonic()
+
+
+_universe_rate_limiter = _TokenBucket(
+    _UNIVERSE_RATE_LIMIT_PER_MINUTE,
+    _UNIVERSE_RATE_LIMIT_PER_MINUTE / 60.0,
+)
 
 
 def _bad_request(code: str) -> HTTPException:
     return HTTPException(status_code=400, detail=code)
 
 
-def _validate_request(payload: dict) -> tuple[str, str, dict, int, str | None]:
+def _validate_request(payload: dict) -> tuple[str, str, dict, int, str | None, int]:
     """§4/§8 stage 1: structural request validation, owned by the router.
-    Returns (query, scope, classification_filters, limit, cursor). Raises
+    Returns (query, scope, classification_filters, limit, cursor, timeout_ms). Raises
     `HTTPException(400, ...)` with the exact §4/§13 error code on any
     violation — never coerces `scope`, never silently drops a bad field."""
     if not isinstance(payload, dict):
@@ -96,42 +136,44 @@ def _validate_request(payload: dict) -> tuple[str, str, dict, int, str | None]:
         raise _bad_request("CURSOR_NOT_SUPPORTED_FOR_SCOPE")
 
     timeout_ms = payload.get("timeout_ms")
-    if timeout_ms is not None:
+    if timeout_ms is None:
+        timeout_ms = _DEFAULT_TIMEOUT_MS
+    else:
         if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool):
             raise _bad_request("MALFORMED_REQUEST")
-        # Clamped, not rejected (§4) — accepted and bounded; this endpoint's
-        # underlying work is a single fast local DB query with no async
-        # cancellation hook in this repo, so the clamped value is validated
-        # but not actively enforced as a hard deadline (disclosed limitation).
-        max(_MIN_TIMEOUT_MS, min(timeout_ms, _MAX_TIMEOUT_MS))
+        timeout_ms = max(_MIN_TIMEOUT_MS, min(timeout_ms, _MAX_TIMEOUT_MS))
 
-    return query, scope, filters, limit, cursor
+    return query, scope, filters, limit, cursor, timeout_ms
 
 
 def _serialize_candidate(candidate) -> dict:
-    """Exposes only the approved candidate projection (§6) — never an
-    internal Registry model, `ResolutionResult`, `RegistryFinding`, or
-    provider evidence. `RegisteredCandidate` (the only candidate kind this
-    CATALOG-only delivery ever produces) already *is* exactly that
-    projection, so serialization is a direct field copy, not a
-    re-shaping."""
+    """Expose only approved registered/discovery candidate projections."""
     return dataclasses.asdict(candidate)
 
 
 @router.post("")
 async def asset_search(payload: dict = Body(...), db: Session = Depends(get_db)) -> dict:
-    """`POST /asset-search` — §15. Read-only, idempotent, CATALOG-only in
-    this delivery (UNIVERSE scope is accepted and degrades honestly, §13)."""
-    query, scope, filters, limit, cursor = _validate_request(payload)
+    """`POST /asset-search` — §15. Read-only and naturally idempotent."""
+    query, scope, filters, limit, cursor, timeout_ms = _validate_request(payload)
+
+    if scope == UNIVERSE_SCOPE:
+        retry_after = _universe_rate_limiter.consume()
+        if retry_after is not None:
+            raise HTTPException(
+                status_code=429,
+                detail="RATE_LIMITED",
+                headers={"Retry-After": str(retry_after)},
+            )
 
     try:
-        result = run_search(
+        result = await run_search(
             db,
             query=query,
             scope=scope,
             filters=tuple(filters.items()),
             limit=limit,
             cursor=cursor,
+            timeout_ms=timeout_ms,
         )
     except EmptyQueryError:
         raise _bad_request("EMPTY_QUERY")

@@ -1,5 +1,5 @@
 """Tests for the Universal Asset Search orchestration + HTTP layer
-(Milestone M37.2, WP5).
+(Milestone M37.3, through WP6).
 
 Validates docs/implementation/M37_1_Universal_Asset_Search_Technical_Design.md
 Section 8 (query processing lifecycle) and Section 15 (API design) against
@@ -26,17 +26,8 @@ Section 8 (query processing lifecycle) and Section 15 (API design) against
   23. Endpoint registration: `POST /asset-search` is a real route
   24. OpenAPI generation includes the route
 
-Item 9 (RegistryConsistencyError mapping) and item 12 (WP3 invoked exactly
-once) are addressed in test_asset_search_conformance.py instead of here:
-the frozen design's own WP5 dependency row states "F12 - WP3/merge
-removed: this package's CATALOG-only delivery never invokes `merge.py`"
-(docs, Section 20, WP5). Since `merge.py` is never called, WP3 is invoked
-*zero* times by design (not once), and `RegistryConsistencyError` can never
-be raised on this pipeline - there is nothing to map. Both facts are
-proven structurally (no `merge` import anywhere in `search_service.py` /
-`routers/asset_search.py`) rather than exercised behaviorally, since
-exercising an intentionally-unreachable path would require importing a
-module F12 explicitly forecloses.
+CATALOG requests retain the WP5 path. UNIVERSE requests add WP6 discovery,
+then use WP3 merge and WP4 ranking through the orchestration boundary.
 
 Repo convention: no FastAPI TestClient/HTTP harness exists in this codebase
 (see test_watchlist_registry.py) - the router's async endpoint function is
@@ -48,7 +39,7 @@ import base64
 import json
 import os
 import sys
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -158,9 +149,11 @@ def test_conflicting_filters_raises_at_service_level():
     db = make_session()
     _mint(db)
     with pytest.raises(catalog_search.ConflictingFiltersError):
-        search_service.search(
-            db, query="KBANK", scope="CATALOG",
-            filters=(("market", "TH"), ("market", "US")),
+        asyncio.run(
+            search_service.search(
+                db, query="KBANK", scope="CATALOG",
+                filters=(("market", "TH"), ("market", "US")),
+            )
         )
 
 
@@ -362,19 +355,25 @@ def test_openapi_schema_includes_asset_search_route():
 
 # ── UNIVERSE scope honest degradation (§13, F12 note) ───────────────────────
 
-def test_universe_scope_is_accepted_and_degrades_honestly_without_provider_calls():
+def test_universe_scope_is_accepted_when_eligible_provider_returns_cleanly():
     db = make_session()
     _mint(db)
 
-    body = _call({"query": "KBANK", "scope": "UNIVERSE"}, db)
+    with patch(
+        "services.asset_search.search_service.discovery_search.discover",
+        new_callable=AsyncMock,
+        return_value=search_service.discovery_search.DiscoverySearchResult(
+            candidates=(),
+            failures=(),
+            eligible_provider_count=1,
+            successful_provider_count=1,
+        ),
+    ):
+        body = _call({"query": "KBANK", "scope": "UNIVERSE"}, db)
 
     assert body["scope_used"] == "UNIVERSE"
-    assert body["degraded"] is True
-    assert body["degradation"] == [
-        {"source": "universe", "reason": "UNSUPPORTED",
-         "message": "No discovery providers are capability-eligible yet.",
-         "candidate_kind_uncertain": False}
-    ]
+    assert body["degraded"] is False
+    assert body["degradation"] == []
     assert body["cursor_next"] is None
 
 
@@ -384,6 +383,27 @@ def test_universe_scope_with_cursor_maps_to_400():
         _call({"query": "KBANK", "scope": "UNIVERSE", "cursor": "abc"}, db)
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "CURSOR_NOT_SUPPORTED_FOR_SCOPE"
+
+
+def test_universe_timeout_is_clamped_and_forwarded_to_async_discovery():
+    db = make_session()
+    discovery = search_service.discovery_search.DiscoverySearchResult(
+        candidates=(),
+        failures=(),
+        eligible_provider_count=1,
+        successful_provider_count=1,
+    )
+    with patch(
+        "services.asset_search.search_service.discovery_search.discover",
+        new_callable=AsyncMock,
+        return_value=discovery,
+    ) as mock_discover:
+        _call(
+            {"query": "KBANK", "scope": "UNIVERSE", "timeout_ms": 99_999},
+            db,
+        )
+
+    assert mock_discover.await_args.kwargs["timeout_ms"] == 5000
 
 
 # ── Pagination / cursor (§15 F9) ─────────────────────────────────────────────

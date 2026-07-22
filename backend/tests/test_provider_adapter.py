@@ -8,15 +8,16 @@ Validates:
   3. Absent vendor fields stay absent — never fabricated, never defaulted.
   4. Empty-string vendor fields are treated as absent, not as identity
      evidence.
-  5. ProviderCapabilities is declared, inert data (no behavior reads it).
-  6. A new provider costs exactly one method (normalize()) to add — proven
-     with a throwaway adapter defined only in this test file.
+  5. ProviderCapabilities declares WP6 search eligibility.
+  6. A new provider supplies normalize() and the additive search() boundary
+     without changing shared claim construction.
   7. An adapter-built claim is indistinguishable to identity_resolver from
      a hand-built one: resolve() behaves identically either way.
   8. Adapters are architecturally DB-free: no method takes a Session.
 
 All tests are pure/in-memory; no network calls, no real yfinance payloads.
 """
+import asyncio
 import inspect
 import os
 import sys
@@ -143,7 +144,7 @@ def test_capabilities_declared_and_inert():
     assert isinstance(caps, ProviderCapabilities)
     assert IdentifierType.PROVIDER_SYMBOL in caps.identifier_types
     assert IdentifierType.ISIN in caps.identifier_types
-    assert caps.supports_search is False
+    assert caps.supports_search is True
 
 
 # ── Extensibility: a new provider costs one method ──────────────────────
@@ -158,8 +159,11 @@ class _FakeBloombergAdapter(ProviderAdapter):
     def normalize(self, raw):
         return ProviderObservation(figi=raw.get("figi"))
 
+    async def search(self, query, *, limit):
+        return ()
 
-def test_second_adapter_requires_only_normalize_override():
+
+def test_second_adapter_preserves_shared_claim_construction():
     claim = _FakeBloombergAdapter().build_claim({"figi": "BBG000BLNNH6"})
     assert len(claim.identifiers) == 1
     identifier = claim.identifiers[0]
@@ -170,10 +174,33 @@ def test_second_adapter_requires_only_normalize_override():
 # ── Architecture: adapters are DB-free ──────────────────────────────────
 
 def test_adapter_methods_take_no_session_parameter():
-    for method in (ProviderAdapter.normalize, ProviderAdapter.build_claim):
+    for method in (ProviderAdapter.normalize, ProviderAdapter.search, ProviderAdapter.build_claim):
         params = inspect.signature(method).parameters
         assert "db" not in params
         assert "session" not in params
+
+
+def test_yahoo_search_returns_normalized_observations(monkeypatch):
+    payload = {
+        "quotes": [
+            {
+                "symbol": "AAPL",
+                "longname": "Apple Inc.",
+                "exchange": "NMS",
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        "services.provider_adapter._fetch_yahoo_search_payload",
+        lambda query, limit: payload,
+    )
+
+    observations = asyncio.run(YahooFinanceAdapter().search("Apple", limit=20))
+
+    assert len(observations) == 1
+    assert observations[0].provider_symbol == "AAPL"
+    assert observations[0].name == "Apple Inc."
+    assert observations[0].exchange == "NMS"
 
 
 # ── End-to-end: the Registry cannot tell a claim came from an adapter ───
