@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Dict, Mapping, Optional, Sequence, Tuple
@@ -87,9 +88,9 @@ def _reported_identifiers(observation: ProviderObservation) -> Dict[str, str]:
 def _matches_filters(observation: ProviderObservation, filters: Mapping[str, str]) -> bool:
     """Filter only against facts the provider observation actually carries.
 
-    ``asset_class`` and ``region`` are Registry classifications and therefore
-    cannot be asserted for discovery observations.  When requested, a
-    discovery observation cannot prove eligibility and is excluded.
+    Registry-only classifications such as ``asset_class`` and ``region`` are
+    deliberately ignored here. They may constrain registered candidates, but
+    cannot exclude an unresolved discovery observation.
     """
     observed = {
         "market": observation.market,
@@ -97,7 +98,7 @@ def _matches_filters(observation: ProviderObservation, filters: Mapping[str, str
         "currency": observation.currency,
     }
     for key, expected in filters.items():
-        if key not in observed or observed[key] is None or observed[key] != expected:
+        if key in observed and (observed[key] is None or observed[key] != expected):
             return False
     return True
 
@@ -169,41 +170,62 @@ async def _query_provider(
     semaphore: asyncio.Semaphore,
     cache: SearchCache,
 ) -> Tuple[DiscoveryCandidate, ...]:
+    started_at = time.monotonic()
     key = search_cache_key(normalized_query, filters, provider.provider_name)
     cached = cache.get(key)
-    if cached is None:
-        async with semaphore:
-            observations = await asyncio.wait_for(
-                provider.search(normalized_query, limit=MAX_PROVIDER_RESULTS),
-                timeout=timeout_seconds,
+    cache_outcome = "hit" if cached is not None else "miss"
+    outcome = "success"
+    try:
+        if cached is None:
+            async with semaphore:
+                observations = await asyncio.wait_for(
+                    provider.search(normalized_query, limit=MAX_PROVIDER_RESULTS),
+                    timeout=timeout_seconds,
+                )
+            if not isinstance(observations, (list, tuple)):
+                raise TypeError("provider search must return a sequence of observations")
+            valid_observations = tuple(
+                observation
+                for observation in observations
+                if isinstance(observation, ProviderObservation)
             )
-        if not isinstance(observations, (list, tuple)):
-            raise TypeError("provider search must return a sequence of observations")
-        valid_observations = tuple(
-            observation
-            for observation in observations
-            if isinstance(observation, ProviderObservation)
-        )
-        if len(valid_observations) != len(observations):
-            log.warning(
-                "asset_search provider=%s dropped malformed observations",
-                provider.provider_name,
-            )
-        # Cache only after successful, non-cancelled provider completion.
-        cache.put(key, valid_observations)
-        cached = valid_observations
+            if len(valid_observations) != len(observations):
+                log.warning(
+                    "asset_search provider=%s dropped malformed observations",
+                    provider.provider_name,
+                )
+            # Cache only after successful, non-cancelled provider completion.
+            cache.put(key, valid_observations)
+            cached = valid_observations
 
-    projected = []
-    for observation in cached:
-        candidate = _project(
+        projected = []
+        for observation in cached:
+            candidate = _project(
+                provider.provider_name,
+                observation,
+                normalized_query,
+                filters,
+            )
+            if candidate is not None:
+                projected.append(candidate)
+        return tuple(projected)
+    except asyncio.CancelledError:
+        outcome = "cancelled"
+        raise
+    except asyncio.TimeoutError:
+        outcome = "timeout"
+        raise
+    except BaseException:
+        outcome = "error"
+        raise
+    finally:
+        log.info(
+            "asset_search provider=%s outcome=%s cache=%s latency_ms=%d",
             provider.provider_name,
-            observation,
-            normalized_query,
-            filters,
+            outcome,
+            cache_outcome,
+            int((time.monotonic() - started_at) * 1000),
         )
-        if candidate is not None:
-            projected.append(candidate)
-    return tuple(projected)
 
 
 async def discover(

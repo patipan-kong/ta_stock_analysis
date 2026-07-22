@@ -1,5 +1,6 @@
 """Executable evidence for WP6 provider discovery and projection."""
 import asyncio
+import logging
 import os
 import sys
 
@@ -115,13 +116,33 @@ def test_name_matching_uses_canonical_tiers_not_provider_relevance():
     assert prefix.candidates[0].match_field == "name_prefix"
 
 
-def test_registry_only_classification_filter_excludes_discovery_without_fabrication():
+def test_registry_only_classification_filter_does_not_exclude_discovery():
     provider = FakeAdapter(
         "provider-a",
         (ProviderObservation(provider_symbol="AAPL", name="Apple Inc."),),
     )
 
     result = _run(provider, filters={"asset_class": "EQUITY"})
+
+    assert result.successful_provider_count == 1
+    assert len(result.candidates) == 1
+    assert result.candidates[0].reported_symbol == "AAPL"
+
+
+def test_provider_observed_filter_still_excludes_nonmatching_discovery():
+    provider = FakeAdapter(
+        "provider-a",
+        (
+            ProviderObservation(
+                provider_symbol="AAPL",
+                market="US",
+                exchange="NMS",
+                currency="USD",
+            ),
+        ),
+    )
+
+    result = _run(provider, filters={"currency": "THB"})
 
     assert result.successful_provider_count == 1
     assert result.candidates == ()
@@ -159,6 +180,19 @@ def test_successful_provider_observations_are_cached_per_provider():
 
     assert first.candidates == second.candidates
     assert provider.calls == 1
+
+
+def test_provider_and_cache_outcomes_use_existing_structured_log_path(caplog):
+    provider = FakeAdapter("provider-a", (ProviderObservation(provider_symbol="AAPL"),))
+    cache = SearchCache()
+
+    with caplog.at_level(logging.INFO, logger="services.asset_search.discovery_search"):
+        _run(provider, cache=cache)
+        _run(provider, cache=cache)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("provider=provider-a outcome=success cache=miss latency_ms=" in message for message in messages)
+    assert any("provider=provider-a outcome=success cache=hit latency_ms=" in message for message in messages)
 
 
 def test_timed_out_provider_does_not_write_cache_after_cancellation():

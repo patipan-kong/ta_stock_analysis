@@ -10,14 +10,21 @@ import hashlib
 import json
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Callable, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Mapping, Optional, Sequence, Tuple
 
 from services.provider_domain import ProviderObservation
 
-__all__ = ["DEFAULT_TTL_SECONDS", "SearchCache", "search_cache_key"]
+__all__ = [
+    "DEFAULT_MAX_ENTRIES",
+    "DEFAULT_TTL_SECONDS",
+    "SearchCache",
+    "search_cache_key",
+]
 
 DEFAULT_TTL_SECONDS = 60.0
+DEFAULT_MAX_ENTRIES = 256
 
 
 def search_cache_key(
@@ -47,14 +54,29 @@ class SearchCache:
         self,
         *,
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
+        max_entries: int = DEFAULT_MAX_ENTRIES,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
+        if max_entries <= 0:
+            raise ValueError("max_entries must be positive")
         self._ttl_seconds = ttl_seconds
+        self._max_entries = max_entries
         self._clock = clock
-        self._entries: Dict[str, _CacheEntry] = {}
+        # Insertion order is the eviction order. Replacing a key makes it the
+        # newest entry, yielding deterministic FIFO-by-last-write behavior.
+        self._entries: OrderedDict[str, _CacheEntry] = OrderedDict()
         self._lock = threading.Lock()
+
+    def _remove_expired(self, now: float) -> None:
+        expired = [
+            key
+            for key, entry in self._entries.items()
+            if now - entry.cached_at >= self._ttl_seconds
+        ]
+        for key in expired:
+            self._entries.pop(key, None)
 
     def get(self, key: str) -> Optional[Tuple[ProviderObservation, ...]]:
         now = self._clock()
@@ -71,8 +93,13 @@ class SearchCache:
         values = tuple(observations)
         if not all(isinstance(value, ProviderObservation) for value in values):
             raise TypeError("SearchCache stores ProviderObservation values only")
+        now = self._clock()
         with self._lock:
-            self._entries[key] = _CacheEntry(values, self._clock())
+            self._remove_expired(now)
+            self._entries.pop(key, None)
+            while len(self._entries) >= self._max_entries:
+                self._entries.popitem(last=False)
+            self._entries[key] = _CacheEntry(values, now)
 
     def clear(self) -> None:
         with self._lock:

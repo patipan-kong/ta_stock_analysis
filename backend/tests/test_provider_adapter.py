@@ -190,9 +190,12 @@ def test_yahoo_search_returns_normalized_observations(monkeypatch):
             }
         ]
     }
+    async def fetch_payload(query, limit):
+        return payload
+
     monkeypatch.setattr(
         "services.provider_adapter._fetch_yahoo_search_payload",
-        lambda query, limit: payload,
+        fetch_payload,
     )
 
     observations = asyncio.run(YahooFinanceAdapter().search("Apple", limit=20))
@@ -201,6 +204,33 @@ def test_yahoo_search_returns_normalized_observations(monkeypatch):
     assert observations[0].provider_symbol == "AAPL"
     assert observations[0].name == "Apple Inc."
     assert observations[0].exchange == "NMS"
+
+
+def test_yahoo_search_propagates_cancellation_to_async_transport(monkeypatch):
+    cancelled = []
+
+    async def fetch_payload(query, limit):
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    monkeypatch.setattr(
+        "services.provider_adapter._fetch_yahoo_search_payload",
+        fetch_payload,
+    )
+
+    async def cancel_search():
+        task = asyncio.create_task(YahooFinanceAdapter().search("Apple", limit=20))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_search())
+
+    assert cancelled == [True]
 
 
 # ── End-to-end: the Registry cannot tell a claim came from an adapter ───

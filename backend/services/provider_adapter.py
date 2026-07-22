@@ -36,13 +36,12 @@ search() methods; adding one never changes shared claim-construction logic.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any, ClassVar, List, Mapping, Optional, Sequence, Tuple, final
 
-import requests
+import httpx
 
 from services.asset_domain import IdentifierRecord, IdentifierType
 from services.provider_domain import ProviderCapabilities, ProviderObservation
@@ -60,21 +59,26 @@ _YAHOO_SEARCH_HEADERS = {
 }
 
 
-def _fetch_yahoo_search_payload(query: str, limit: int) -> Mapping[str, Any]:
-    response = requests.get(
-        _YAHOO_SEARCH_URL,
-        params={
-            "q": query,
-            "quotesCount": limit,
-            "newsCount": 0,
-            "listsCount": 0,
-            "enableFuzzyQuery": "false",
-        },
+async def _fetch_yahoo_search_payload(query: str, limit: int) -> Mapping[str, Any]:
+    # The repository already depends on httpx. Keeping the transport async
+    # allows cancellation from discovery_search's existing wait_for boundary
+    # to reach the in-flight request instead of abandoning a worker thread.
+    async with httpx.AsyncClient(
         headers=_YAHOO_SEARCH_HEADERS,
         timeout=_YAHOO_SEARCH_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
-    payload = response.json()
+    ) as client:
+        response = await client.get(
+            _YAHOO_SEARCH_URL,
+            params={
+                "q": query,
+                "quotesCount": limit,
+                "newsCount": 0,
+                "listsCount": 0,
+                "enableFuzzyQuery": "false",
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
     if not isinstance(payload, Mapping):
         raise ValueError("Yahoo Finance search returned a malformed payload")
     return payload
@@ -203,11 +207,7 @@ class YahooFinanceAdapter(ProviderAdapter):
 
     async def search(self, query: str, *, limit: int) -> Sequence[ProviderObservation]:
         bounded_limit = max(1, min(limit, 50))
-        payload = await asyncio.to_thread(
-            _fetch_yahoo_search_payload,
-            query,
-            bounded_limit,
-        )
+        payload = await _fetch_yahoo_search_payload(query, bounded_limit)
         quotes = payload.get("quotes", ())
         if not isinstance(quotes, (list, tuple)):
             raise ValueError("Yahoo Finance search quotes were malformed")
