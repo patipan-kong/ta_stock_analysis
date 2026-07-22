@@ -16,23 +16,18 @@ reader can navigate without re-deriving history from file names and dates.
 
 ## Current Milestone Status
 
-The most recently touched milestone in the corpus is **M37 — Universal Asset
-Search**. Its own documents declare:
+The current milestone is **M38 — Product Workspace Foundation**. M38-WP1
+through M38-WP10 are complete and frozen. The canonical closeout is
+[M38_EPIC_CLOSEOUT.md](M38_EPIC_CLOSEOUT.md), and the final decisions are
+recorded in the
+[Decision Log](../engineering/DECISION_LOG.md#m38--product-workspace-foundation-epic-closeout).
 
-- [M37_WP1_Universal_Asset_Search_Foundation.md](M37_WP1_Universal_Asset_Search_Foundation.md) — `APPROVED_AND_FROZEN`
-- [M37_1_Universal_Asset_Search_Technical_Design.md](M37_1_Universal_Asset_Search_Technical_Design.md) — `APPROVED_AND_FROZEN`
-- [M37_EPIC_CLOSEOUT.md](M37_EPIC_CLOSEOUT.md) — `IMPLEMENTATION COMPLETE`, per
-  [`docs/engineering/DECISION_LOG.md`](../engineering/DECISION_LOG.md#m373---provider-discovery--universe-search-implementation-closeout),
-  whose M37.3 entry is committed on `main` (commit `19b0959`, alongside the
-  underlying corrections). Commits `8f87915` and `10a6e2d` are both verified
-  ancestors of `main`.
-
-Bookkeeping note, not a reopening of implementation verification: as of this
-writing, `M37_EPIC_CLOSEOUT.md` itself and the "Closeout:" cross-references
-added to the two design documents above are untracked/uncommitted in the
-working tree, distinct from the code and Decision-Log entry, which are
-committed. This index reports that split as repository evidence; it does not
-independently re-adjudicate M37.3's validation numbers.
+The M38 document set contains the constitutional WP1 specification, standalone
+implementation designs for WP2, WP3, and WP7–WP10, and frozen Decision Log
+records for all ten work packages. WP4–WP6 have no standalone files in this
+repository; their frozen implementation authorities are represented by their
+individual Decision Log entries. The closeout does not recreate or reinterpret
+those frozen designs.
 
 ## Milestone Navigation (M0–current)
 
@@ -56,6 +51,7 @@ independently re-adjudicate M37.3's validation numbers.
 | M35 | `PROPOSED_FOR_SECOND_ARCHITECTURAL_REVIEW` (WP1); `COMPLETE_FOR_SECOND_ARCHITECTURAL_REVIEW` (WP2) | [M35_WP1_Product_Workspace_Foundation.md](M35_WP1_Product_Workspace_Foundation.md) `CAD`, [M35_WP2_Architectural_Remediation_Summary.md](M35_WP2_Architectural_Remediation_Summary.md) `RCE` | none present | not indexed by milestone number |
 | M36 | `M36-WP1`: `APPROVED_AND_CANONICAL`, closed. `M36.1`: `PROPOSED_FOR_IMPLEMENTATION` — **requires reconciliation** against WP1's closed/canonical status before being treated as settled | [M36_WP1_Multiple_Portfolio_Foundation.md](M36_WP1_Multiple_Portfolio_Foundation.md) `CAD`, [M36_1_Runtime_Foundation.md](M36_1_Runtime_Foundation.md) `DT`, [M36_WP2_Architectural_Remediation_Summary.md](M36_WP2_Architectural_Remediation_Summary.md) `RCE` | [M36_EPIC_CLOSEOUT.md](M36_EPIC_CLOSEOUT.md) `CO` | [§M36 Closeout](../engineering/DECISION_LOG.md#m36---multiple-portfolio-foundation-closeout) |
 | M37 | `APPROVED_AND_FROZEN` (design docs); `IMPLEMENTATION COMPLETE` (Decision Log, committed) | [M37_WP1_Universal_Asset_Search_Foundation.md](M37_WP1_Universal_Asset_Search_Foundation.md) `CAD`, [M37_1_Universal_Asset_Search_Technical_Design.md](M37_1_Universal_Asset_Search_Technical_Design.md) `CAD` | [M37_EPIC_CLOSEOUT.md](M37_EPIC_CLOSEOUT.md) `CO` | [§M37.3 Closeout](../engineering/DECISION_LOG.md#m373---provider-discovery--universe-search-implementation-closeout) |
+| M38 | `COMPLETE AND FROZEN` (WP1–WP10); epic closed and ready for merge | [M38_WP1_BOUNDARY_CONTRACT_SPECIFICATION.md](M38_WP1_BOUNDARY_CONTRACT_SPECIFICATION.md) `CAD`; [WP2](M38_WP2_WORKSPACE_CONTEXT_RUNTIME_IMPLEMENTATION_DESIGN.MD), [WP3](M38_WP3_IMPLEMENTATION_DESIGN.md), [WP7](M38_WP7_EXPERIENCE_COMPOSITION_RUNTIME_IMPLEMENTATION_DESIGN.md), [WP8](M38_WP8_EXPERIENCE_OBSERVATION_RUNTIME_IMPLEMENTATION_DESIGN.md), [WP9](M38_WP9_EXPERIENCE_QUERY_RUNTIME_IMPLEMENTATION_DESIGN.md), and [WP10](M38_WP10_DISCOVERY_EXPERIENCE_RUNTIME_IMPLEMENTATION_DESIGN.md) `AIR`; WP4–WP6 are represented by frozen Decision Log records | [M38_EPIC_CLOSEOUT.md](M38_EPIC_CLOSEOUT.md) `CO` | [§M38 Closeout](../engineering/DECISION_LOG.md#m38--product-workspace-foundation-epic-closeout) |
 
 **M34 status detail** (a single "Complete" label does not hold for the whole
 milestone — its two governance tracks diverge):
@@ -81,6 +77,13 @@ any earlier draft of the same subject:
 - [M36_WP1_Multiple_Portfolio_Foundation.md](M36_WP1_Multiple_Portfolio_Foundation.md)
 - [M37_WP1_Universal_Asset_Search_Foundation.md](M37_WP1_Universal_Asset_Search_Foundation.md)
 - [M37_1_Universal_Asset_Search_Technical_Design.md](M37_1_Universal_Asset_Search_Technical_Design.md)
+- [M38_WP1_BOUNDARY_CONTRACT_SPECIFICATION.md](M38_WP1_BOUNDARY_CONTRACT_SPECIFICATION.md)
+- [M38_WP2_WORKSPACE_CONTEXT_RUNTIME_IMPLEMENTATION_DESIGN.MD](M38_WP2_WORKSPACE_CONTEXT_RUNTIME_IMPLEMENTATION_DESIGN.MD)
+- [M38_WP3_IMPLEMENTATION_DESIGN.md](M38_WP3_IMPLEMENTATION_DESIGN.md)
+- [M38_WP7_EXPERIENCE_COMPOSITION_RUNTIME_IMPLEMENTATION_DESIGN.md](M38_WP7_EXPERIENCE_COMPOSITION_RUNTIME_IMPLEMENTATION_DESIGN.md)
+- [M38_WP8_EXPERIENCE_OBSERVATION_RUNTIME_IMPLEMENTATION_DESIGN.md](M38_WP8_EXPERIENCE_OBSERVATION_RUNTIME_IMPLEMENTATION_DESIGN.md)
+- [M38_WP9_EXPERIENCE_QUERY_RUNTIME_IMPLEMENTATION_DESIGN.md](M38_WP9_EXPERIENCE_QUERY_RUNTIME_IMPLEMENTATION_DESIGN.md)
+- [M38_WP10_DISCOVERY_EXPERIENCE_RUNTIME_IMPLEMENTATION_DESIGN.md](M38_WP10_DISCOVERY_EXPERIENCE_RUNTIME_IMPLEMENTATION_DESIGN.md)
 - [ASSET_REGISTRY_IMPLEMENTATION_PLAN.md](ASSET_REGISTRY_IMPLEMENTATION_PLAN.md) (Status: Complete, 2026-07-09)
 
 [M36_1_Runtime_Foundation.md](M36_1_Runtime_Foundation.md) is deliberately
@@ -97,7 +100,8 @@ Broader architecture documents (not milestone-scoped) live under
 
 - [M32_EPIC_CLOSEOUT.md](M32_EPIC_CLOSEOUT.md) — Cost-aware Execution Planning; closed 2026-07-15, governance closeout (not a full cutover declaration)
 - [M36_EPIC_CLOSEOUT.md](M36_EPIC_CLOSEOUT.md) — Multiple Portfolio Foundation; closed 2026-07-20, canonical
-- [M37_EPIC_CLOSEOUT.md](M37_EPIC_CLOSEOUT.md) — Provider Discovery / UNIVERSE Search; `IMPLEMENTATION COMPLETE` per the committed [DECISION_LOG.md M37.3 entry](../engineering/DECISION_LOG.md#m373---provider-discovery--universe-search-implementation-closeout); the closeout file itself is currently untracked (see Current Milestone Status above)
+- [M37_EPIC_CLOSEOUT.md](M37_EPIC_CLOSEOUT.md) — Provider Discovery / UNIVERSE Search; `IMPLEMENTATION COMPLETE` per the [DECISION_LOG.md M37.3 entry](../engineering/DECISION_LOG.md#m373---provider-discovery--universe-search-implementation-closeout)
+- [M38_EPIC_CLOSEOUT.md](M38_EPIC_CLOSEOUT.md) — Product Workspace Foundation; WP1–WP10 complete and frozen, implementation review and WP10 remediation closed, ready for merge
 
 ## Active Governance
 

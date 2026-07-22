@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:pure": "node --experimental-strip-types --test lib/portfolioReference.test.ts lib/workspaceScopeSwitcher.test.ts",
+    "test:pure": "node --experimental-strip-types --test lib/portfolioReference.test.ts lib/workspaceScopeSwitcher.test.ts lib/discoveryExperience.test.ts",
     "test:vitest": "vitest run"
   },
   "dependencies": {

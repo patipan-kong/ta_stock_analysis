@@ -1,7 +1,9 @@
 # Decision Log
 What we HAVE decided
 _Why decisions were made. Useful context when revisiting constraints or architecture choices._
-_See [ARCH_SPEC.md](ARCH_SPEC.md) for current specs. See [ROADMAP.md](ROADMAP.md) for phase history._
+_See [Platform Architecture](../architecture/platform_architecture.md) for the
+current constitution. See the [Implementation Index](../implementation/INDEX.md)
+for milestone history._
 
 ---
 
@@ -1895,3 +1897,64 @@ The implementation does not own:
 This work package is now frozen.
 
 Subsequent work packages shall treat M38-WP9 as immutable implementation authority unless superseded by future constitutional governance.
+
+---
+
+## M38-WP10 — Discovery Experience Runtime
+
+**Date:** 2026-07-22
+
+**Decision:** Approve and freeze M38-WP10 as the implementation authority for
+the Experience-owned Discovery Experience Runtime. The runtime realizes the
+WP1 `DiscoveryExperienceContext` contract and its transient `OPEN` to `CLOSED`
+lifecycle around an unmodified M37 Discovery Candidate in a resolved WP2
+workspace prerequisite. The confirmed synchronous observer re-entrancy defect
+is remediated, and the independent re-review found no remaining blocker.
+
+**Reasoning:** The implementation remains provider-neutral and fail closed. It
+uses no Search execution or internals, Registry, Resolver, provider adapter,
+Portfolio, Current Selection mutation, Asset Focus, canonical route,
+persistence, or future-domain runtime. A private ephemeral transition guard
+covers every mutating lifecycle operation and its notification phase. A
+re-entrant command performs no mutation or notification, while `try/finally`
+release and observer-exception isolation preserve normal lifecycle behavior.
+The exact reproduced replacement regression and normal open, replace, close,
+and expiry paths are covered by the focused suite.
+
+**Impact:**
+[M38_WP10_DISCOVERY_EXPERIENCE_RUNTIME_IMPLEMENTATION_DESIGN.md](../implementation/M38_WP10_DISCOVERY_EXPERIENCE_RUNTIME_IMPLEMENTATION_DESIGN.md)
+is the canonical implementation record. WP10 introduces no identity,
+authority, persistence, route, Resolver handoff, or modification to M35–M37 or
+M38-WP1–WP9. No further WP10 implementation authority remains after the
+approved remediation.
+
+---
+
+## M38 — Product Workspace Foundation Epic Closeout
+
+**Date:** 2026-07-22
+
+**Decision:** Close M38 as `COMPLETE AND FROZEN` and ready for merge.
+M38-WP1 through M38-WP10 are represented by the canonical specification,
+standalone implementation records where present, and individual Decision Log
+entries. All independent reviews and bounded corrective verifications are
+closed; the WP10 re-entrancy blocker is remediated and independently approved
+with no remaining blocking finding.
+
+**Reasoning:** Repository reconciliation confirmed the work-package sequence,
+single-owner and public-boundary constraints, cross-document navigation,
+deferred seam status, and the absence of authority beyond the approved WP10
+remediation. The M38 implementation index and canonical
+[M38_EPIC_CLOSEOUT.md](../implementation/M38_EPIC_CLOSEOUT.md) now provide the
+complete repository map. WP4–WP6 remain represented by their frozen Decision
+Log entries; closeout does not recreate or reinterpret those authorities.
+
+**Impact:** M35, M36, M37, and every M38 work package remain frozen. Registry
+retains canonical asset identity, `asset_id` remains the only canonical
+workspace asset identity, Search remains discovery-only, providers retain
+their source data, and Experience retains interaction and composition only.
+Resolver handoff, market and Intelligence projections, Intent or Actions,
+workspace directory/switching/membership/RBAC, multi-workspace behavior, and
+other explicitly reserved capabilities remain deferred and unauthorized.
+M39 is the next milestone number eligible for specification, but this closeout
+does not define, authorize, or begin M39.
