@@ -4,7 +4,15 @@
 
 **Document class:** Technical Design Document (level-5 artifact, per Platform Architecture §11)
 
-**Design status:** `REMEDIATED_PENDING_FINAL_APPROVAL`
+**Design status:** `APPROVED_AND_FROZEN`
+
+**Lifecycle:** Technical Design Complete
+
+**Implementation:** Implemented by M37.3
+
+**Independent Review:** Approved
+
+**Closeout:** M37_EPIC_CLOSEOUT.md
 
 **Remediation record:** this document has been amended in response to the
 Independent Technical Design Review (verdict: `PASS WITH REQUIRED

@@ -4,11 +4,17 @@
 
 **Document class:** Architecture Design Document (architecture milestone)
 
-**Status:** `PROPOSED_FOR_INDEPENDENT_REVIEW`
+**Status:** `APPROVED_AND_FROZEN`
 
-**Implementation authority:** `NONE` (architecture only; no implementation authorized by this document)
+**Lifecycle:** `Foundation Complete`
+
+**Implementation:** `Implemented by M37.3`
 
 **Runtime authority:** `NONE`
+
+**Superseded by:** `NONE`
+
+**Closeout:** `M37_EPIC_CLOSEOUT.md`
 
 **Governing architecture (frozen, not amended by this document):**
 [Platform Architecture](../architecture/platform_architecture.md) (the constitution),
