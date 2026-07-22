@@ -1819,3 +1819,79 @@ The final corrective verification confirmed that:
 WP7 is canonically conformant to the frozen M38 architecture.
 
 M38-WP7 is now FROZEN and serves as the implementation authority for the Experience Composition Runtime.
+
+---
+
+M38-WP8 Final Corrective Conformance Verification: PASS
+
+All previously identified conformance findings have been resolved through
+bounded corrections.
+
+The final corrective verification confirmed:
+
+- RETIRED notifications carry canonical experience identity.
+- Mid-recomposition subscription semantics are internally consistent.
+- WP8 performs no generation inference beyond WP7's public Observation Interface.
+- Pending notification suppression is transition-based.
+- Notification snapshot references preserve single-owner semantics.
+
+WP8 is canonically conformant to the frozen M38 architecture.
+
+M38-WP8 is now FROZEN and serves as the implementation authority for the
+Experience Observation Runtime.
+
+---
+
+### M38-WP9 — Experience Query Runtime — FROZEN
+
+**Status:** COMPLETE — IMPLEMENTATION AUTHORITY FROZEN
+
+The M38-WP9 Experience Query Runtime implementation design has successfully completed the canonical implementation workflow:
+
+- Initial implementation design
+- Independent implementation conformance review
+- Bounded corrective revisions
+- Independent corrective verification
+
+Final verification result:
+
+**PASS**
+
+All previously identified conformance findings have been resolved.
+
+The Experience Query Runtime is canonically conformant to the frozen M38 architecture and is approved as the frozen implementation authority for Experience Query behavior.
+
+The approved implementation establishes:
+
+- a read-only, deterministic Experience Query Runtime;
+- consumption exclusively through the frozen WP8 public Subscription and Notification interface;
+- one WP8 subscription per WP9 runtime instance;
+- a Mechanical Observation Projection with a single atomic Holder capture per query;
+- deterministic, side-effect-free query execution;
+- canonical query filtering, projection, and result construction;
+- strict fail-closed operational behavior;
+- no replay, reconnect, persistence, alternate observation path, or upstream authority.
+
+Implementation authority is limited to:
+
+- Experience Query Coordinator
+- Mechanical Observation Projection
+- Query validation
+- Query execution
+- Query filtering
+- Query projection
+- Query result construction
+
+The implementation does not own:
+
+- Experience composition
+- Experience publication
+- Observation delivery
+- Business lifecycle
+- Mutation authority
+- Registry, Search, Resolver, Provider, Portfolio persistence
+- Intelligence, Intent, Recommendation, Analytics, or Reporting behavior
+
+This work package is now frozen.
+
+Subsequent work packages shall treat M38-WP9 as immutable implementation authority unless superseded by future constitutional governance.
