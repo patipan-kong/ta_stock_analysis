@@ -1685,3 +1685,137 @@ limitation within M37.3.
 **Impact:** M37.3 is finally approved, implementation complete, and ready for
 merge. The correction cycle is closed, and no further M37.3 implementation
 work is required for closeout.
+
+---
+
+## M38-WP1 Closeout
+
+Decision: APPROVED
+
+The M38-WP1 Boundary Contracts and Conformance Specification completed an
+independent architecture review.
+
+Initial review identified five normative deficiencies:
+
+- Incomplete state machines
+- Shared transition ownership
+- State vocabulary inconsistency
+- Reduced HTTP contract specification
+- Insufficient implementation-level conformance detail
+
+A corrective revision was produced.
+
+Independent verification confirmed that all reported findings were resolved.
+
+Result:
+
+- Canonical specification accepted.
+- Frozen as implementation authority for WP2–WP9.
+- No amendment to M35–M37 required.
+- Review closed.
+
+---
+
+M38-WP2 Closeout
+
+Decision: APPROVED
+
+The M38-WP2 Workspace Context Runtime Implementation Design completed
+independent implementation-conformance review.
+
+One review finding identified ambiguity in the route-validation wording.
+
+Architectural adjudication determined that:
+
+- WP2 provides only the Workspace-segment validation prerequisite.
+- Asset Focus creation and Registry orchestration remain assigned to later
+  work packages under the frozen M38 architecture.
+- A normative clarification was added without changing architectural
+  ownership or runtime boundaries.
+
+Independent verification confirmed that the clarification resolved the
+remaining finding.
+
+Result:
+
+- Canonical implementation design accepted.
+- Frozen as implementation authority for WP2.
+- No modification to WP1 or M35–M37 required.
+- Review closed.
+
+---
+
+## M38-WP3 — Asset Focus Runtime
+
+Status: FROZEN
+
+Independent implementation conformance review completed.
+
+Result:
+- PASS
+- No architectural findings.
+- Ownership, lifecycle, dependency, and public-contract boundaries verified.
+
+M38-WP3 is designated as the frozen implementation authority for the Asset Focus Runtime.
+
+---
+
+## M38-WP4 — Canonical Navigation Runtime
+
+Status: FROZEN
+
+Independent implementation conformance review completed.
+
+Result:
+- PASS
+- No architectural findings.
+- Navigation orchestration boundaries verified.
+- Public-contract-only composition confirmed.
+
+M38-WP4 is designated as the frozen implementation authority for the Canonical Navigation Runtime.
+
+---
+
+## M38-WP5 — Contribution Runtime
+
+Status: FROZEN
+
+Independent implementation conformance review completed.
+
+Result:
+- PASS
+- No architectural findings.
+- Contribution lifecycle, availability, ownership, and dependency boundaries verified.
+
+M38-WP5 is designated as the frozen implementation authority for the Contribution Runtime.
+
+---
+
+### M38-WP6 - Projection Composition Runtime Implementation Design
+Status: FROZEN
+
+Independent implementation conformance review completed.
+
+Result:
+- PASS
+- No architectural findings.
+
+No ownership, lifecycle, dependency, projection-boundary, milestone-boundary, or public-contract violations were identified.
+
+M38-WP6 is now FROZEN and serves as the implementation authority for the Projection Composition Runtime.
+
+---
+
+M38-WP7 Final Corrective Conformance Verification: PASS
+
+All previously identified conformance findings have been resolved through bounded corrections.
+
+The final corrective verification confirmed that:
+
+- Experience Composition composes only the active Contribution association.
+- Detached Projection Envelopes are excluded from successor snapshots.
+- Publication semantics distinguish the last published Experience Snapshot from the latest upstream business state while preserving atomic replacement.
+
+WP7 is canonically conformant to the frozen M38 architecture.
+
+M38-WP7 is now FROZEN and serves as the implementation authority for the Experience Composition Runtime.
