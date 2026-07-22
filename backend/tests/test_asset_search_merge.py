@@ -190,6 +190,32 @@ def test_discovery_with_only_unrecognized_identifier_keys_remains_discovery():
     mock_resolve.assert_not_called()
 
 
+def test_resolver_failure_preserves_discovery_and_reports_merge_unavailability():
+    db = make_session()
+    discovery = DiscoveryCandidate(
+        claim_id="c1",
+        provider_name="p1",
+        reported_identifiers={"PROVIDER_SYMBOL": "KBANK.BK"},
+    )
+    failures = []
+
+    with patch(
+        "services.asset_search.merge.resolve",
+        side_effect=RuntimeError("registry unavailable"),
+    ):
+        result = merge.merge(
+            db,
+            [],
+            [discovery],
+            on_resolve_error=lambda candidate, exc: failures.append((candidate, exc)),
+        )
+
+    assert result == [discovery]
+    assert len(failures) == 1
+    assert failures[0][0] is discovery
+    assert isinstance(failures[0][1], RuntimeError)
+
+
 # -- 5/8. RESOLVED reuses an existing registered candidate ----------------------
 
 def test_resolved_discovery_reuses_existing_registered_candidate():

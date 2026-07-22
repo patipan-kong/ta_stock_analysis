@@ -35,7 +35,7 @@ the §6 field shape (`reported_identifiers`, `provider_name`, `market`,
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from sqlalchemy.orm import Session
 
@@ -151,6 +151,8 @@ def merge(
     db: Session,
     registered_candidates: Sequence[RegisteredCandidate],
     discovery_candidates: Sequence[DiscoveryLike],
+    *,
+    on_resolve_error: Optional[Callable[[DiscoveryLike, Exception], None]] = None,
 ) -> List[Any]:
     """Reconciles discovery-shaped candidates against the Registry (§8
     stage 7). Every discovery candidate that yields a buildable claim is
@@ -197,7 +199,16 @@ def merge(
             preserved_discovery.append(discovery)
             continue
 
-        result = resolve(db, claim, record_finding=False)
+        try:
+            result = resolve(db, claim, record_finding=False)
+        except Exception as exc:
+            # F3: a failed Registry check is not proof that the provider
+            # observation is unregistered.  Preserve the discovery candidate
+            # and let orchestration disclose the unavailable merge check.
+            preserved_discovery.append(discovery)
+            if on_resolve_error is not None:
+                on_resolve_error(discovery, exc)
+            continue
 
         if result.verdict == ResolutionVerdict.RESOLVED and result.resolved_asset_id is not None:
             asset_id = int(result.resolved_asset_id)
