@@ -2047,3 +2047,41 @@ vocabulary-cycle decisions only; it does not redesign M40, close the M40
 milestone, amend a frozen work package, or authorize implementation.
 The canonical reconciliation record is
 [M40_WP4_DECISION_LOG_RECONCILIATION.md](../implementation/M40_WP4_DECISION_LOG_RECONCILIATION.md).
+
+---
+
+## M41-WP1 — Market Measure Definition, Method Version, and Applicability Contract Closeout
+
+**Date:** 2026-07-23
+
+**Decision:** Close M41-WP1. M41-WP1 is COMPLETE, CONFIRMED, and FROZEN.
+Normative authority for Market Measure Definition, Method Version, and
+Method Requirement (Applicability) transfers to the confirmed WP1
+specification corpus. The Architecture dependency and Stage 1 Candidate
+Vocabulary & Ownership Register remain CONFIRMED and FROZEN as previously
+recorded; the Stage 2 Contract Specification required two Independent
+Review / Required Corrections / Independent Confirmation cycles — the first
+Independent Confirmation returned `NOT CONFIRMED` (four findings), the Final
+Independent Confirmation resolved two of those findings but returned
+`NOT CONFIRMED` on the remaining two, and the Final2 Independent
+Confirmation confirmed the remaining two resolved, returning `CONFIRMED`
+with no unresolved findings.
+
+**Reasoning:** WP1's iterative correction cycle is the intended mechanism
+for closing a constitutional specification: each Independent Confirmation
+either confirms an item outright or narrows exactly what remains open,
+without permitting a resolved item to be reopened. The final cycle
+(`M41-WP1-S2-IR-2`, evaluation-rule semantics closure, and
+`M41-WP1-S2-IR-4`, admission predicate 12's full `§7.5` enforcement) closed
+the last two open portions without redesigning the Method Requirement
+grammar or introducing new governed vocabulary, satisfying the confirmed
+architecture's requirement that Stage 2 be mechanically decidable before
+being treated as normative.
+
+**Impact:** M41-WP1 grants no implementation, runtime, provider,
+persistence, API, production-catalog, or production-method-admission
+authority; the canonical closeout record is
+[M41_WP1_CLOSEOUT.md](../implementation/M41_WP1_CLOSEOUT.md). M41-WP2
+(Measure Subject, Observation Input Manifest binding, and related deferred
+contracts) is not begun by this closeout. No Architecture, Stage 1, or
+prior M40/M39/M38 record is amended or reopened.
