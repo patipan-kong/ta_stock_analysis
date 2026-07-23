@@ -2009,3 +2009,41 @@ canonical repository map is
 [docs/implementation/INDEX.md](../implementation/INDEX.md). M40 is the next
 milestone number eligible for specification; this closeout does not define,
 authorize, or begin M40.
+
+---
+
+## M40 — Constitutional Vocabulary Cycle Completion
+
+**Date:** 2026-07-23
+
+**Decision:** Complete the M40 constitutional vocabulary cycle. Admit
+`Market Measure`, `Calculated Market Measure`, `Computation Outcome`,
+`Observation Input Manifest`, `Market Measure Result`, `Input Sufficiency`,
+`Deterministic Calculation`, and `Mechanical Boundary Rules` as canonical
+terms. Reject `Calculation Temporal Claim` and the M40 specialization of
+`Producing Domain` because their proposed meanings are already represented by
+the existing canonical terms `Canonical Temporal Claim` and `Producing
+Domain`. Confirm that Canonical Glossary synchronization is complete and has
+received independent constitutional approval.
+
+**Reasoning:** The eight admitted terms are the minimum coherent vocabulary
+set needed to distinguish source-reported observations, platform-computed
+descriptive market facts, calculation outcomes, input lineage, result
+envelopes, sufficiency, determinism, and the governance predicate that keeps
+those meanings singly owned. The two rejected specializations would duplicate
+existing canonical temporal and ownership grammar without adding
+constitutional meaning.
+
+**Impact:** Existing canonical vocabulary remains unchanged and fully
+effective. Market Intelligence retains sole ownership of the seven admitted
+business concepts; Repository Architecture Governance retains sole ownership
+of `Mechanical Boundary Rules` without becoming a business domain. Asset
+Foundation identity, frozen M39 Observation semantics, Ledger & Accounting
+truth, Portfolio Intelligence knowledge, Decision Intelligence judgment,
+Trust & Evaluation assessment, Wealth Intelligence meaning, Experience
+Platform presentation, and all provider, runtime, persistence, API,
+authorization, and production boundaries remain unchanged. This records the
+vocabulary-cycle decisions only; it does not redesign M40, close the M40
+milestone, amend a frozen work package, or authorize implementation.
+The canonical reconciliation record is
+[M40_WP4_DECISION_LOG_RECONCILIATION.md](../implementation/M40_WP4_DECISION_LOG_RECONCILIATION.md).

@@ -1135,3 +1135,231 @@ It owns no business truth and acquires no authority from adjacent content or
 workflows.
 
 Governed by `M34-D-0011`.
+
+
+## Market Measure
+
+A Market Measure is a descriptive market fact whose subject, inputs, and
+output meaning remain inside the mechanically testable Market Intelligence
+boundary. The term is an umbrella semantic category. It does not make every
+externally reported value a platform calculation and does not make every
+numerical value a Market Measure.
+
+Owned by Market Intelligence.
+
+It describes an Asset or market condition, not a portfolio, person, household,
+goal, or plan. It is evidence, not Investment Judgment. Source-reported claims
+retain frozen M39 Market Observation semantics; platform calculations are
+Calculated Market Measures. It does not assert correctness, reliability,
+suitability, actionability, authority, or production availability.
+
+**Effective now:** Yes. Synchronization is complete and independent
+constitutional approval of M40-WP3 was granted; see
+[M40-WP3 Independent Constitutional Review](implementation/M40_WP3_INDEPENDENT_CONSTITUTIONAL_REVIEW.md).
+
+Governed by [Platform Architecture](architecture/platform_architecture.md),
+the [M34 Decision Register](implementation/m34/audit/registers/decision_register.md),
+frozen [M39](implementation/M39_EPIC_CLOSEOUT.md),
+[M40-WP1](implementation/M40_WP1_Canonical_Market_Measure_Vocabulary_and_Ownership_Specification.md),
+and [M40-WP2](implementation/M40_WP2_Canonical_Market_Measure_Vocabulary_Admission_Review.md).
+
+
+## Calculated Market Measure
+
+A Calculated Market Measure is an immutable descriptive market fact produced
+by a Deterministic Calculation from an exact Observation Input Manifest under
+explicit semantic and dependency versions. It is a platform calculation and
+therefore carries Event Type `Calculation`. It is not an M39 Observation
+Event, Investment Judgment, Evaluation, or portfolio measure.
+
+Owned by Market Intelligence.
+
+The result satisfies every Market Measure constraint. Exact inputs, versions,
+dependencies, outcome, and the existing Canonical Temporal Claim are
+attributable. A non-success outcome carries no required measure value.
+Calculation does not transfer ownership of input evidence, and runtime custody
+or storage does not become semantic ownership. This term admits no formula,
+calculation method, implementation, provider access, persistence, API, runtime,
+or production method.
+
+**Effective now:** Yes. Synchronization is complete and independent
+constitutional approval of M40-WP3 was granted; see
+[M40-WP3 Independent Constitutional Review](implementation/M40_WP3_INDEPENDENT_CONSTITUTIONAL_REVIEW.md).
+
+Governed by [Platform Architecture](architecture/platform_architecture.md),
+`M34-D-0005` and `M34-D-0010` in the
+[M34 Decision Register](implementation/m34/audit/registers/decision_register.md),
+frozen [M39](implementation/M39_EPIC_CLOSEOUT.md),
+[M40-WP1](implementation/M40_WP1_Canonical_Market_Measure_Vocabulary_and_Ownership_Specification.md),
+and [M40-WP2](implementation/M40_WP2_Canonical_Market_Measure_Vocabulary_Admission_Review.md).
+
+
+## Computation Outcome
+
+Computation Outcome states whether the specified calculation completed and
+produced its required semantic value. It is exactly one of:
+
+| Outcome | Meaning | Required-value rule |
+| --- | --- | --- |
+| `SUCCEEDED` | The declared calculation completed and every required output is present | Required value present |
+| `INSUFFICIENT_INPUT` | The canonical supplied inputs do not satisfy the declared input prerequisites | Required value absent |
+| `DEPENDENCY_UNRESOLVED` | A declared governed dependency needed for the calculation is unresolved | Required value absent |
+| `FAILED` | A semantically valid and sufficiently supplied calculation did not complete | Required value absent |
+
+Owned by Market Intelligence.
+
+This outcome axis remains distinct from Degraded State. `UNAVAILABLE` remains
+reserved for the canonical Degraded State grammar. `SUCCEEDED` does not mean
+correct, trusted, current, suitable, recommended, or available through a
+runtime. A reason may explain an outcome but does not introduce judgment,
+evaluation, authorization, or action meaning.
+
+**Effective now:** Yes. Synchronization is complete and independent
+constitutional approval of M40-WP3 was granted; see
+[M40-WP3 Independent Constitutional Review](implementation/M40_WP3_INDEPENDENT_CONSTITUTIONAL_REVIEW.md).
+
+Governed by [Platform Architecture](architecture/platform_architecture.md),
+`M34-D-0005` and `M34-D-0010` in the
+[M34 Decision Register](implementation/m34/audit/registers/decision_register.md),
+[M40-WP1](implementation/M40_WP1_Canonical_Market_Measure_Vocabulary_and_Ownership_Specification.md),
+and [M40-WP2](implementation/M40_WP2_Canonical_Market_Measure_Vocabulary_Admission_Review.md).
+
+
+## Observation Input Manifest
+
+An Observation Input Manifest is an immutable, complete, deterministically
+ordered evidence binding that enumerates the exact frozen M39 Observation
+semantics selected as calculation inputs. It is evidence lineage, not an
+Observation, provider request, persistence model, or permission to retrieve
+data.
+
+Owned by Market Intelligence.
+
+Every referenced observation retains its frozen M39 identity and meaning.
+Manifest membership does not create, correct, merge, or supersede an
+Observation. The manifest is enumerable and canonically orderable, contains no
+dynamic `latest` reference, and does not imply production existence or
+authorize provider access, retrieval, storage, history, replay, API, runtime,
+or production behavior.
+
+**Effective now:** Yes. Synchronization is complete and independent
+constitutional approval of M40-WP3 was granted; see
+[M40-WP3 Independent Constitutional Review](implementation/M40_WP3_INDEPENDENT_CONSTITUTIONAL_REVIEW.md).
+
+Governed by [Platform Architecture](architecture/platform_architecture.md),
+the [M34 Decision Register](implementation/m34/audit/registers/decision_register.md),
+the frozen [M39 observation corpus](implementation/M39_EPIC_CLOSEOUT.md),
+[M40-WP1](implementation/M40_WP1_Canonical_Market_Measure_Vocabulary_and_Ownership_Specification.md),
+and [M40-WP2](implementation/M40_WP2_Canonical_Market_Measure_Vocabulary_Admission_Review.md).
+
+
+## Market Measure Result
+
+A Market Measure Result is one immutable, owner-explicit semantic outcome of
+applying one exact future-governed calculation specification to one exact
+invocation and Observation Input Manifest. It represents success and
+non-success without changing the meaning of its inputs.
+
+Owned by Market Intelligence.
+
+It identifies exact subjects, inputs, semantic versions, dependencies,
+Computation Outcome, the existing Canonical Temporal Claim, and lineage. It
+contains required calculated values only for `SUCCEEDED`. It does not assert
+correctness, suitability, recommendation, actionability, persistence, public
+exposure, runtime availability, or production adoption. Identical canonical
+semantic inputs and versions identify the same semantic result.
+
+**Effective now:** Yes. Synchronization is complete and independent
+constitutional approval of M40-WP3 was granted; see
+[M40-WP3 Independent Constitutional Review](implementation/M40_WP3_INDEPENDENT_CONSTITUTIONAL_REVIEW.md).
+
+Governed by [Platform Architecture](architecture/platform_architecture.md),
+`M34-D-0005` and `M34-D-0010` in the
+[M34 Decision Register](implementation/m34/audit/registers/decision_register.md),
+frozen [M39](implementation/M39_EPIC_CLOSEOUT.md),
+[M40-WP1](implementation/M40_WP1_Canonical_Market_Measure_Vocabulary_and_Ownership_Specification.md),
+and [M40-WP2](implementation/M40_WP2_Canonical_Market_Measure_Vocabulary_Admission_Review.md).
+
+
+## Input Sufficiency
+
+Input Sufficiency is the deterministic classification of whether every
+declared prerequisite for the specified calculation is satisfied by the exact
+supplied canonical inputs. It is `SATISFIED` only when all declared
+prerequisites are satisfied; otherwise it is `INSUFFICIENT` with at least one
+exact, future-governed reason. It does not assess whether an input is true,
+high quality, useful, or suitable for action.
+
+Owned by Market Intelligence.
+
+Input Sufficiency is distinct from frozen M39 Semantic Sufficiency. Semantic
+Sufficiency concerns whether an Observation Payload preserves enough
+source-established meaning for a represented claim to be understood. Input
+Sufficiency concerns whether exact canonical inputs satisfy one calculation's
+declared prerequisites. Neither establishes, amends, recomputes, or
+reinterprets the other. `SATISFIED` does not imply `SUCCEEDED`, trusted,
+current, or correct; `INSUFFICIENT` maps to `INSUFFICIENT_INPUT` and prohibits
+required calculated values.
+
+**Effective now:** Yes. Synchronization is complete and independent
+constitutional approval of M40-WP3 was granted; see
+[M40-WP3 Independent Constitutional Review](implementation/M40_WP3_INDEPENDENT_CONSTITUTIONAL_REVIEW.md).
+
+Governed by [Platform Architecture](architecture/platform_architecture.md),
+the [M34 Decision Register](implementation/m34/audit/registers/decision_register.md),
+frozen [M39-WP4](implementation/M39_WP4_market_observation_payload_specification.md),
+[M40-WP1](implementation/M40_WP1_Canonical_Market_Measure_Vocabulary_and_Ownership_Specification.md),
+and [M40-WP2](implementation/M40_WP2_Canonical_Market_Measure_Vocabulary_Admission_Review.md).
+
+
+## Deterministic Calculation
+
+A Deterministic Calculation is a semantic transformation for which identical
+canonical inputs, explicit parameters, semantic versions, and dependency
+versions produce a byte-identical canonical Market Measure Result, including
+outcome, reasons, values when permitted, and authoritative temporal meaning.
+
+Owned by Market Intelligence.
+
+Every semantic dependency is explicit and version-bound. No ambient or mutable
+input influences the semantic result, and input order is explicit or
+canonically determined. Failure and insufficiency are deterministic results,
+not opportunities for implicit fallback. Reproducibility is not proof of
+correctness or trust. This property authorizes no formula, library, engine,
+module, provider integration, persistence, API, runtime, or production
+execution.
+
+**Effective now:** Yes. Synchronization is complete and independent
+constitutional approval of M40-WP3 was granted; see
+[M40-WP3 Independent Constitutional Review](implementation/M40_WP3_INDEPENDENT_CONSTITUTIONAL_REVIEW.md).
+
+Governed by [Platform Architecture](architecture/platform_architecture.md),
+the [M34 Decision Register](implementation/m34/audit/registers/decision_register.md),
+[M40-WP1](implementation/M40_WP1_Canonical_Market_Measure_Vocabulary_and_Ownership_Specification.md),
+and [M40-WP2](implementation/M40_WP2_Canonical_Market_Measure_Vocabulary_Admission_Review.md).
+
+
+## Mechanical Boundary Rules
+
+Mechanical Boundary Rules are the complete subject-input-output-event-owner
+predicates established by M40-WP1 and applied by M40-WP2 to classify each
+Market Measure candidate without discretionary ownership overlap.
+
+Owned by Repository Architecture Governance.
+
+Repository Architecture Governance is the governance apparatus established by
+Platform Architecture section 11 and exercised through the repository's
+constituted Architecture Review Board mechanism. It is a governance owner, not
+a business domain or a tenth platform domain. Every classification produces
+exactly one owner or `INADMISSIBLE`; failure of a required predicate fails
+closed; no domain self-authorizes an exception. These rules authorize no
+implementation, runtime, provider, persistence, API, or production behavior.
+
+**Effective now:** Yes. Synchronization is complete and independent
+constitutional approval of M40-WP3 was granted; see
+[M40-WP3 Independent Constitutional Review](implementation/M40_WP3_INDEPENDENT_CONSTITUTIONAL_REVIEW.md).
+
+Governed by [Platform Architecture section 11](architecture/platform_architecture.md#11-architecture-governance),
+the [M34 Decision Register](implementation/m34/audit/registers/decision_register.md),
+[M40-WP1](implementation/M40_WP1_Canonical_Market_Measure_Vocabulary_and_Ownership_Specification.md),
+and [M40-WP2](implementation/M40_WP2_Canonical_Market_Measure_Vocabulary_Admission_Review.md).
