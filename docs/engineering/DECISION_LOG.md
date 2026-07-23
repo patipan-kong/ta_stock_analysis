@@ -1958,3 +1958,54 @@ workspace directory/switching/membership/RBAC, multi-workspace behavior, and
 other explicitly reserved capabilities remain deferred and unauthorized.
 M39 is the next milestone number eligible for specification, but this closeout
 does not define, authorize, or begin M39.
+
+---
+
+## M39 — Canonical Asset Market Observation Epic Closeout
+
+**Date:** 2026-07-23
+
+**Decision:** Close M39 as `COMPLETE AND FROZEN` and admit the six-work-package
+constitutional specification corpus for Canonical Asset Market Observation to
+the repository. M39-WP1 (Canonical Boundary Specification) is frozen as the
+public read boundary contract; M39-WP2 (Source Boundary), M39-WP3
+(Classification), M39-WP4 (Payload), M39-WP5 (Relationship), and M39-WP6
+(Identity) are frozen as the layered Observation semantics. The independent
+Constitutional Architecture Review of the whole milestone returned **APPROVED
+FOR EPIC CLOSEOUT** with no constitutional defect.
+
+**Reasoning:** Whole-milestone reconciliation confirmed the corpus is
+internally complete, internally consistent, and constitutionally admissible:
+single Market Intelligence ownership of all Observation semantics; the
+non-domain authorization boundary under Law 12 with no fabricated domain;
+evidence-not-authority throughout; deterministic dispositions with an
+"ambiguous → unadmitted" fallback in every layer; uniform provider,
+implementation, runtime, storage, API, transport, and serialization neutrality;
+and additive-only extensibility with no catch-all. The WP5 Relationship versus
+WP6 Identity Equivalence seam is explicitly disjoined. No concept is defined
+twice, owned twice, or left insufficiently owned. The review recorded three
+OBSERVATION-level editorial clarifications (Correction Lineage/Relationship
+layering, a shared "material" glossary, and verification of illustrative
+identity-reference names); the reviewer determined these are optional and
+non-blocking, and this closeout preserves them as informational only without
+converting them into constitutional amendments.
+
+**Impact:** M38 and all M31–M38 contracts remain frozen and unchanged. The WP1
+`MarketObservation` contract, its exact initial `contract_revision`,
+availability states, provider derivation, no-symbol-fallback rule, canonical
+normalization reuse, and rollback contract are frozen and are not widened by
+WP2–WP6; `price_kind` is never a classification field, and `assetId` /
+`subject_reference` / `subject_asset_id` remain subject references, never
+Observation Identity. Asset Foundation retains canonical asset identity;
+Connectivity & Ingestion, Ledger & Accounting, Portfolio Intelligence, Trust &
+Evaluation, Decision Intelligence, Experience Platform, and the non-domain
+authorization boundary remain unchanged. M39 is a specification milestone: WP1
+is the frozen contract and WP2–WP6 establish semantic obligations only. This
+closeout authorizes no runtime, endpoint, provider adapter, storage, migration,
+schema, or public-exposure work; realization of the WP1 boundary and any
+consumer of the WP2–WP6 semantics is a separately governed future step. The
+canonical repository map is
+[M39_EPIC_CLOSEOUT.md](../implementation/M39_EPIC_CLOSEOUT.md), reconciled in
+[docs/implementation/INDEX.md](../implementation/INDEX.md). M40 is the next
+milestone number eligible for specification; this closeout does not define,
+authorize, or begin M40.
