@@ -16,10 +16,11 @@ reader can navigate without re-deriving history from file names and dates.
 
 ## Current Milestone Status
 
-The current milestone is **M39 — Canonical Asset Market Observation**. M39-WP1
-through M39-WP6 are complete and frozen as a constitutional specification
-corpus. The canonical closeout is [M39_EPIC_CLOSEOUT.md](M39_EPIC_CLOSEOUT.md),
-and the epic decision is recorded in the
+The latest closed milestone is **M39 — Canonical Asset Market Observation**.
+M39-WP1 through M39-WP6 are complete and frozen as a constitutional
+specification corpus. The canonical closeout is
+[M39_EPIC_CLOSEOUT.md](M39_EPIC_CLOSEOUT.md), and the epic decision is recorded
+in the
 [Decision Log](../engineering/DECISION_LOG.md#m39--canonical-asset-market-observation-epic-closeout).
 
 The M39 document set contains six standalone specifications: the frozen WP1
@@ -30,6 +31,23 @@ obligations only; no runtime, endpoint, provider, storage, or public-exposure
 work is authorized by the corpus or its closeout. The independent Constitutional
 Architecture Review returned `APPROVED FOR EPIC CLOSEOUT` with three
 OBSERVATION-level editorial clarifications preserved as informational only.
+
+The active milestone is **M40 — Canonical Asset Market Measure Foundation**.
+Its architecture-phase corpus consists of the
+[architecture proposal](M40_Canonical_Asset_Market_Measure_Foundation_Plan.md),
+[independent constitutional review](M40_INDEPENDENT_CONSTITUTIONAL_ARCHITECTURE_REVIEW.md),
+[review response](M40_REVIEW_RESPONSE.md), and
+[independent confirmation](M40_INDEPENDENT_CONFIRMATION.md). M40-WP1 is
+[complete and independently confirmed](M40_WP1_INDEPENDENT_CONFIRMATION.md);
+its vocabulary and ownership specification is frozen. M40-WP2 has completed
+the [constitutional vocabulary admission review](M40_WP2_Canonical_Market_Measure_Vocabulary_Admission_Review.md)
+for independent constitutional review, with eight `ADMIT` and two `REJECT`
+decisions. Because the Canonical Glossary has not been synchronized and the
+WP2 result has not yet received independent approval, no admitted term is yet
+effective shared vocabulary and no implementation, runtime,
+production-method, provider, persistence, API, or public-exposure authority
+exists. M40 is not recorded in the Decision Log and does not amend or reopen
+M39 or any earlier milestone.
 
 The immediately prior milestone, **M38 — Product Workspace Foundation**
 (WP1–WP10), remains complete and frozen; its canonical closeout is
@@ -66,6 +84,7 @@ those frozen designs.
 | M37 | `APPROVED_AND_FROZEN` (design docs); `IMPLEMENTATION COMPLETE` (Decision Log, committed) | [M37_WP1_Universal_Asset_Search_Foundation.md](M37_WP1_Universal_Asset_Search_Foundation.md) `CAD`, [M37_1_Universal_Asset_Search_Technical_Design.md](M37_1_Universal_Asset_Search_Technical_Design.md) `CAD` | [M37_EPIC_CLOSEOUT.md](M37_EPIC_CLOSEOUT.md) `CO` | [§M37.3 Closeout](../engineering/DECISION_LOG.md#m373---provider-discovery--universe-search-implementation-closeout) |
 | M38 | `COMPLETE AND FROZEN` (WP1–WP10); epic closed and ready for merge | [M38_WP1_BOUNDARY_CONTRACT_SPECIFICATION.md](M38_WP1_BOUNDARY_CONTRACT_SPECIFICATION.md) `CAD`; [WP2](M38_WP2_WORKSPACE_CONTEXT_RUNTIME_IMPLEMENTATION_DESIGN.MD), [WP3](M38_WP3_IMPLEMENTATION_DESIGN.md), [WP7](M38_WP7_EXPERIENCE_COMPOSITION_RUNTIME_IMPLEMENTATION_DESIGN.md), [WP8](M38_WP8_EXPERIENCE_OBSERVATION_RUNTIME_IMPLEMENTATION_DESIGN.md), [WP9](M38_WP9_EXPERIENCE_QUERY_RUNTIME_IMPLEMENTATION_DESIGN.md), and [WP10](M38_WP10_DISCOVERY_EXPERIENCE_RUNTIME_IMPLEMENTATION_DESIGN.md) `AIR`; WP4–WP6 are represented by frozen Decision Log records | [M38_EPIC_CLOSEOUT.md](M38_EPIC_CLOSEOUT.md) `CO` | [§M38 Closeout](../engineering/DECISION_LOG.md#m38--product-workspace-foundation-epic-closeout) |
 | M39 | `COMPLETE AND FROZEN` (WP1–WP6); constitutional specification corpus, `APPROVED FOR EPIC CLOSEOUT` | [WP1 Canonical Boundary](M39_WP1_Canonical_Boundary_Specification.md) `CAD` (frozen contract); [WP2 Source Boundary](M39_WP2_market_observation_source_boundary_specification.md), [WP3 Classification](M39_WP3_market_observation_classification_specification.md), [WP4 Payload](M39_WP4_market_observation_payload_specification.md), [WP5 Relationship](M39_WP5_market_observation_relationship_specification.md), and [WP6 Identity](M39_WP6_market_observation_identity_specification.md) `CAD` (semantic layers) | [M39_EPIC_CLOSEOUT.md](M39_EPIC_CLOSEOUT.md) `CO` | [§M39 Closeout](../engineering/DECISION_LOG.md#m39--canonical-asset-market-observation-epic-closeout) |
+| M40 | Architecture phase complete; WP1 complete, reviewed, and independently confirmed; WP2 `COMPLETE_FOR_INDEPENDENT_CONSTITUTIONAL_REVIEW` with eight `ADMIT` and two `REJECT` decisions; admitted terms are not yet effective because Glossary synchronization and independent approval remain pending; no implementation or runtime authority | [Architecture Plan](M40_Canonical_Asset_Market_Measure_Foundation_Plan.md) `DT`; [Architecture Independent Review](M40_INDEPENDENT_CONSTITUTIONAL_ARCHITECTURE_REVIEW.md) `AU`; [Architecture Review Response](M40_REVIEW_RESPONSE.md) `RCE`; [Architecture Independent Confirmation](M40_INDEPENDENT_CONFIRMATION.md) `AU`; [WP1 Vocabulary and Ownership Specification](M40_WP1_Canonical_Market_Measure_Vocabulary_and_Ownership_Specification.md) `CAD` candidate; [WP1 Independent Review](M40_WP1_INDEPENDENT_REVIEW.md) `AU`; [WP1 Review Response](M40_WP1_REVIEW_RESPONSE.md) `RCE`; [WP1 Independent Confirmation](M40_WP1_INDEPENDENT_CONFIRMATION.md) `AU`; [WP2 Vocabulary Admission Review](M40_WP2_Canonical_Market_Measure_Vocabulary_Admission_Review.md) `RCE` | — | none; not submitted |
 
 **M34 status detail** (a single "Complete" label does not hold for the whole
 milestone — its two governance tracks diverge):
