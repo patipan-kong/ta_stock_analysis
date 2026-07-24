@@ -2085,3 +2085,39 @@ authority; the canonical closeout record is
 (Measure Subject, Observation Input Manifest binding, and related deferred
 contracts) is not begun by this closeout. No Architecture, Stage 1, or
 prior M40/M39/M38 record is amended or reopened.
+
+---
+
+## M41-WP3 — Temporal, Unit, Adjustment, and Arithmetic Semantics Closeout
+
+**Date:** 2026-07-24
+
+**Decision:** Close M41-WP3. M41-WP3 is `COMPLETE`, `CLOSED`, and `FROZEN`.
+The M41-WP3 Architecture is `APPROVED`; Stage A is `APPROVED`; and Stage B is
+`CONFIRMED` and `FROZEN`. The review and confirmation chains are complete,
+all required corrections are resolved, all normative semantics allocated to
+WP3 are complete, and the Stage B Golden Vectors `GV-01` through `GV-30` are
+canonical.
+
+**Reasoning:** Independent Architecture Review approved the WP3 architecture
+with no required corrections. Independent Stage A Review approved the
+vocabulary-sufficiency and semantic-surface register with no required
+corrections. Independent Stage B Review approved the deterministic semantics
+specification subject to one localized correction, RC-1. The Required
+Corrections Response resolved RC-1 without changing any rule, field, canonical
+encoding, Golden Vector, expected byte sequence, classification, or authority.
+Independent Confirmation verified that resolution, returned `CONFIRMED`, and
+froze Stage B with no semantic obligation or ambient semantic default
+remaining.
+
+**Impact:** The canonical closeout record is
+[M41_WP3_CLOSEOUT.md](../implementation/M41_WP3_CLOSEOUT.md). M41 Architecture,
+M41-WP1, M41-WP2, WP3 Architecture, Stage A, Stage B, and the Canonical
+Glossary remain immutable. WP3 grants no implementation, runtime, provider,
+persistence, API, production, or executable-validation authority. Measure
+Value and Result composition, Result identity and envelope, Provenance,
+Canonical Temporal Claim construction, reason-code representation,
+partial-result composition, and outcome/degraded-state interaction remain
+deferred to WP4 exactly as allocated by the approved architecture. WP4 may
+begin only under separately authorized architecture work; this closeout does
+not begin WP4.

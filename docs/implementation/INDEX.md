@@ -16,50 +16,23 @@ reader can navigate without re-deriving history from file names and dates.
 
 ## Current Milestone Status
 
-The latest closed milestone is **M39 — Canonical Asset Market Observation**.
-M39-WP1 through M39-WP6 are complete and frozen as a constitutional
-specification corpus. The canonical closeout is
-[M39_EPIC_CLOSEOUT.md](M39_EPIC_CLOSEOUT.md), and the epic decision is recorded
-in the
-[Decision Log](../engineering/DECISION_LOG.md#m39--canonical-asset-market-observation-epic-closeout).
+The latest closed work package is **M41-WP3 — Temporal, Unit, Adjustment, and
+Arithmetic Semantics**. Its Architecture and Stage A are approved; Stage B is
+confirmed and frozen; and the work package is `COMPLETE`, `CLOSED`, and
+`FROZEN`. The canonical closeout is
+[M41_WP3_CLOSEOUT.md](M41_WP3_CLOSEOUT.md), and the decision is recorded in
+the
+[Decision Log](../engineering/DECISION_LOG.md#m41-wp3--temporal-unit-adjustment-and-arithmetic-semantics-closeout).
 
-The M39 document set contains six standalone specifications: the frozen WP1
-public boundary contract and the WP2–WP6 semantic layers (Source,
-Classification, Payload, Relationship, and Identity). M39 is a specification
-milestone: WP1 is the frozen contract and WP2–WP6 establish semantic
-obligations only; no runtime, endpoint, provider, storage, or public-exposure
-work is authorized by the corpus or its closeout. The independent Constitutional
-Architecture Review returned `APPROVED FOR EPIC CLOSEOUT` with three
-OBSERVATION-level editorial clarifications preserved as informational only.
+M41-WP3 closes all normative semantics allocated to it, including the
+canonical Golden Vectors `GV-01` through `GV-30`, without granting
+implementation, runtime, provider, persistence, API, production, or
+executable-validation authority. M41 Architecture, M41-WP1, and M41-WP2
+remain complete, confirmed, frozen, and immutable. Result composition and
+all other responsibilities allocated to WP4 remain deferred; WP4 may begin
+only under separately authorized architecture work.
 
-**M41-WP1 — Market Measure Definition, Method Version, and Applicability
-Contract** is complete, independently confirmed, and frozen. The canonical
-closeout is [M41_WP1_CLOSEOUT.md](M41_WP1_CLOSEOUT.md), and the decision is
-recorded in the
-[Decision Log](../engineering/DECISION_LOG.md#m41-wp1--market-measure-definition-method-version-and-applicability-contract-closeout).
-M41-WP1 is normative authority for Market Measure Definition, Method
-Version, and Method Requirement (Applicability); it grants no
-implementation, runtime, provider, persistence, or API authority. M41-WP2
-has not begun.
-
-The active milestone is **M40 — Canonical Asset Market Measure Foundation**.
-Its architecture-phase corpus consists of the
-[architecture proposal](M40_Canonical_Asset_Market_Measure_Foundation_Plan.md),
-[independent constitutional review](M40_INDEPENDENT_CONSTITUTIONAL_ARCHITECTURE_REVIEW.md),
-[review response](M40_REVIEW_RESPONSE.md), and
-[independent confirmation](M40_INDEPENDENT_CONFIRMATION.md). M40-WP1 is
-[complete and independently confirmed](M40_WP1_INDEPENDENT_CONFIRMATION.md);
-its vocabulary and ownership specification is frozen. M40-WP2 has completed
-the [constitutional vocabulary admission review](M40_WP2_Canonical_Market_Measure_Vocabulary_Admission_Review.md)
-for independent constitutional review, with eight `ADMIT` and two `REJECT`
-decisions. Because the Canonical Glossary has not been synchronized and the
-WP2 result has not yet received independent approval, no admitted term is yet
-effective shared vocabulary and no implementation, runtime,
-production-method, provider, persistence, API, or public-exposure authority
-exists. M40 is not recorded in the Decision Log and does not amend or reopen
-M39 or any earlier milestone.
-
-The immediately prior milestone, **M38 — Product Workspace Foundation**
+The earlier closed milestone **M38 — Product Workspace Foundation**
 (WP1–WP10), remains complete and frozen; its canonical closeout is
 [M38_EPIC_CLOSEOUT.md](M38_EPIC_CLOSEOUT.md), with final decisions in the
 [Decision Log](../engineering/DECISION_LOG.md#m38--product-workspace-foundation-epic-closeout).
@@ -96,6 +69,8 @@ those frozen designs.
 | M39 | `COMPLETE AND FROZEN` (WP1–WP6); constitutional specification corpus, `APPROVED FOR EPIC CLOSEOUT` | [WP1 Canonical Boundary](M39_WP1_Canonical_Boundary_Specification.md) `CAD` (frozen contract); [WP2 Source Boundary](M39_WP2_market_observation_source_boundary_specification.md), [WP3 Classification](M39_WP3_market_observation_classification_specification.md), [WP4 Payload](M39_WP4_market_observation_payload_specification.md), [WP5 Relationship](M39_WP5_market_observation_relationship_specification.md), and [WP6 Identity](M39_WP6_market_observation_identity_specification.md) `CAD` (semantic layers) | [M39_EPIC_CLOSEOUT.md](M39_EPIC_CLOSEOUT.md) `CO` | [§M39 Closeout](../engineering/DECISION_LOG.md#m39--canonical-asset-market-observation-epic-closeout) |
 | M40 | Architecture phase complete; WP1 complete, reviewed, and independently confirmed; WP2 `COMPLETE_FOR_INDEPENDENT_CONSTITUTIONAL_REVIEW` with eight `ADMIT` and two `REJECT` decisions; admitted terms are not yet effective because Glossary synchronization and independent approval remain pending; no implementation or runtime authority | [Architecture Plan](M40_Canonical_Asset_Market_Measure_Foundation_Plan.md) `DT`; [Architecture Independent Review](M40_INDEPENDENT_CONSTITUTIONAL_ARCHITECTURE_REVIEW.md) `AU`; [Architecture Review Response](M40_REVIEW_RESPONSE.md) `RCE`; [Architecture Independent Confirmation](M40_INDEPENDENT_CONFIRMATION.md) `AU`; [WP1 Vocabulary and Ownership Specification](M40_WP1_Canonical_Market_Measure_Vocabulary_and_Ownership_Specification.md) `CAD` candidate; [WP1 Independent Review](M40_WP1_INDEPENDENT_REVIEW.md) `AU`; [WP1 Review Response](M40_WP1_REVIEW_RESPONSE.md) `RCE`; [WP1 Independent Confirmation](M40_WP1_INDEPENDENT_CONFIRMATION.md) `AU`; [WP2 Vocabulary Admission Review](M40_WP2_Canonical_Market_Measure_Vocabulary_Admission_Review.md) `RCE` | — | none; not submitted |
 | M41-WP1 | `COMPLETE`, `CONFIRMED`, `FROZEN` — Architecture, Stage 1, and Stage 2 (after a two-round Independent Confirmation correction cycle) all independently confirmed | [Architecture Proposal](M41_ARCHITECTURE_PROPOSAL.md) `CAD`; [Stage 1 Register](M41_WP1_CANDIDATE_VOCABULARY_AND_OWNERSHIP_REGISTER.md) `CAD`; [Stage 2 Specification](M41_WP1_DEFINITION_METHOD_VERSION_APPLICABILITY_CONTRACT_SPECIFICATION.md) `CAD`; review/confirmation corpus per [M41_WP1_CLOSEOUT.md](M41_WP1_CLOSEOUT.md) | [M41_WP1_CLOSEOUT.md](M41_WP1_CLOSEOUT.md) `CO` | [§M41-WP1 Closeout](../engineering/DECISION_LOG.md#m41-wp1--market-measure-definition-method-version-and-applicability-contract-closeout) |
+| M41-WP2 | `COMPLETE`, `CONFIRMED`, `FROZEN` — immutable upstream authority for WP3 | [Architecture Proposal](M41_WP2_ARCHITECTURE_PROPOSAL.md) `CAD`; [Stage A Register](M41_WP2_STAGE_A_CANDIDATE_VOCABULARY_REGISTER.md) `CAD`; [Stage B Specification](M41_WP2_STAGE_B_SUBJECT_AND_MANIFEST_CONTRACT_SPECIFICATION.md) `CAD`; review/confirmation corpus linked from those records | — | not separately indexed |
+| M41-WP3 | `COMPLETE`, `CLOSED`, `FROZEN` — Architecture and Stage A approved; Stage B confirmed and frozen after RC-1 resolution; all 30 Golden Vectors canonical | [WP3 Architecture](M41_WP3_ARCHITECTURE_PROPOSAL.md) `CAD`; [Stage A Register](M41_WP3_STAGE_A_VOCABULARY_AND_SEMANTIC_SURFACE_REGISTER.md) `CAD`; [Stage B Specification](M41_WP3_STAGE_B_TEMPORAL_UNIT_ADJUSTMENT_ARITHMETIC_CONTRACT_SPECIFICATION.md) `CAD`; complete review/confirmation corpus per [M41_WP3_CLOSEOUT.md](M41_WP3_CLOSEOUT.md) | [M41_WP3_CLOSEOUT.md](M41_WP3_CLOSEOUT.md) `CO` | [§M41-WP3 Closeout](../engineering/DECISION_LOG.md#m41-wp3--temporal-unit-adjustment-and-arithmetic-semantics-closeout) |
 
 **M34 status detail** (a single "Complete" label does not hold for the whole
 milestone — its two governance tracks diverge):
@@ -154,6 +129,7 @@ Broader architecture documents (not milestone-scoped) live under
 - [M38_EPIC_CLOSEOUT.md](M38_EPIC_CLOSEOUT.md) — Product Workspace Foundation; WP1–WP10 complete and frozen, implementation review and WP10 remediation closed, ready for merge
 - [M39_EPIC_CLOSEOUT.md](M39_EPIC_CLOSEOUT.md) — Canonical Asset Market Observation; WP1–WP6 complete and frozen, `APPROVED FOR EPIC CLOSEOUT` by independent constitutional architecture review, closed 2026-07-23
 - [M41_WP1_CLOSEOUT.md](M41_WP1_CLOSEOUT.md) — Market Measure Definition, Method Version, and Applicability Contract; Architecture, Stage 1, and Stage 2 all independently confirmed and frozen, closed 2026-07-23; grants no implementation, runtime, provider, persistence, or API authority
+- [M41_WP3_CLOSEOUT.md](M41_WP3_CLOSEOUT.md) — Temporal, Unit, Adjustment, and Arithmetic Semantics; Architecture and Stage A approved, Stage B confirmed and frozen, WP3 closed 2026-07-24; grants no implementation, runtime, provider, persistence, API, production, or executable-validation authority
 
 ## Active Governance
 
